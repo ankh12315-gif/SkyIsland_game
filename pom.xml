@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.skyisland</groupId>
+  <artifactId>skyisland</artifactId>
+  <version>0.3.1-M2_1-COMBAT-FEEL</version>
+  <packaging>jar</packaging>
+
+  <name>SkyIsland</name>
+  <description>空岛生存 SkyIsland —— 基于 Java + LWJGL 自研体素游戏引擎</description>
+
+  <!--
+    ============================================================================
+    版本冻结依据见 docs/architecture/TECH_DESIGN_v0.1.md §A.1
+    所有版本均在 Maven Central 上实测可达（HEAD 200）。
+
+    XML 注释注意：注释正文中禁止出现连续两个减号，否则 POM 无法解析。
+    因此本文件的分节标题一律不使用减号连线。
+    ============================================================================
+  -->
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <!-- 字节码目标与运行 JDK 解耦（PRD 12.6）：用 JDK 25 编译，产出 Java 21 字节码 -->
+    <maven.compiler.release>21</maven.compiler.release>
+
+    <lwjgl.version>3.4.3</lwjgl.version>
+    <joml.version>1.10.9</joml.version>
+    <gson.version>2.14.0</gson.version>
+    <junit.version>6.1.3</junit.version>
+    <lwjgl.natives>natives-windows</lwjgl.natives>
+
+    <plugin.compiler.version>3.16.0</plugin.compiler.version>
+    <plugin.surefire.version>3.6.0</plugin.surefire.version>
+    <plugin.shade.version>3.6.2</plugin.shade.version>
+
+    <main.class>com.skyisland.game.SkyIslandGame</main.class>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- 用 BOM 统一 LWJGL 各模块版本：逐个写版本号极易造成模块版本错配 -->
+      <dependency>
+        <groupId>org.lwjgl</groupId>
+        <artifactId>lwjgl-bom</artifactId>
+        <version>${lwjgl.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- LWJGL 主 jar -->
+    <dependency>
+      <groupId>org.lwjgl</groupId>
+      <artifactId>lwjgl</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.lwjgl</groupId>
+      <artifactId>lwjgl-glfw</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.lwjgl</groupId>
+      <artifactId>lwjgl-opengl</artifactId>
+    </dependency>
+    <!-- M2.1：最小音频链路需要 OpenAL（版本由上面的 lwjgl-bom 统一管理） -->
+    <dependency>
+      <groupId>org.lwjgl</groupId>
+      <artifactId>lwjgl-openal</artifactId>
+    </dependency>
+
+    <!-- LWJGL native：每个模块都必须单独声明分类器，漏一个就会在运行期报 UnsatisfiedLinkError -->
+    <dependency>
+      <groupId>org.lwjgl</groupId>
+      <artifactId>lwjgl</artifactId>
+      <classifier>${lwjgl.natives}</classifier>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.lwjgl</groupId>
+      <artifactId>lwjgl-glfw</artifactId>
+      <classifier>${lwjgl.natives}</classifier>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.lwjgl</groupId>
+      <artifactId>lwjgl-opengl</artifactId>
+      <classifier>${lwjgl.natives}</classifier>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.lwjgl</groupId>
+      <artifactId>lwjgl-openal</artifactId>
+      <classifier>${lwjgl.natives}</classifier>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- 数学 -->
+    <dependency>
+      <groupId>org.joml</groupId>
+      <artifactId>joml</artifactId>
+      <version>${joml.version}</version>
+    </dependency>
+
+    <!-- JSON：使用边界为「仅 com.skyisland.data 允许 import」，见 TECH_DESIGN §A.3 -->
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+      <version>${gson.version}</version>
+    </dependency>
+
+    <!-- 测试 -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-launcher</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>skyisland-${project.version}</finalName>
+
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>${plugin.compiler.version}</version>
+        <configuration>
+          <release>${maven.compiler.release}</release>
+          <encoding>UTF-8</encoding>
+          <!--
+            注意：不设置 -Werror。
+            JDK 25 下 LWJGL 会触发 native-access 类告警（见 TECH_DESIGN §A.4 / M0 报告），
+            设 -Werror 会直接卡死构建。
+          -->
+          <compilerArgs>
+            <arg>-Xlint:all,-serial</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>${plugin.surefire.version}</version>
+      </plugin>
+
+      <!-- fat jar + .bat 启动（PRD 14.5） -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>${plugin.shade.version}</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>${main.class}</mainClass>
+                </transformer>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

@@ -1,0 +1,246 @@
+package com.skyisland.render;
+
+import com.skyisland.render.mesh.ChunkRenderer;
+import com.skyisland.render.mesh.CrackOverlay;
+import com.skyisland.render.shader.ShaderProgram;
+import com.skyisland.render.ui.HudModel;
+import com.skyisland.render.ui.HudRenderer;
+import com.skyisland.render.ui.MenuLayout;
+import com.skyisland.render.ui.MenuRenderer;
+import com.skyisland.render.viewmodel.ViewmodelModel;
+import com.skyisland.render.viewmodel.ViewmodelRenderer;
+import com.skyisland.entity.Entity;
+import com.skyisland.render.fx.CombatFxModel;
+import com.skyisland.render.fx.CombatFxRenderer;
+import com.skyisland.player.Camera;
+import com.skyisland.player.Player;
+import com.skyisland.ui.MenuScreen;
+import com.skyisland.util.Log;
+import com.skyisland.world.World;
+import org.lwjgl.opengl.GL11;
+
+import java.util.List;
+
+/**
+ * 渲染总入口：清屏 → 世界 pass → HUD pass（TECH_DESIGN §G.7 的 pass 顺序）。
+ *
+ * <p><b>为什么要有一个总入口而不是让游戏主类直接调各渲染器：</b>
+ * pass 顺序与 GL 状态的设置/恢复必须只有<u>一个</u>执行点。分散之后必然出现
+ * "某人开了混合忘了关，于是世界渲染开始半透明"这类跨模块的隐式耦合 ——
+ * 症状出现在 A 模块，原因在 B 模块。
+ *
+ * <p><b>本类负责的状态切换（每帧固定重设，不依赖上一帧残留）：</b>
+ * <ol>
+ *   <li>清屏：颜色 + 深度，清屏色固定为天空色（M1 无昼夜，TECH_DESIGN_v0.1.1 §S′）；</li>
+ *   <li>世界 pass：开深度测试、开背面剔除（{@link ChunkRenderer} 内再按 pass 调整）；</li>
+ *   <li>HUD pass：关深度测试、关剔除、开混合；</li>
+ *   <li>结束：恢复"深度测试开、混合关"，交给下一帧。</li>
+ * </ol>
+ */
+public final class Renderer {
+
+    /**
+     * 天空清屏色。偏亮的蓝 —— M1 的测试世界是一个悬浮在空中的平台，
+     * 清屏色就是"天空"，因此它同时承担"能看出自己没有站到地形外面"的作用。
+     */
+    public static final float SKY_R = 0.46f;
+    public static final float SKY_G = 0.63f;
+    public static final float SKY_B = 0.86f;
+
+    private final ChunkRenderer chunkRenderer = new ChunkRenderer();
+    private final CrackOverlay crackOverlay = new CrackOverlay();
+    private final com.skyisland.render.entity.EntityRenderer entityRenderer =
+            new com.skyisland.render.entity.EntityRenderer();
+    private final CombatFxRenderer combatFxRenderer = new CombatFxRenderer();
+    private final ViewmodelRenderer viewmodelRenderer = new ViewmodelRenderer();
+    private final HudRenderer hudRenderer = new HudRenderer();
+    private final MenuRenderer menuRenderer = new MenuRenderer();
+    private final Frustum frustum = new Frustum();
+
+    private ShaderProgram voxelShader;
+    private ShaderProgram uiShader;
+
+    private int framebufferWidth = 1280;
+    private int framebufferHeight = 720;
+
+    // ============================================================ 生命周期
+
+    public void init(int fbWidth, int fbHeight) {
+        resize(fbWidth, fbHeight);
+        voxelShader = ShaderProgram.fromResources("voxel",
+                "shaders/voxel.vert", "shaders/voxel.frag");
+        uiShader = ShaderProgram.fromResources("ui",
+                "shaders/ui.vert", "shaders/ui.frag");
+        hudRenderer.init();
+        menuRenderer.init();
+        crackOverlay.init();
+        entityRenderer.init();
+        combatFxRenderer.init();
+        viewmodelRenderer.init();
+
+        GL11.glEnable(GL11.GL_DEPTH_TEST);
+        GL11.glDepthFunc(GL11.GL_LEQUAL);
+        GL11.glEnable(GL11.GL_CULL_FACE);
+        GL11.glCullFace(GL11.GL_BACK);
+        GL11.glFrontFace(GL11.GL_CCW);
+        GL11.glDisable(GL11.GL_BLEND);
+        Log.info("[Renderer] 渲染器已就绪（帧缓冲 %d×%d，pass 顺序：清屏 → 世界 → 手持物 → HUD → 菜单）",
+                fbWidth, fbHeight);
+    }
+
+    /** 帧缓冲尺寸变化时必须调用 —— 否则投影矩阵仍是旧宽高比，画面会被拉长。 */
+    public void resize(int fbWidth, int fbHeight) {
+        this.framebufferWidth = Math.max(1, fbWidth);
+        this.framebufferHeight = Math.max(1, fbHeight);
+    }
+
+    // ============================================================ 每帧
+
+    public int framebufferWidth() {
+        return framebufferWidth;
+    }
+
+    public int framebufferHeight() {
+        return framebufferHeight;
+    }
+
+    /** 清屏。必须在本帧任何绘制之前调用。 */
+    public void clear() {
+        GL11.glViewport(0, 0, framebufferWidth, framebufferHeight);
+        GL11.glClearColor(SKY_R, SKY_G, SKY_B, 1.0f);
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
+    }
+
+    /**
+     * 世界 pass。
+     *
+     * <p>视锥矩阵在此更新（每帧一次），随后交给 {@link ChunkRenderer} 做剔除与两趟绘制。
+     *
+     * <p><b>裂纹叠加层在区块之后、同一 pass 内绘制</b>：它需要深度缓冲已经装好
+     * 真实几何（才能被前面的方块正确遮挡），也需要相机矩阵 —— 两者都只在世界 pass 里成立。
+     * 放到 HUD pass 会被当成屏幕空间图元，放到下一帧更不可能。因此这一步的顺序
+     * 由本类统一安排，与 {@link #renderHud} / {@link #renderMenu} 的分工原则一致。
+     *
+     * <p>player 允许为 null：菜单期间没有"当前挖掘目标"，此时叠加层自己跳过。
+     *
+     * <p><b>M2 的两处补充：</b>
+     * <ul>
+     *   <li><b>实体在区块之后、裂纹之前绘制</b>：实体是真实几何，必须被地形正确遮挡；
+     *       而裂纹是贴在方块面上的覆盖层，画在最后才不会把实体"糊"上一层黑色；</li>
+     *   <li>{@code entities} 允许为 null 或空：菜单 / 自测期间没有实体，此时跳过。
+     *       用"空集合等价于不画"而不是"必须传一个非空列表"，是为了让调用方
+     *       不必为了满足签名而构造一个假列表。</li>
+     * </ul>
+     *
+     * @param player   挖掘反馈的数据源；null 表示不画裂纹
+     * @param entities 本帧要绘制的实体；null / 空表示没有实体
+     * @param fx       战斗表现（粒子 + 曳光）的状态；null 表示不画
+     */
+    public void renderWorld(World world, Camera camera, Player player,
+                            List<Entity> entities, CombatFxModel fx) {
+        camera.updateProjection(framebufferWidth, framebufferHeight);
+        frustum.update(camera.projectionMatrix(), camera.viewMatrix());
+        chunkRenderer.render(world, camera, voxelShader, frustum);
+        entityRenderer.render(voxelShader, camera, entities);
+        combatFxRenderer.render(voxelShader, camera, fx);
+        crackOverlay.render(voxelShader, camera, player);
+    }
+
+    /** 上一帧实际绘制的裂纹段数（自测断言用；0 表示没有在画裂纹）。 */
+    public int crackSegments() {
+        return crackOverlay.lastSegments();
+    }
+
+    /** 累计有裂纹绘制的帧数。 */
+    public long crackDrawCount() {
+        return crackOverlay.drawCount();
+    }
+
+    /**
+     * 第一人称手持物 pass（M2.1）。
+     *
+     * <p><b>位置是硬性的：世界之后、HUD 之前。</b>
+     * <ul>
+     *   <li>在世界之后 —— 它要复用 {@code voxel} 着色器并<b>独占深度缓冲</b>
+     *       （自己清一次深度，见 {@link ViewmodelRenderer} 的类注释）。
+     *       放到世界之前，清掉的就还是上一帧的深度，等于白清；</li>
+     *   <li>在 HUD 之前 —— 手持物是"世界里的东西"（虽然在视图空间），
+     *       准星必须盖在它上面：准星指出的是屏幕正中心那一个点，
+     *       被自己的枪盖住的话，瞄准就失去了意义。HUD pass 关着深度测试，
+     *       因此它天然盖在所有 3D 之上。</li>
+     * </ul>
+     *
+     * @param model 可为 null 或 {@code visible == false}：此时不画，也不碰 GL 状态
+     */
+    public void renderViewmodel(ViewmodelModel model) {
+        viewmodelRenderer.render(voxelShader, model, framebufferWidth, framebufferHeight);
+    }
+
+    /** HUD pass（正交屏幕空间，与相机无关）。 */
+    public void renderHud(HudModel model) {
+        hudRenderer.render(model, uiShader, framebufferWidth, framebufferHeight);
+    }
+
+    /**
+     * 菜单 pass（M1.5）：在 HUD 之后绘制，因此菜单永远盖在 HUD 与世界之上。
+     *
+     * <p>顺序是硬性的：菜单是模态层，被 HUD 盖住的话"暂停了却看不见菜单"就只是
+     * 谁先画的问题。而这一步由本类统一安排，调用方不需要知道 pass 顺序
+     * （同 {@link #renderWorld} / {@link #renderHud} 的分工原则）。
+     */
+    public void renderMenu(MenuScreen screen, MenuLayout layout,
+                           String versionLine, String footerHint,
+                           String overlayText, boolean overlayDialog) {
+        menuRenderer.render(uiShader, screen, layout, versionLine, footerHint,
+                overlayText, overlayDialog, framebufferWidth, framebufferHeight);
+    }
+
+    /** 限量消费区块网格重建队列。返回实际重建的区块数。 */
+    public int processMeshRebuilds(World world) {
+        return chunkRenderer.processRebuildQueue(world);
+    }
+
+    // ============================================================ 统计与释放
+
+    public ChunkRenderer chunkRenderer() {
+        return chunkRenderer;
+    }
+
+    public Frustum frustum() {
+        return frustum;
+    }
+
+    /** 实体渲染器（自测断言"实体确实被画出来了"用 —— 它只能由像素或绘制计数证明）。 */
+    public com.skyisland.render.entity.EntityRenderer entityRenderer() {
+        return entityRenderer;
+    }
+
+    /** 战斗表现渲染器（自测断言粒子/曳光确实被画出来了用）。 */
+    public CombatFxRenderer combatFxRenderer() {
+        return combatFxRenderer;
+    }
+
+    /** 第一人称手持物渲染器（自测断言 viewmodel 确实被画出来了用）。 */
+    public ViewmodelRenderer viewmodelRenderer() {
+        return viewmodelRenderer;
+    }
+
+    public void dispose() {
+        chunkRenderer.disposeAll();
+        crackOverlay.dispose();
+        entityRenderer.dispose();
+        combatFxRenderer.dispose();
+        viewmodelRenderer.dispose();
+        hudRenderer.dispose();
+        menuRenderer.dispose();
+        if (voxelShader != null) {
+            voxelShader.dispose();
+            voxelShader = null;
+        }
+        if (uiShader != null) {
+            uiShader.dispose();
+            uiShader = null;
+        }
+        Log.info("[Renderer] 渲染器已释放");
+    }
+}

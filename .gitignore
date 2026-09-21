@@ -1,0 +1,45 @@
+# =====================================================================
+# SkyIsland — .gitignore
+# Strategy: whitelist-style control. Only real source + the build/gate
+# tooling is committed; everything generated or scratch is ignored.
+# =====================================================================
+
+# ---- Maven build output ----
+target/
+
+# ---- Runtime / capture artifacts ----
+logs/
+screenshots/
+
+# ---- Build scratch (javac temp dirs & classpath argfiles) ----
+.tmpclasses/
+.tmptestclasses/
+.tmptools/
+.tmp_charset.json
+.tmp_cp.txt
+.tmp_sources.txt
+.toolchain/
+
+# ---- Saved worlds / gate run data (any location) ----
+*-saves/
+
+# =====================================================================
+# tmp/ — COMMIT ONLY the build & gate tooling; ignore everything else.
+#
+# CRITICAL TRAP: do NOT write a bare `tmp/` rule here. A trailing-slash
+# directory ignore makes the whole subtree unmatchable, so the `!`
+# negations further down could never re-include the tooling files.
+# `tmp/*` ignores the immediate children only, which lets the explicit
+# negations below restore the tooling. (Subsumes the run-data patterns
+# `tmp/*.json`, `tmp/*.json.bak`, `tmp/*.log`, `tmp/*.txt`, the save
+# dirs (`*-saves/`, `gate-runs/`, `m15-final*/`, `m2gate-*/`), and all
+# ad-hoc probes/logs/*.ps1/*.java scratch that accumulate in tmp/.)
+# =====================================================================
+tmp/*
+# --- required tooling, MUST stay tracked ---
+!tmp/build.js
+!tmp/run_frozen_gate.js
+!tmp/run_m2_smoke.js
+!tmp/gen_play_bat.js
+!tmp/run_gate.js
+!tmp/scan_gate.js

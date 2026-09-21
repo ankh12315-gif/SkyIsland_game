@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SkyIsland Maven 设置
+  ====================
+  用途：
+    1) 本地仓库放在 D 盘（用户环境约定：工具链全部 D 盘化，规避 C 盘占用）
+    2) 采用 Maven Central 直连（实测 repo1.maven.org 可达且下载正常）
+
+  使用方式：
+    mvn -s toolchain/settings.xml clean package
+    （或由 run-m0.bat 自动带上 -s 参数）
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <localRepository>D:/software/maven/repo</localRepository>
+
+  <offline>false</offline>
+
+  <profiles>
+    <profile>
+      <id>skyisland-default</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+      </properties>
+    </profile>
+  </profiles>
+
+</settings>
