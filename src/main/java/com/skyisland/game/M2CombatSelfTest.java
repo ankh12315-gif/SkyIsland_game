@@ -1974,6 +1974,68 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         Log.info("==========================================================");
     }
 
+    /**
+     * 竖直近战判定 + 咬击几何校验（本轮新增；缺陷 B / 仪器 C）。
+     *
+     * <h2>为什么必须在收尾阶段单独校验</h2>
+     * 主循环的各阶段里，怪与玩家始终在同一水平面（{@code SPAWN_AND_APPROACH} 刻意在进入攻击距离前
+     * 收尾），因此"竖直判定"与"咬击几何"这两件事在主循环里<b>从未被触发过</b>。要让冻结 jar 的门禁
+     * 真正证明"隔空咬人已修"，必须在这里主动构造两个场景：
+     * <ol>
+     *   <li><b>玩家高在 7 格之上、怪在正下方</b>（水平 ≈ 0.2 格）：跑满数个攻击冷却窗口 →
+     *       生命不得下降、攻击计数不得增加（旧代码会连咬数口 —— 这正是试玩里玩家
+     *       "看不见怪却一直掉血"的现场，见证据文档 §4.2）；</li>
+     *   <li><b>同层相邻</b>：必须咬中，且记录的几何量自洽（水平 ≤ {@code ATTACK_RANGE}、竖直 ≈ 0）。
+     *       日志里那行咬击几何必须有断言跟着 —— 一行没人断言的日志不是证据。</li>
+     * </ol>
+     * 两条都直接走 {@code EntityManager.tick} 这个产品入口，不另造一套 AI 驱动。
+     */
+    public void verifyMeleeVerticalGate() {
+        Log.info("================ M2.1 自测：近战竖直判定 + 咬击几何 ================");
+        World world = host.world();
+        Player player = host.player();
+        EntityManager entities = host.entities();
+
+        // ---- 用例 1：玩家高在 7 格之上（怪在正下方，水平 ≈ 0.2 格）----
+        entities.clear();
+        entities.spawnMeleeMonster(SPAWN_X + 0.2, SPAWN_Y, SPAWN_Z);
+        MeleeMonster below = (MeleeMonster) entities.all().get(0);
+        player.teleport(SPAWN_X, SPAWN_Y + 7.0, SPAWN_Z);
+        int healthBefore = player.health();
+        // 200 步 ≈ 3.3 s ≈ 3 个多攻击冷却窗口：旧代码足以连咬 3 口（12 点）
+        for (int i = 0; i < 200; i++) {
+            entities.tick(world, player, GameLoop.FIXED_DT);
+        }
+        record("玩家高出 7 格：生命未被咬伤（旧代码会掉血）",
+                player.health() == healthBefore,
+                "health " + healthBefore + "→" + player.health() + "（期望不变）");
+        record("玩家高出 7 格：攻击计数为 0（旧代码此处 > 0）",
+                below.attackCount() == 0,
+                "attackCount=" + below.attackCount());
+
+        // ---- 用例 2：同层相邻必须咬中，且几何量自洽 ----
+        entities.clear();
+        player.teleport(SPAWN_X, SPAWN_Y, SPAWN_Z);
+        MeleeMonster biter = entities.spawnMeleeMonster(SPAWN_X + 1.2, SPAWN_Y, SPAWN_Z);
+        int healthBefore2 = player.health();
+        entities.tick(world, player, GameLoop.FIXED_DT);
+        record("同层相邻：玩家被咬中（生命下降 4 点）",
+                player.health() == healthBefore2 - MeleeMonster.ATTACK_DAMAGE,
+                "health " + healthBefore2 + "→" + player.health());
+        record("同层相邻：咬击计数 = 1",
+                biter.attackCount() == 1,
+                "attackCount=" + biter.attackCount());
+        double biteH = biter.lastBiteHorizontalDistance();
+        double biteV = biter.lastBiteVerticalOffset();
+        record("同层咬击：记录的水平距离落在 ATTACK_RANGE 之内（几何仪器可断言）",
+                !Double.isNaN(biteH) && biteH <= MeleeMonster.ATTACK_RANGE,
+                "水平 = " + biteH + " 格（ATTACK_RANGE = " + MeleeMonster.ATTACK_RANGE + "）");
+        record("同层咬击：记录的竖直偏移 ≈ 0",
+                !Double.isNaN(biteV) && Math.abs(biteV) < 1e-6,
+                "竖直 Δy = " + biteV + " 格");
+        Log.info("==========================================================");
+    }
+
     // ============================================================ 记录与摘要
 
     private void record(String name, boolean passed, String detail) {

@@ -429,7 +429,7 @@ public final class Player {
         double yBeforeIntegration = position.y;
         moveAllAxes(world, dt);
         updateGroundState(world);
-        updateFallState(yBeforeIntegration - position.y, airborneAtStepStart);
+        updateFallState(world, yBeforeIntegration - position.y, airborneAtStepStart);
         updateSafePosition(world, dt);
         checkVoid(world);
         updateMining(world, intent, dt);
@@ -740,9 +740,15 @@ public final class Player {
      * <p><b>为什么只在 {@code descended > 0} 时累加：</b>
      * 跳跃的上升段不算坠落，否则"原地起跳再落地"会把上升高度也算成坠落距离。
      *
+     * <p><b>本轮修复（T7）：</b>此前本方法<b>只算、只记、只打日志，从不施加伤害</b>
+     * （{@code hurt()} 在 {@code src/main} 里曾只有近战怪一个调用点），于是
+     * 「坠落 4 格造成 1 点伤害」这条 PRD 5.3【MVP 必须】在<b>活代码里根本不存在</b>。
+     * 现在在落地事件上调用 {@link #hurt}，来源标注 {@link DamageCause#FALL}。
+     *
+     * @param world    世界；{@link #hurt} 需要它判定致命一击的掉落点是否合法
      * @param descended 本逻辑步实际下降的高度（格），上升为负
      */
-    private void updateFallState(double descended, boolean airborneAtStepStart) {
+    private void updateFallState(World world, double descended, boolean airborneAtStepStart) {
         // 只要"这一步的前后不同时站在地面上"，这段位移就算滞空位移。
         // 两个端点都要看：只看落地后的状态会漏掉落地那一步的最后一截，
         // 只看起跳前的状态会漏掉走下悬崖那一步的第一截。
@@ -767,6 +773,13 @@ public final class Player {
         if (lastFallDamage > 0) {
             Log.info("[玩家] 落地结算坠落伤害：%.4f 格 → %d 点。",
                     fallDistance, lastFallDamage);
+            // ★ 真正施加（PRD 5.3 MVP 必须）：null 世界不结算（纯公式 / 离线路径）。
+            //   只在这一处（"空中 → 站立"的落地事件）结算一次：紧随其后的 fallDistance 清零
+            //   已保证同一次落地不会被计两次；落地之后 airborneAtStepStart 变假，
+            //   本方法在更上方就会提前 return，因此跨帧也不会重入。
+            if (world != null) {
+                hurt(world, lastFallDamage, DamageCause.FALL);
+            }
         }
         fallDistance = 0;   // 落地即清零，不得带入下一次滞空
     }

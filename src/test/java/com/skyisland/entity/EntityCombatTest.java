@@ -106,6 +106,60 @@ class EntityCombatTest {
         assertEquals(1, m.attackCount());
     }
 
+    /**
+     * 竖直判定：玩家高出 7 格时，正下方的怪<b>不得</b>咬中。
+     *
+     * <p>这正是 2026-09-22 试玩里「看不见怪却一直掉血」的现场：怪在塔底、
+     * 玩家站在 7 格高的台上，水平距离只有 0.7 格。旧代码的攻击判定不含竖直分量
+     * （见 {@code docs/testing/M2_1_PLAYTEST_EVIDENCE_2026-09-22.md} §4.2），
+     * 因此本用例在旧代码上必红：玩家会被连咬数口（每口 4 点）。
+     */
+    @Test
+    void monsterCannotBiteAPlayerFarAbove() {
+        World world = world();
+        Player player = playerAt(0.5, TestWorlds.SURFACE_FEET_Y + 7.0, 0.5);
+        MeleeMonster m = new MeleeMonster(1.2, TestWorlds.SURFACE_FEET_Y, 0.5);
+
+        // 水平距离 0.7 ≤ ATTACK_RANGE，旧代码会咬中；跑满数个攻击冷却窗口（≈ 3.3 s）
+        for (int i = 0; i < 200; i++) {
+            m.tick(world, player, DT);
+        }
+
+        assertEquals(Player.MAX_HEALTH, player.health(),
+                "★ 玩家高出 7 格时不得被咬（旧代码此处会掉血）");
+        assertEquals(0, m.attackCount(), "★ 攻击计数不得增加（旧代码此处 > 0）");
+        assertTrue(Double.isNaN(m.lastBiteHorizontalDistance()),
+                "从未咬击时几何仪器应保持 NaN（表示「本次会话尚未咬过」）");
+    }
+
+    /**
+     * 反方向：竖直门不得把判定收紧到误伤正常情形。
+     * 同层（Δy = 0）与一级台阶（Δy = 1）都必须仍能咬中，且记录的几何量自洽。
+     */
+    @Test
+    void monsterStillBitesAtSameLevelAndOneBlockStep() {
+        // 同层
+        World world1 = world();
+        Player onLevel = playerAt(0.5, TestWorlds.SURFACE_FEET_Y, 0.5);
+        MeleeMonster sameLevel = new MeleeMonster(1.2, TestWorlds.SURFACE_FEET_Y, 0.5);
+        sameLevel.tick(world1, onLevel, DT);
+        assertEquals(16, onLevel.health(), "同层（Δy = 0）必须仍能咬中（每次 4 点）");
+        assertEquals(1, sameLevel.attackCount());
+        assertEquals(0.7, sameLevel.lastBiteHorizontalDistance(), 1e-9,
+                "记录的水平距离 = |0.5 − 1.2| = 0.7 格");
+        assertTrue(sameLevel.lastBiteHorizontalDistance() <= MeleeMonster.ATTACK_RANGE,
+                "记录的水平距离必须落在 ATTACK_RANGE 之内");
+        assertEquals(0.0, sameLevel.lastBiteVerticalOffset(), 1e-9, "同层记录的竖直 Δy ≈ 0");
+
+        // 一级台阶：玩家站在高 1 格处（Δy = 1.0 ≤ ATTACK_VERTICAL_RANGE = 1.5）
+        World world2 = world();
+        Player onStep = playerAt(0.5, TestWorlds.SURFACE_FEET_Y + 1.0, 0.5);
+        MeleeMonster stepped = new MeleeMonster(1.2, TestWorlds.SURFACE_FEET_Y, 0.5);
+        stepped.tick(world2, onStep, DT);
+        assertEquals(16, onStep.health(), "一级台阶（Δy = 1）必须仍能咬中");
+        assertEquals(1, stepped.attackCount());
+    }
+
     /** 攻击冷却：1 秒内不得连击两次。 */
     @Test
     void monsterAttackIsThrottledByCooldown() {

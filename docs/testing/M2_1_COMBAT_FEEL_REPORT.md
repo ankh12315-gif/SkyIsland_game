@@ -3,7 +3,7 @@
 - **构建号**：`0.3.1-M2_1-COMBAT-FEEL`（上一版 `0.3.0-M2-COMBAT-PROTOTYPE`）
 - **产物**：`target/skyisland-0.3.1-M2_1-COMBAT-FEEL.jar`（5,681,281 字节）
 - **冻结副本**：`tmp/selftest-jar/skyisland-frozen.jar`（门禁一律从它启动）
-- **门禁证据目录**：`tmp/gate-runs/20260922-023137/`（**第二轮**：C7 配色 + 伤害来源仪器）
+- **门禁证据目录**：`tmp/gate-runs/20260922-031147/`（**第三轮**：T7 坠落伤害 + 近战竖直判定）
 - **本次修完后仍需你做的最后一件事**：**≥ 10 分钟人工试玩**，清单见
   [`M2_1_PLAYTEST_CHECKLIST.md`](./M2_1_PLAYTEST_CHECKLIST.md)
 
@@ -11,7 +11,8 @@
 
 ## 0. 一句话结论
 
-**脚本侧全部通过**（818 条单测 / 0 失败；三门禁全绿；M2 自测 **129** 条断言 / 0 失败），
+**脚本侧全部通过**（首轮 818 → 第三轮 **821** 条单测 / 0 失败；三门禁全绿
+**M1 27 / UI 60 / M2 129→135**；M2 自测 **135** 条断言 / 0 失败），
 **但这一轮真正的产出不是"把功能做完"，而是抓出了 8 处"写完了、编译过了、门禁也绿了，
 然而从来没有被调用过"的死代码** —— 其中 3 处是你在屏幕上**本应看到却完全看不到**的
 枪口火光、命中标记、开火后坐力。
@@ -49,6 +50,33 @@
 > 第 4.1 节顺带登记一条**独立发现**（**不是**本轮引入）：`Player.fallDamageFor()` 算出的坠落伤害
 > **从未被施加到生命值**（`updateFallState` 只计算与打印、不调用 `hurt()`）。它不在本轮改动范围，
 > 作为待裁决项登记在 **§7（T7）**，并顺带解释了"为什么 `hurt()` 目前只有近战一个调用方"。
+
+### 0.3 第三轮：两条**玩法语义**缺陷修复（T7 坠落伤害 + 缺陷 B 近战竖直判定）
+
+用户明确授权的**缺陷修复轮**（非加功能，非 scope creep）。两处都是"脚本全绿、却与设计语义不符"的漏项：
+
+1. **T7 —— 坠落伤害算了不施加**：`Player.updateFallState` 把 PRD 5.3【MVP 必须】的
+   `伤害 = max(0, floor(坠落格数 − 3))` **算出来却不扣血** —— `hurt()` 在 `src/main` 里当时
+   只有近战怪一个调用点。本轮在**落地事件**上补上
+   `hurt(world, lastFallDamage, DamageCause.FALL)`，**每次落地只结算一次**
+   （落地后 `fallDistance` 清零 + 该分支只在"空中 → 站立"这一次跃迁进入）。
+   更要紧的是**测试侧**：`FallDamageTest` 8 条用例**只读 `lastFallDamage()` 这个中间量**，
+   全文件里 `health` 与 `hurt` 出现 **0 次** —— 这正是"818 条全绿而机制不存在"的原因。
+   本轮把断言**落到 `health()` 这个可观测后果上**。
+2. **缺陷 B —— 近战攻击判定只有水平分量**：`MeleeMonster` 的咬击只看
+   `horizontal ≤ ATTACK_RANGE`，**没有任何 y 项**；怪站在塔底（水平 ≈ 0.2 格）能咬到 7 格高台上的玩家
+   （首轮试玩"看不见怪却一直掉血"的现场，见证据文档 §4.2）。
+   本轮新增 `ATTACK_VERTICAL_RANGE = 1.5`（推导见常量 javadoc：容忍一级台阶 Δy=1.0 与跳跃顶点
+   `Player.JUMP_HEIGHT = 8.95²/(2×32) = 1.2499`，拒绝数格落差 Δy=2.0），**只管攻击判定、不进 `chasing`**
+   —— "怪可以追一个它够不着的东西"是有意保留的行为（类 javadoc 第 7 步：允许卡住）。
+3. **咬击几何仪器**：每咬记一行 `[战斗] 近战咬击：水平 X.XX 格 / 垂直 Δy Y.YY 格`，
+   并把最近一次咬击的几何量暴露成 `MeleeMonster.lastBiteHorizontalDistance()` /
+   `lastBiteVerticalOffset()` —— **可断言**，不只是可打印
+   （证据文档 §4.3 那条"每咬坐标未记录"由此补齐）。
+
+> 两处改动都控制在最小面：**未改** `FALL_DAMAGE_THRESHOLD`、`fallDamageFor` 公式、
+> `ATTACK_RANGE`、`ATTACK_DAMAGE`、`ATTACK_COOLDOWN_SECONDS`、`CHASE_RANGE`，也未动任何渲染 / 存档口径。
+> 三条新断言全部做了"回退后必红"实验（§4.7）；两处改动都做了**逐字节复原**的等价回退。
 
 ---
 
@@ -160,7 +188,7 @@ uniform，HUD 层画不了 3D，所以它不能挂在 HUD 上）。三种形态�
 
 ---
 
-## 3. 本阶段修掉的缺陷（8 处）
+## 3. 本阶段修掉的缺陷（首轮 8 处 D1–D8；补充 2 处 D9/D10；第三轮 1 处 D11）
 
 > 全部是"**已定义、从未被调用/赋值**"型死代码，症状一致：**编译通过、单测全绿、门禁全绿**。
 
@@ -176,6 +204,7 @@ uniform，HUD 层画不了 3D，所以它不能挂在 HUD 上）。三种形态�
 | **D8** | `Camera.decayRecoil` / `clearRecoil` 从未被调用 | 若只修 D7，后坐力会**永久不回落**（这正是"只补一半"的典型后果） | 同上 | M2 自测"收尾精确回落到 0" + 重生清后坐 |
 | **D9** | 枪口偏移 `MUZZLE_*` **只写在注释里、代码里不存在**；`spawnMuzzleFlash` 收到的是**眼睛**坐标 | **枪口火光刺眼**：0.16 格的闪光生在眼睛处，相机被吞进立方体内部，关闭背面剔除后内部面被光栅化成一片盖住准星的白 | 三处代码注释都写"见 SkyIslandGame 的 `MUZZLE_*` 偏移"，但那个常量从未被写下 —— 于是相机就在闪光里 | M2 自测"闪光距眼睛 ≥ 0.40 格" + "闪光在眼睛前方"（新增 2 条） |
 | **D10** | F4 刷怪用 `Player.findNearestStandable` 找落点 —— 它**只沿同一 y 平面**做水平搜索 | **生成的怪物找不到**：玩家站在自建高塔（y≈71）上按 F4，怪被留在半空、自由落体到塔底 —— 玩家往下 7 格、往外 15 格，近战怪不会跳也不会寻路 | 调用点注释写"向下最多找 6 格"，但代码里**根本没有竖直搜索**（且实参是 3 不是 6）—— 注释描述了一条不存在的行为 | M2 自测 `verifySpawnGrounding`（新增 5 条） |
+| **D11** | 近战攻击判定 `MeleeMonster.tick` **只有水平分量**（`horizontal = hypot(dx,dz)`），咬击条件缺竖直项 | **隔空咬人**：怪站在塔底（水平 ≈ 0.2 格）、玩家站在 7 格高的台上，照样被连咬致死 —— 首轮试玩"看不见怪却一直掉血"的现场 | `ATTACK_RANGE` 的 javadoc 只按"碰撞箱半宽 0.3 + 玩家半宽 0.3 + 容差"推导，是**纯水平口径**；判定里从未出现 y 项 | `EntityCombatTest.monsterCannotBiteAPlayerFarAbove`（旧代码必红）+ M2 自测 `verifyMeleeVerticalGate`（新增 6 条） |
 
 #### D10 的日志证据（`logs/skyisland-20260922.log`）
 
@@ -217,10 +246,11 @@ D4~D8 各自都有一个**看起来正常的邻近读数**，使既有断言照�
 
 | 项 | 结果 |
 |---|---|
-| 用例总数 | **818** |
+| 用例总数 | **821**（首轮 818 → 第三轮 821） |
 | 失败 | **0** |
 | 本轮新增（第一轮） | `CombatFxRendererLifecycleTest`(4)、`PcmSynthTest`、`AudioManagerTest`、`AudioFeedbackWiringTest`、`RecordingAudioSinkTest`、`VersionTest` |
 | 本轮新增（第二轮） | `MonsterModelTest` 的 3 条配色判据（中亮区间 / 相邻落差 / 眼神明显更亮） |
+| 本轮新增（第三轮） | `FallDamageTest` 新增 1 条（`fallDamageActuallyReducesHealthAndIsAttributedToFall`）+ 5 条既有用例补上**真实掉血**断言；`EntityCombatTest` 新增 2 条（`monsterCannotBiteAPlayerFarAbove` / `monsterStillBitesAtSameLevelAndOneBlockStep`）→ 合计 **+3 用例**（818 → 821） |
 | 被改写的既有用例 | `CombatCoreTest`(3)、`CombatControllerTest`(3)、`M2CombatSelfTest`(3 处) —— 它们断言的是**旧口径的有限后备语义** |
 
 **关于 `CombatFxRendererLifecycleTest`（本轮最有价值的一条护栏）**：
@@ -237,17 +267,17 @@ D4~D8 各自都有一个**看起来正常的邻近读数**，使既有断言照�
 
 ### 4.2 三门禁（从冻结 jar 启动，每次开全新带时间戳的空存档目录）
 
-证据目录：`tmp/gate-runs/20260922-023137/`（第二轮）。
+证据目录：`tmp/gate-runs/20260922-031147/`（**第三轮**）。
 
 | 门禁 | 结果 | 关键读数 |
 |---|---|---|
 | M1 功能 | **PASS=27 FAIL=0** | `m1_functional_closure = true` |
 | M1.5 UI | **PASS=60 FAIL=0** | `ui_selftest_failures = 0` |
-| M2 战斗 | **PASS=129 FAIL=0** | `m2_combat_closure = true`，`m2_selftest_failures = 0`，`m2_selftest_assertions = 129` |
+| M2 战斗 | **PASS=135 FAIL=0** | `m2_combat_closure = true`，`m2_selftest_failures = 0`，`m2_selftest_assertions = 135` |
 
 **`m2_selftest_assertions` 的变化本身就是证据**：
-**107（M2 基线）→ 114（补音频）→ 121（补表现层）→ 128（补 D9/D10 缺陷回归）→ 129（补伤害来源归因）**，
-且新增的 22 条全部 PASS。
+**107（M2 基线）→ 114（补音频）→ 121（补表现层）→ 128（补 D9/D10 缺陷回归）→ 129（补伤害来源归因）→ 135（第三轮：补 D11 竖直判定 + 咬击几何）**，
+且新增的 28 条全部 PASS。
 
 > **为什么必须看断言条数**：M2.1 被打断的那一版里，门禁 m2 **也是"跑起来了"的** ——
 > 它在 5.6 秒时崩溃，只跑到第 **31** 条断言。如果只看"有没有输出"或"有没有 FAIL 字样"，
@@ -268,16 +298,21 @@ D4~D8 各自都有一个**看起来正常的邻近读数**，使既有断言照�
 
 ### 4.4 CJK 点阵字形
 
-**1477 个字形，0 空白，0 溢出**，34 个降号重烘（12px 装不下，按 11/10 px 重烘）。
+**1478 个字形，0 空白，0 溢出**，34 个降号重烘（12px 装不下，按 11/10 px 重烘）。
 `CjkFontTest` 会扫描 `src/main` **与** `src/test` 的**全部文本（含注释）**，
 因此**字形生成器必须是所有源码改动的最后一步**。
 
-> **这条护栏已经连续两轮真的推动了一次重烘**：
+> **这条护栏已经连续三轮真的推动了一次重烘**：
 > - 第一轮修 D9/D10 时往注释里加了一个"陈"字，门禁第一次运行就红在
 >   `everyNonAsciiCharUsedInSourcesHasAGlyph`（报 `陈(U+9648)`），重跑生成器后 1469 → **1476**。
 > - 第二轮加伤害来源仪器（注释/日志里出现"摔落"）又引入 **1** 个新字 **`摔`(U+6454)**，
->   重跑生成器后 1476 → **1477**（新旧字符集逐字 diff 见 `tmp/cjk_diff.txt`，added=[摔]，removed=[]）。
-> 这正是"生成器必须是最后一步"的意思：它不靠人记得，靠测试记得。
+>   重跑生成器后 1476 → **1477**。
+> - 第三轮给 `ATTACK_VERTICAL_RANGE` 写推导 javadoc（"玩家站在**旁边**一格高的台阶上"）
+>   引入 **1** 个新字 **`旁`(U+65C1)**，`mvn` 第一次构建即红
+>   （`CjkFontTest.everyNonAsciiCharUsedInSourcesHasAGlyph:71 expected:<true> but was:<false> 旁(U+65C1)`），
+>   重跑生成器后 1477 → **1478**（1478/0 空白/0 溢出）。
+> 这正是"生成器必须是最后一步"的意思：它不靠人记得，靠测试记得 ——
+> 而且它**真的又拦下了一次**，否则 `旁` 会以空白方块出现在 HUD 上。
 
 ### 4.5 D9/D10 的新断言：逐条证明它们能失败
 
@@ -321,6 +356,40 @@ D9 的断言之所以读 `CombatFxModel` 的"生成当刻留档"（`MuzzleFlashS
 `player.eyePosition()`，是因为闪光只活 3 帧、收尾时早已清空。这又一次说明
 **表现层接线（`combatFeedback` 匿名内部类）单测够不到**，只能靠门禁自测 —— 见第 7 节 T1。
 
+### 4.7 第三轮新增断言：逐条证明它们能失败
+
+第三轮新增 3 条用例（+5 条既有用例补断言）+ 6 条自测断言，**全部做了等价回退实验**。
+做法：把两处行为用**带 `finally` 复原**的脚本临时还原成"修复前"（`tmp/nc_revert.js`，
+跑完即删），跑针对性单测 + M2 门禁，再复原。复原后 `Player.java` / `MeleeMonster.java`
+与改动前**逐字节相同**（脚本自检 `restored_byte_identical=true`，见 `tmp/nc_restore_check.txt`）。
+回退不是改措辞，是**把行为改回去**：
+
+- **回退 A（T7）**：把 `Player.updateFallState` 里的落地 `hurt(...)` 调用去掉 → 回到"算完不施加"。
+- **回退 B（缺陷 B）**：把 `MeleeMonster` 的竖直门 `Math.abs(dy) <= ATTACK_VERTICAL_RANGE` 置为 `true`
+  → 回到"水平够近就咬"（保留几何仪器，使新用例仍可编译）。
+
+| 新断言 | 所属 | 回退后的读数 | 判定 |
+|---|---|---|---|
+| `fallingFourBlocksDealsOneDamage`：坠落 4 格生命**真的降 1** | `FallDamageTest` | `expected: <1> but was: <0>`（生命 20，期望 19） | 必红 ✅ |
+| `fallingFiveBlocksDealsTwoDamage`：坠落 5 格生命**真的降 2** | `FallDamageTest` | `expected: <2> but was: <0>`（生命 20，期望 18） | 必红 ✅ |
+| `damageIsSettledOnlyOnLanding`：6 格坠落**恰好扣 3 且只扣一次** | `FallDamageTest` | `expected: <17> but was: <20>` | 必红 ✅ |
+| `fallDamageActuallyReducesHealthAndIsAttributedToFall`：真扣血**且来源=FALL** | `FallDamageTest` | `expected: <1> but was: <0>` | 必红 ✅ |
+| `monsterCannotBiteAPlayerFarAbove`：玩家高出 7 格不得被咬 | `EntityCombatTest` | `expected: <20> but was: <4>`（旧代码连咬 4 口：20→4） | 必红 ✅ |
+| `玩家高出 7 格：生命未被咬伤` | M2 自测 | `health 20→4`（期望不变） | 必红 ✅ |
+| `玩家高出 7 格：攻击计数为 0` | M2 自测 | `attackCount=4`（期望 0） | 必红 ✅ |
+
+- 回退 A + B 一起跑 `FallDamageTest,EntityCombatTest`：**Tests run: 32, Failures: 5**。
+- 回退 B 跑 M2 自测：**`m2_selftest_assertions=135`、`m2_selftest_failures=2`、`m2_combat_closure=false`**
+  （exit code = 1，自测脚本自己把"判定为失败"写进日志）。
+- 证据文件：`tmp/nc_unit_out.txt`（单测）、`tmp/nc_m2_out.txt`（M2 自测）、`tmp/nc_restore_check.txt`（逐字节复原）。
+
+> **没在上面表里的两条新断言是"陪衬"，如实登记**：
+> `fallingThreeBlocksDealsNoDamage`（3 格不掉血）、`jumpingAndLandingDealsNoDamage`（原跳不掉血）、
+> `steppingDownStairsDoesNotAccumulate`（分段台阶不掉血）在旧代码上**也会绿** ——
+> 它们的作用是**钉住下限**，即防止把"落地一律扣血"误当修好。
+> 同理 `monsterStillBitesAtSameLevelAndOneBlockStep`（同层/一级台阶仍能咬）在旧代码上也绿 ——
+> 它是**防过度收紧**的反向断言：修"隔空咬人"不能变成"贴近也咬不到"。
+
 ---
 
 ## 5. 人工试玩 Gate：**未执行**
@@ -332,7 +401,8 @@ D9 的断言之所以读 `CombatFxModel` 的"生成当刻留档"（`MuzzleFlashS
 - 启动：桌面 **「SkyIsland M2 一键启动.bat」**（转发到 `F:\minecraftspace\play-m2.bat`）
 - 世界：`m21-play`（全新存档目录，会重新发放开局装备）
 - 清单：[`M2_1_PLAYTEST_CHECKLIST.md`](./M2_1_PLAYTEST_CHECKLIST.md)
-- **请格外用力看 B1 / B4 / B5 与 C7** —— 就是上面 D4~D8 与配色偏差那几处。
+- **请格外用力看 B1 / B4 / B5、C7，以及第三轮新增的 F1 / F2** —— 就是上面 D4~D8、配色偏差，
+  以及本轮 T7 坠落伤害 / 缺陷 B 近战竖直判定那几处。
 
 **判定**：第 1 节全部条目要么打勾，要么被明确记为"环境限制"并给出替代证据。
 任何**看得见但不符合描述**的现象都请记下"操作 + 看到的现象 + 期望的现象" ——
@@ -357,7 +427,7 @@ D9 的断言之所以读 `CombatFxModel` 的"生成当刻留档"（`MuzzleFlashS
 | **T4** | `AudioFeedback.resetHealthBaseline()` 已实现但**没有调用点** | 因为 `Player` 只在启动期创建一次（唯一读档路径在启动期），基线不可能变陈旧。**保留给 M3**（届时会有运行时读档 / 传送） |
 | **T5** | `MonsterModel.color()` 返回内部常量数组的引用 | 已是文档化约定（调用方只读、不得持有），与 `HudRenderer.iconColor` 同口径 |
 | **T6** | `play-m2.bat` 要求 `target\` 下**恰好 1 个 jar** | 多于 1 个（例如忘了 clean）会明确报错并退出，不会静默挑一个旧的 |
-| **T7** | `Player.fallDamageFor()` 算出的坠落伤害**从不施加到生命值** | `updateFallState` 只计算 `lastFallDamage` 并打印日志，**不调用 `hurt()`**；全局也没有任何调用方把它喂给 `hurt()`。于是坠落在当前版本**不掉血**，而"坠落"这个伤害来源在活代码里**没有调用点**（`DamageCause.FALL` 已定义但未被使用，`hurt()` 的现实调用方只有近战怪）。**属既有行为，本轮未改**（任务约束是"纯仪器化"）。**需在 M3 裁决**：要么补上落地结算 `hurt(world, lastFallDamage, FALL)`，要么明确登记为"本阶段无坠落伤害" |
+| **T7** | ~~`Player.fallDamageFor()` 算出的坠落伤害**从不施加到生命值**~~ | **✅ 已修（第三轮）**：`Player.updateFallState` 现在在**落地事件**上调用 `hurt(world, lastFallDamage, DamageCause.FALL)`，每次落地只结算一次（落地后 `fallDistance` 清零，且该分支只在"空中 → 站立"这一次跃迁进入）。**未改** `FALL_DAMAGE_THRESHOLD` 与 `fallDamageFor` 公式（仍与 PRD 5.3 逐字一致）；虚空死亡仍走 `die()`（不按普通坠落结算）。原先"818 条全绿而机制不存在"的根因是**测试只读 `lastFallDamage()` 这个中间量**，本轮已把断言落到 `health()`。证伪见 §4.7 |
 | **T8** | **实体完全不接收光照** | `EntityRenderer.buildMonsterVertices` 恒定写 `brightness = 1.0f` / `uAlpha = 1.0`，**绕开地形那套 `face.shade() × lights.shadeFactor()`**。怪物在背光 / 洞穴里也不会变暗，其顶点色即最终像素值（这也是 §2-C 的 luma 能被直接当作屏幕明度的原因）。**本轮不改它**，由 M3 决定是否给实体接入光照 |
 
 ### M3 需要接手的既有顺延项（继承自 M2，未静默缩小）
@@ -387,15 +457,23 @@ G2 音效、G3 粒子占位规格、G4 昼夜/天数 HUD、G7 蹲下、G8 `saveV
 
 ## 9. 收尾
 
-- **脚本侧**：全部通过（**818** 单测 / 0 失败；三门禁 PASS=27 / 60 / **129**，FAIL 全为 0）。
-  证据目录：`tmp/gate-runs/20260922-023137/`（M1 27/0、UI 60/0、M2 **129**/0，`m2_combat_closure=true`）。
-- **人工侧**：**待你试玩 ≥ 10 分钟**（清单见上）。
+- **脚本侧**：全部通过（**821** 单测 / 0 失败；三门禁 PASS=27 / 60 / **135**，FAIL 全为 0）。
+  证据目录：`tmp/gate-runs/20260922-031147/`（M1 27/0、UI 60/0、M2 **135**/0，`m2_combat_closure=true`）。
+  冻结检查：`target/skyisland-0.3.1-M2_1-COMBAT-FEEL.jar` 的 mtime **严格晚于** `src/main` + `src/test` 全部文件
+  （`tmp/freeze_check.txt`）。
+- **人工侧**：**待你试玩 ≥ 10 分钟**（清单见上；第三轮新增 **F1 / F2** 两条）。
 - **第一轮追加**：修复首轮试玩报出的 **D9**（枪口火光刺眼）与 **D10**（F4 刷怪落点半空），
   并补 7 条"旧代码必红"的断言；`m2_selftest_assertions` **121 → 128**。
 - **第二轮追加**：关闭 **C7**（怪物配色裁决，保留红系 + 抬高/拉开明度台阶）；
   给 `Player` 加 **伤害来源归因**（近战 / 坠落 / 虚空 / 其它）与一行归因日志，
   并补 1 条"旧代码必红"的自测断言（`128 → 129`）+ 1 条"仍可证伪"的单测判据（§4.6）。
   **纯仪器化，未改任何伤害数值 / 阈值 / 冷却 / 死亡判定。**
+- **第三轮追加（本提交）**：修 **T7 坠落伤害**（落地结算 `hurt(..., FALL)`，每次落地一次）与
+  **缺陷 B / D11 近战竖直判定**（新增 `ATTACK_VERTICAL_RANGE = 1.5`，只管攻击判定、不进 `chasing`），
+  并补**咬击几何仪器**（每咬一行日志 + 两个可断言 accessor）。
+  `m2_selftest_assertions` **129 → 135**；`FallDamageTest` 断言改落到 `health()`、`EntityCombatTest` 补竖直用例
+  （单测 818 → 821）。三条核心新断言均以**回退实验**证明"旧代码必红"（§4.7），回退后逐字节复原。
+  **两处都是玩法语义修复（用户授权），未改公式 / 阈值 / 冷却 / 距离常量。**
 - **本阶段到此为止，未进入 M3。**
 
 > M2.1 Combat Feel & Readability 已通过，等待 M3 Vertical Slice 指令。

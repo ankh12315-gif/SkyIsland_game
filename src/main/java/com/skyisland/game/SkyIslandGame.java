@@ -2554,6 +2554,14 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             } catch (Throwable t) {
                 Log.error("[自测] M2 刷怪落点校验过程异常", t);
             }
+            // 2.9) 缺陷 B 的另一半：近战攻击判定的竖直分量 + 咬击几何仪器（本轮新增）。
+            // 单独一条而不是并进 2.8：它失败的原因既不是"落点在半空"、也不是"特效没被调用"，
+            // 而是"水平够近就咬"这个判定本身漏了竖直项——合并会让失败信息指向三个方向。
+            try {
+                combatSelfTest.verifyMeleeVerticalGate();
+            } catch (Throwable t) {
+                Log.error("[自测] M2 近战竖直判定校验过程异常", t);
+            }
         }
 
         // ---- 3) 结构化摘要（写入日志文件，供报告摘录）----
