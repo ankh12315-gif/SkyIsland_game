@@ -272,20 +272,50 @@ class MonsterModelTest {
                 "攻击时头顶点仍不得超出碰撞箱");
     }
 
-    // ============================================================ 配色
+    // ============================================================ 配色（可读性判据）
 
+    /** 判据用的 luma 系数：Rec.709（0.2126R + 0.7152G + 0.0722B）。 */
+    private static double luma(float[] c) {
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    }
+
+    /** 体色必须落在的中亮区间：下界避开极暗并成一块，上界让整体仍暗于天空（luma 0.610）。 */
+    private static final double BODY_LUMA_MIN = 0.28;
+    private static final double BODY_LUMA_MAX = 0.58;
+
+    /** 屏幕上相邻的两个 part 至少要拉开的 luma 落差（一个可分辨的台阶）。 */
+    private static final double ADJACENT_LUMA_GAP = 0.06;
+
+    /** 眼睛相对任何体色至少要高出的绝对 luma。 */
+    private static final double EYE_MARGIN = 0.25;
+
+    /** 闪白后最暗的 part 相对未闪白最亮的 part 至少要高出的绝对 luma。 */
+    private static final double FLASH_MARGIN = 0.25;
+
+    /**
+     * 眼睛必须明显亮于任何体色 —— 这是「一眼看出正面 / 看出是脸」的唯一依据。
+     *
+     * <p><b>为什么这条从旧的「亮 2.5 倍」改成「绝对差 + 较低倍率」：</b>
+     * 旧判据是 {@code eyeLum > 2.5 × bodyLum}。旧体色极暗（头 luma 0.234），
+     * 2.5 倍很轻松。但体色一旦被抬进中亮区间以修好剪影可读性，这条就<b>数学上不可能</b>
+     * 再成立：眼睛是屏幕像素，luma 上限为 1.0（纯白），要凑出 2.5 倍需要体色不高于 0.4，
+     * 而那正是本里程碑要修掉的「极暗区间」。两条要求无法同时满足，
+     * 因此保留「眼睛必须明显更亮」的意图，换成一个量纲正确、且与新要求不冲突的判据：
+     * 绝对差大于等于 {@link #EYE_MARGIN}，且亮出至少 1.3 倍。
+     */
     @Test
-    void eyesAreMuchBrighterThanAnyBodyPart() {
+    void eyesStayClearlyBrighterThanAnyBodyPart() {
         double eyeLum = 0;
         for (int eye : new int[]{EYE_L, EYE_R}) {
-            float[] c = MonsterModel.color(eye);
-            eyeLum = Math.max(eyeLum, 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]);
+            eyeLum = Math.max(eyeLum, luma(MonsterModel.color(eye)));
         }
         for (int part : new int[]{HEAD, TORSO, LEG_L, ARM_L}) {
-            float[] c = MonsterModel.color(part);
-            double lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
-            assertTrue(eyeLum > lum * 2.5,
-                    "眼睛必须比" + part + "号部件亮得多，否则在暗红身体上读不出脸");
+            double lum = luma(MonsterModel.color(part));
+            assertTrue(eyeLum - lum >= EYE_MARGIN,
+                    "眼睛与 " + part + " 号部件的 luma 差必须大于等于 " + EYE_MARGIN
+                            + "，实测 " + (eyeLum - lum) + "（眼睛 " + eyeLum + "，体色 " + lum + "）");
+            assertTrue(eyeLum >= lum * 1.3,
+                    "眼睛还必须比 " + part + " 号部件亮至少 30%（实测 " + (eyeLum / lum) + " 倍）");
         }
     }
 
@@ -295,7 +325,7 @@ class MonsterModelTest {
         for (int part : groups) {
             float[] c = MonsterModel.color(part);
             assertTrue(c[0] > c[1] && c[0] > c[2],
-                    "第 " + part + " 号部件必须是偏红的（主色深红/暗红）");
+                    "第 " + part + " 号部件必须是偏红的（主色砖红）");
         }
         float[] head = MonsterModel.color(HEAD);
         float[] torso = MonsterModel.color(TORSO);
@@ -304,6 +334,79 @@ class MonsterModelTest {
                 "头 > 躯干 > 腿 的明度梯度要成立，于是三段结构靠颜色也能读出来");
         assertTrue(MonsterModel.isEye(EYE_L) && MonsterModel.isEye(EYE_R));
         assertTrue(!MonsterModel.isEye(HEAD));
+    }
+
+    /**
+     * 四个体色必须全部落在中亮区间 —— 把「整具身体挤在极暗带里并成一块」钉死。
+     *
+     * <p>旧配色的 luma 是 头 0.234 / 躯干 0.175 / 臂 0.142 / 腿 0.121，四个值全部小于 0.28，
+     * 因此本条在旧配色上<b>必然失败</b>（等价回退实验的举证见交付报告）。
+     * 上界 0.58 让整体仍暗于天空色（0.46/0.63/0.86 → luma 0.610），
+     * 怪物在天空背景上仍是「一块比天空暗的红」，危险读法不变。
+     */
+    @Test
+    void bodyPartsSitInAMidLegibleLumaBand() {
+        for (int part : new int[]{HEAD, TORSO, LEG_L, ARM_L}) {
+            double lum = luma(MonsterModel.color(part));
+            assertTrue(lum >= BODY_LUMA_MIN && lum <= BODY_LUMA_MAX,
+                    "第 " + part + " 号部件的 luma " + lum + " 必须落在 ["
+                            + BODY_LUMA_MIN + ", " + BODY_LUMA_MAX
+                            + "] 之内：低了会并成一块黑影，高了会与天空糊在一起");
+        }
+    }
+
+    /**
+     * 屏幕上相邻的 part 之间必须有足够的 luma 落差 —— 这是「分件读得出来」的量化判据。
+     *
+     * <p>「相邻」指在 8 个 part 的静止布局里共享一段边界、因而在远处会并成一片的四对：
+     * 头 与 躯干（脖子缝）、躯干 与 臂（手臂贴躯干外侧，共享整条竖边）、
+     * 躯干 与 腿（腿顶被躯干压住）、臂 与 腿（在 y=0.72 处相接）。
+     * 旧配色里躯干 与 臂只差 0.033、臂 与 腿 0.021、躯干 与 腿 0.054、头 与 躯干 0.059，
+     * 最小相邻落差 0.021 小于 0.06，因此本条在旧配色上<b>必然失败</b>。
+     */
+    @Test
+    void adjacentPartsAreSeparatedByEnoughLuma() {
+        int[][] adjacent = {{HEAD, TORSO}, {TORSO, ARM_L}, {TORSO, LEG_L}, {ARM_L, LEG_L}};
+        double worst = Double.MAX_VALUE;
+        for (int[] pair : adjacent) {
+            double gap = Math.abs(luma(MonsterModel.color(pair[0])) - luma(MonsterModel.color(pair[1])));
+            worst = Math.min(worst, gap);
+        }
+        assertTrue(worst >= ADJACENT_LUMA_GAP,
+                "屏幕上相邻 part 的最小 luma 落差 " + worst + " 小于判据 " + ADJACENT_LUMA_GAP
+                        + " —— 相邻分件会并成一片，8 个 part 的剪影结构读不出来");
+    }
+
+    /**
+     * 受击闪白必须明显亮于最亮的体色 —— 否则「打中了」这个即时信号会被忽略。
+     *
+     * <p>这里走真正的渲染路径取闪白后的顶点色（{@code flash = 1} 时全体混到闪白目标色），
+     * 因此它钉的是「实体渲染里那三个 FLASH 常量」与体色之间的真实关系，
+     * 而不是把常量值抄一份到测试里。
+     */
+    @Test
+    void hurtFlashStaysClearlyAboveTheUnflashedBody() {
+        MeleeMonster monster = new MeleeMonster(0.5, 64.0, 0.5);
+        EntityRenderer renderer = new EntityRenderer();
+        float[] plain = new float[MonsterModel.PART_COUNT * EntityRenderer.floatsPerBox()];
+        float[] flashed = new float[plain.length];
+        renderer.buildMonsterVertices(monster, 0, 0, 0f, plain, 0);
+        renderer.buildMonsterVertices(monster, 0, 0, 1f, flashed, 0);
+
+        double bodyMax = 0;
+        double flashMin = Double.MAX_VALUE;
+        // 只看四个体色（头/躯干/腿/臂），不含眼睛：眼睛本来就接近上限亮度，
+        // 把它当「体色亮度」会让这条判据变成「眼睛够不够亮」，与实物不符。
+        for (int part : new int[]{HEAD, TORSO, LEG_L, ARM_L}) {
+            // 每个盒体 252 个 float：每顶点 7 个（pos vec3 + color vec4），
+            // 所以第 4..6 个才是 rgb —— 用 part 直接当颜色下标会读到 position。
+            int v = part * EntityRenderer.floatsPerBox() + 3;
+            bodyMax = Math.max(bodyMax, luma(new float[]{plain[v], plain[v + 1], plain[v + 2]}));
+            flashMin = Math.min(flashMin, luma(new float[]{flashed[v], flashed[v + 1], flashed[v + 2]}));
+        }
+        assertTrue(flashMin - bodyMax >= FLASH_MARGIN,
+                "闪白后最暗的 part（luma " + flashMin + "）仍须比未闪白最亮的 part（luma "
+                        + bodyMax + "）高出 " + FLASH_MARGIN + "，否则受击信号会看不见");
     }
 
     // ============================================================ 渲染路径（带朝向）

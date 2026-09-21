@@ -171,7 +171,8 @@ public final class MeleeMonster extends Entity {
             // 玩家已倒下则不再补刀：否则死亡倒计时的 3 秒里会被反复命中，
             // 「已倒下」这个状态就失去了意义。
             if (attackCooldown <= 0 && !player.isDead()) {
-                player.hurt(world, ATTACK_DAMAGE);
+                // 标注来源为"近战"，把"被怪咬"与"摔落"在日志里区分开（归因仪器）。
+                player.hurt(world, ATTACK_DAMAGE, Player.DamageCause.MELEE);
                 attackCooldown = ATTACK_COOLDOWN_SECONDS;
                 attackCount++;
             }

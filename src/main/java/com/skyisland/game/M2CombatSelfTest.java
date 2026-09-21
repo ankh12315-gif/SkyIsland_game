@@ -1787,6 +1787,22 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         record("玩家受伤事件已送达音频层（player_hurt ≥ 1，来自坠落死亡）",
                 audit.countOf(AudioEvent.PLAYER_HURT) >= 1,
                 "player_hurt=" + audit.countOf(AudioEvent.PLAYER_HURT));
+        /*
+         * ★ 伤害来源归因 —— 首轮试玩复盘时发现「怎么死的」根本无法回答：
+         *   日志里只有一个总数 player_hurt=5，Player.hurt() 不打印任何东西，
+         *   于是"被近战怪咬"与"摔落"在证据上完全区分不开
+         *   （见 docs/testing/M2_1_PLAYTEST_EVIDENCE_2026-09-22.md 第 4.1 节）。
+         *
+         * 本阶段（DEATH_AND_RESPAWN）的血量下降走的正是"坠入虚空 → die()"路径，
+         * 因此来源必须是 VOID —— 既不是近战（MELEE）也不是坠落伤害（FALL）。
+         * 旧代码里 Player 不记录来源，这个 accessor 也还不存在：把它还原成"不记录"
+         * 时，本条读到 null 并判红（等价回退实验见交付报告）。
+         */
+        Player.DamageCause hurtCause = host.player().lastDamageCause();
+        record("玩家受伤来源已归因（DEATH_AND_RESPAWN 虚空致死 → 来源=虚空 VOID）",
+                hurtCause == Player.DamageCause.VOID,
+                "lastDamageCause=" + hurtCause
+                        + "（期望 VOID；旧代码此处没有来源可读）");
         int sum = audit.countOf(AudioEvent.GUN_EMPTY) + audit.countOf(AudioEvent.GUN_FIRE)
                 + audit.countOf(AudioEvent.HIT_ENEMY) + audit.countOf(AudioEvent.RELOAD)
                 + audit.countOf(AudioEvent.PLAYER_HURT);

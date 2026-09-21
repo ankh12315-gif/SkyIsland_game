@@ -11,13 +11,11 @@ target/
 logs/
 screenshots/
 
-# ---- Build scratch (javac temp dirs & classpath argfiles) ----
-.tmpclasses/
-.tmptestclasses/
-.tmptools/
-.tmp_charset.json
-.tmp_cp.txt
-.tmp_sources.txt
+# ---- Build scratch (javac temp dirs, classpath argfiles, ad-hoc work dirs) ----
+# 用通配 `.tmp*` 一次覆盖全部临时产物（.tmpclasses/ .tmptestclasses/ .tmptools/
+# .tmp_charset.json .tmp_cp.txt .tmp_sources*.txt .tmpall/ 等）。逐个列举的模式会随着
+# 临时脚本不断新增而漏掉，而漏掉的那一个会以"未跟踪文件"的身份被 `git add -A` 带进提交。
+.tmp*
 .toolchain/
 
 # ---- Saved worlds / gate run data (any location) ----

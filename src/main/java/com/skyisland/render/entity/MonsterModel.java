@@ -113,12 +113,32 @@ public final class MonsterModel {
             0.05, 1.56, -0.21, 0.13, 1.68, -0.175,
     };
 
-    // ---- 配色：主色深红/暗红，辅色近黑，眼睛亮琥珀 ----
-    private static final float[] COLOR_HEAD = {0.46f, 0.17f, 0.20f};
-    private static final float[] COLOR_TORSO = {0.33f, 0.13f, 0.16f};
-    private static final float[] COLOR_LEG = {0.19f, 0.10f, 0.12f};
-    private static final float[] COLOR_ARM = {0.25f, 0.11f, 0.14f};
-    private static final float[] COLOR_EYE = {1.00f, 0.84f, 0.30f};
+    // ---- 配色：主色砖红（亮/暗成阶），四肢更深，眼睛高亮 ----
+    //
+    // M2.1 可读性口径（用户实测「怪物在远处读不出来」）：
+    // 旧配色的 Rec.709 luma 全部挤在 0.12–0.23 这段极暗区间
+    // （头 0.234 / 躯干 0.175 / 臂 0.142 / 腿 0.121），最小的「相邻 part 明暗差」
+    // 只有 0.03 上下（躯干 与 臂 0.033、臂 与 腿 0.021）。两个后果：
+    //   1. 八个 part 的身体会并成一块深红影子，剪影结构在任何距离都读不出来；
+    //   2. 相邻 part 的明暗差小于一个可分辨的落差，等于没有分件。
+    // 本次只改配色（parts 布局 / 步态起伏 / 攻击前冲 / 眼睛位置一律不动）：
+    // 把整具身体抬进中亮区间，并把四个体色在 luma 上拉成
+    // 头 0.552 > 躯干 0.469 > 臂 0.384 > 腿 0.300 的一级落差
+    // （最小相邻落差 0.083，见 MonsterModelTest 的量化判据与等价回退实验）。
+    // 主色仍偏红（r > g、r > b），「红 = 危险」的读法不变；
+    // 上界刻意留在天空色（luma 0.610）之下，怪物在天空背景上仍是「一块比天空暗的红」。
+    //
+    // 口径说明：本项目渲染管线不做 sRGB 与线性的互相转换（源码里没有 GL_FRAMEBUFFER_SRGB，
+    // 着色器里也没有 gamma 运算），实体的顶点色是直接写进帧缓冲的显示值。
+    // 因此这里的 luma 就用 Rec.709 系数 0.2126R + 0.7152G + 0.0722B 直接算在颜色分量上 ——
+    // 与像素最终呈现的明度是同一口径。另外，实体路径的 aColor.a（亮度乘子）恒为 1.0
+    // （见 EntityRenderer#buildMonsterVertices），所以这些值不会被面明暗再压暗一次
+    // —— 换句话说，地形那套「面明暗系数」对实体根本不生效，实体没有面明暗。
+    private static final float[] COLOR_HEAD = {0.92f, 0.46f, 0.38f};   // luma 约 0.552
+    private static final float[] COLOR_TORSO = {0.78f, 0.39f, 0.33f};  // luma 约 0.469
+    private static final float[] COLOR_LEG = {0.50f, 0.25f, 0.21f};    // luma 约 0.300
+    private static final float[] COLOR_ARM = {0.64f, 0.32f, 0.27f};    // luma 约 0.384
+    private static final float[] COLOR_EYE = {1.00f, 0.84f, 0.30f};    // luma 约 0.835
 
     private MonsterModel() {
     }

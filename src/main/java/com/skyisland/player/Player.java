@@ -155,12 +155,55 @@ public final class Player {
     private final Vector3d lastSafePosition = new Vector3d();
 
     // ---- 生命状态（M2，PRD 5.3）----
+
+    /**
+     * 伤害来源。把「怎么死的」变成一句可读的事实。
+     *
+     * <p><b>为什么需要它：</b>{@link #hurt} 此前<b>不打印任何东西</b>，于是日志里只剩一个
+     * 总数（首轮试玩的 {@code player_hurt=5}）——「被近战怪咬」与「摔落」在证据上
+     * 完全无法区分，而这正是复盘时会被反复追问的第一个问题（见
+     * {@code docs/testing/M2_1_PLAYTEST_EVIDENCE_2026-09-22.md} 第 4.1 节）。
+     *
+     * <p><b>本枚举只承载归因，不参与任何数值计算</b>：它既不改变伤害量，
+     * 也不改变死亡判定，更不改变「虚空走 {@code die()} 而不是 {@code hurt()}」这条既有取舍。
+     */
+    public enum DamageCause {
+        /** 近战怪咬击（{@code MeleeMonster.tick}）。 */
+        MELEE("近战"),
+        /** 落地结算的坠落伤害（{@link #fallDamageFor}）。 */
+        FALL("坠落"),
+        /** 坠入虚空（{@code checkVoid} → {@code die}），按 PRD 5.3 不结算普通坠落伤害。 */
+        VOID("虚空"),
+        /** 其它 / 未标注来源；也是既有调用点与测试的默认值。 */
+        GENERIC("其它");
+
+        private final String label;
+
+        DamageCause(String label) {
+            this.label = label;
+        }
+
+        /** 写进日志的中文名。 */
+        public String label() {
+            return label;
+        }
+    }
+
     private int health = MAX_HEALTH;
     private boolean dead = false;
     private double deathTimer = 0;
 
     /** 最近一次受到的伤害值（HUD 与自测用，不做伤害数字飘字）。 */
     private int lastDamageAmount = 0;
+
+    /**
+     * 最近一次受到伤害的<b>来源</b>；本次会话尚未受过伤时为 {@code null}。
+     *
+     * <p>纯状态记录：由 {@link #hurt} 与虚空致死路径写入，只被日志与自测读取。
+     * 刻意<b>不</b>在重生时清零 —— 重生之后"最近一次伤害"仍然是那次致死伤，
+     * 自测因此能在收尾阶段读它来回答"这一局是怎么死的"。
+     */
+    private DamageCause lastDamageCause;
 
     /**
      * 最近一次死亡的掉落物落点。
@@ -826,6 +869,11 @@ public final class Player {
         return lastDamageAmount;
     }
 
+    /** 最近一次受到伤害的来源；本次会话尚未受伤时为 {@code null}（供日志与自测读取）。 */
+    public DamageCause lastDamageCause() {
+        return lastDamageCause;
+    }
+
     /** 最近一次死亡时掉落物的落点（虚空死亡 = lastSafePosition，普通死亡 = 死亡点）。 */
     public Vector3d lastDeathDropPosition() {
         return new Vector3d(lastDeathDropPosition);
@@ -834,18 +882,41 @@ public final class Player {
     /**
      * 承受伤害（PRD 5.3：生命上限 20）。
      *
-     * <p>需要 {@link World} 是为了在血量归零当帧就能判定掉落点是否合法 ——
-     * 若把这件事推迟到重生那一刻，世界可能已经被改过，掉落点会指向一个"记录时合法、
-     * 生成时已在虚空上方"的位置（PRD 5.3.1 A 明文禁止掉落物坠入虚空）。
+     * <p>这是<b>无来源标注</b>的既有入口，等价于 {@code hurt(world, amount, DamageCause.GENERIC)}。
+     * 保留它是因为既有调用点与单测都按这个签名编译；新增的来源标注走下面的重载。
      *
      * @param amount 伤害值；非正数忽略
      */
     public void hurt(World world, int amount) {
+        hurt(world, amount, DamageCause.GENERIC);
+    }
+
+    /**
+     * 承受伤害，并记录<b>来源</b>（{@link DamageCause}）。
+     *
+     * <p><b>需要 {@link World}</b> 是为了在血量归零当帧就能判定掉落点是否合法 ——
+     * 若把这件事推迟到重生那一刻，世界可能已经被改过，掉落点会指向一个"记录时合法、
+     * 生成时已在虚空上方"的位置（PRD 5.3.1 A 明文禁止掉落物坠入虚空）。
+     *
+     * <p><b>本次改动是纯仪器化：</b>与旧实现相比，只在扣血之外多做了两件不改变任何行为的事 ——
+     * 记下一个来源字段、打印一行归因日志。伤害量、阈值、冷却、死亡判定一律未动。
+     *
+     * @param amount 伤害值；非正数忽略
+     * @param cause  伤害来源；{@code null} 视为 {@link DamageCause#GENERIC}
+     */
+    public void hurt(World world, int amount, DamageCause cause) {
         if (dead || amount <= 0) {
             return;
         }
+        DamageCause source = cause == null ? DamageCause.GENERIC : cause;
+        lastDamageCause = source;
         lastDamageAmount = amount;
+        int before = health;
         health -= amount;
+        // ★ 归因日志：此前本方法不打印任何东西，日志里只剩一个总数，无法区分
+        //   "被怪咬死"与"摔死"。这一行就是"怎么死的"那句话的唯一来源。
+        Log.info("[玩家] 受到 %d 点伤害（来源=%s，生命 %d→%d）",
+                amount, source.label(), before, Math.max(0, health));
         if (health <= 0) {
             health = 0;
             die(world, "生命耗尽", false);
@@ -864,6 +935,14 @@ public final class Player {
         dead = true;
         deathTimer = 0;
         health = 0;
+
+        // ★ 纯仪器化：把"虚空致死"也归因到 DamageCause.VOID。
+        //   只写一个供日志/自测读取的来源字段 —— 不改 die() vs hurt() 的路径选择
+        //   （生命耗尽路径由 hurt() 先行写下来源，这里不覆盖，击杀来源因此得以保留），
+        //   也不改任何数值。自测的 DEATH_AND_RESPAWN 阶段走的正是这条虚空路径。
+        if (voidDeath) {
+            lastDamageCause = DamageCause.VOID;
+        }
 
         // 虚空死亡：掉落物落在 lastSafePosition；普通死亡：落在死亡点（PRD 5.3.1 A/B）。
         Vector3d base = voidDeath ? new Vector3d(lastSafePosition) : new Vector3d(position);
