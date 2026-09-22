@@ -335,4 +335,154 @@ class AudioFeedbackWiringTest {
 
         assertEquals(0, audio.audit().size());
     }
+
+    // ============================================================ 顺序与"不吞事件"
+
+    /**
+     * 串联链必须<b>先发声、后转发</b>，且八个回调一个都不能被吞。
+     *
+     * <p><b>这条断言抓的是什么：</b>{@link AudioFeedback#andThen} 有两种写错的方式 ——
+     * ① "替换"而不是"串联"（下游收不到，表现为"开了音频之后曳光没了"）；
+     * ② 顺序颠倒（先转发再发声，表现为"听到声音时画面已经结算完了"）。
+     * 两者都不会让编译失败，也都不会让"声音能听见"变红。
+     *
+     * <p>判据不靠计数，而是<b>在转发的那一刻读一次音频侧已经记下几条</b>
+     * （{@code audioSizeAtDelegate}）。顺序一旦颠倒，第一个元素会从 1 变成 0。
+     * 期望序列 {@code [1,2,3,4,4,4,4,4]} 同时也是"哪几个事件该发声"的书面记录：
+     * 击发 / 命中 / 空仓 / 换弹四个有声，换弹完成、换弹取消、方块命中、文案提示四个无声。
+     */
+    @Test
+    void andThenPlaysTheSoundBeforeDelegatingAndForwardsAllEightEvents() {
+        AudioManager audio = silentAudio();
+        AudioFeedback feedback = AudioFeedback.wrap(audio);
+        List<String> order = new ArrayList<>();
+        List<Integer> audioSizeAtDelegate = new ArrayList<>();
+
+        CombatController.Listener chained = feedback.andThen(new CombatController.Listener() {
+            private void record(String tag) {
+                order.add(tag);
+                audioSizeAtDelegate.add(audio.audit().size());
+            }
+
+            @Override
+            public void onShotFired(double mx, double my, double mz,
+                                    double ex, double ey, double ez, boolean hitAnything) {
+                record("shot");
+            }
+
+            @Override
+            public void onBlockHit(double x, double y, double z,
+                                   double nx, double ny, double nz, int blockRuntimeId) {
+                record("block");
+            }
+
+            @Override
+            public void onEntityHit(com.skyisland.entity.Entity entity, int damage, double distance) {
+                record("entity");
+            }
+
+            @Override
+            public void onDryFire() {
+                record("dry");
+            }
+
+            @Override
+            public void onReloadRequest(GunState.ReloadOutcome outcome) {
+                record("reloadReq");
+            }
+
+            @Override
+            public void onReloadCompleted(int magazineAmmo, int magazineSize) {
+                record("reloadDone");
+            }
+
+            @Override
+            public void onReloadCancelled() {
+                record("reloadCancel");
+            }
+
+            @Override
+            public void onMessage(String textKey, Object... args) {
+                record("message");
+            }
+        });
+
+        chained.onShotFired(0, 0, 0, 1, 1, 1, true);
+        chained.onEntityHit(null, 8, 6);
+        chained.onDryFire();
+        chained.onReloadRequest(GunState.ReloadOutcome.STARTED);
+        chained.onReloadCompleted(12, 12);
+        chained.onReloadCancelled();
+        chained.onBlockHit(0, 0, 0, 0, 1, 0, 1);
+        chained.onMessage("k");
+
+        // 音频侧：四个有声事件各响一次，四个无声事件一次都不响
+        assertEquals(1, audio.audit().countOf(AudioEvent.GUN_FIRE));
+        assertEquals(1, audio.audit().countOf(AudioEvent.HIT_ENEMY));
+        assertEquals(1, audio.audit().countOf(AudioEvent.GUN_EMPTY));
+        assertEquals(1, audio.audit().countOf(AudioEvent.RELOAD));
+        assertEquals(4, audio.audit().size(),
+                "M2.1 的五个音里，这八个回调只该产生四条记录");
+
+        // 下游侧：八个事件一个不少、次序原样
+        assertEquals(List.of("shot", "entity", "dry", "reloadReq",
+                        "reloadDone", "reloadCancel", "block", "message"),
+                order, "串联必须把八个事件全部原样转发给下游，且次序不变");
+
+        // 顺序：转发的那一刻，该响的已经响完了
+        assertEquals(List.of(1, 2, 3, 4, 4, 4, 4, 4), audioSizeAtDelegate,
+                "发声必须发生在转发之前：顺序颠倒时首位会是 0");
+    }
+
+    /**
+     * 一场最基本的交火，听觉序列的<b>可执行形式</b>。
+     *
+     * <p>这条断言就是 M2.1 通过标准"能听见战斗"本身。它不检查任何内部状态，
+     * 只读最终记录下来的事件序列 —— 因此它无法因为"我调了一个我自己写的方法"而变绿。
+     *
+     * <p><b>注意序列以 RELOAD 开头，这是对的而不是噪声：</b>PRD 5.7.1 规定开局弹匣为空，
+     * 所以任何"打出一发"的完整过程都必然以一次换弹开始。删掉这个前缀，
+     * 这条断言就会退化成"我假设弹匣是满的"——而那正是 M2 可发现性缺口里
+     * {@code combat_shots_fired = 0} 的成因。
+     */
+    @Test
+    void aFullCombatExchangeProducesTheExpectedSequence() {
+        World world = world();
+        Player player = armedPlayer();
+        EntityManager entities = new EntityManager();
+        entities.spawnMeleeMonster(0.5, TestWorlds.SURFACE_FEET_Y, -5.5);
+        CombatController combat = new CombatController(entities);
+
+        AudioManager audio = silentAudio();
+        AudioFeedback feedback = AudioFeedback.wrap(audio);
+        CombatController.Listener chain = feedback.andThen(CombatController.Listener.NONE);
+
+        // ① 换弹（开局弹匣为空）
+        combat.step(world, player, RELOAD_KEY, DT, chain);
+        for (int i = 0; i < RELOAD_STEPS; i++) {
+            combat.step(world, player, IDLE, DT, chain);
+        }
+        assertEquals(1, audio.audit().countOf(AudioEvent.RELOAD), "前提：上膛确实发生且只响一次");
+
+        // ② 打光 12 发中的 3 发（每发之间等过射速节流）
+        for (int shot = 0; shot < 3; shot++) {
+            combat.step(world, player, FIRE_KEY, DT, chain);
+            for (int i = 0; i < 16; i++) {
+                combat.step(world, player, IDLE, DT, chain);
+            }
+        }
+
+        // ③ 玩家挨一下
+        feedback.poll(player);
+        player.hurt(world, 3);
+        feedback.poll(player);
+
+        assertEquals("RELOAD>GUN_FIRE>HIT_ENEMY>GUN_FIRE>HIT_ENEMY>GUN_FIRE>HIT_ENEMY>PLAYER_HURT",
+                audio.audit().idSequence(),
+                "一场最基本的交火的完整听觉序列 —— 这条断言是 M2.1 通过标准「能听见战斗」的可执行形式");
+        assertFalse(audio.audit().everHeard(AudioEvent.GUN_EMPTY), "还有弹药时不该响空仓");
+        assertEquals(1, audio.audit().countOf(AudioEvent.RELOAD), "这一场只在开头换了一次弹");
+        assertEquals(3, audio.audit().countOf(AudioEvent.HIT_ENEMY),
+                "三发都必须真的打中（12 → 4）：命中数少一发就说明弹道或射速节流被改坏了");
+    }
 }

@@ -259,6 +259,40 @@ public final class AudioManager {
         return status;
     }
 
+    /**
+     * 产品构造器：<b>不带后端</b>。
+     *
+     * <p><b>为什么必须显式写出来（不能靠隐式默认构造器）：</b>
+     * 下面那个 {@code AudioManager(AudioBackend)} 一旦存在，Java 就<u>不再</u>生成
+     * 隐式无参构造器 —— 于是 {@code new AudioManager()} 会编译失败，
+     * 而报错信息（"需要 AudioBackend，找到：没有参数"）读起来像是调用方写错了，
+     * 真正的成因却在一个看起来毫不相关的"加了个测试构造器"的改动里。
+     * 显式写出来之后，这条依赖变成可见的：谁删了它，产品侧立刻编译失败而不是静默换语义。
+     */
+    public AudioManager() {
+        this.backend = null;
+        this.opened = false;
+        this.playing = false;
+        this.status = "尚未初始化";
+    }
+
+    // ============================================================ 测试专用
+
+    /**
+     * 注入一个固定的后端（仅供同包测试使用）。
+     *
+     * <p><b>为什么需要它：</b>{@link #open()} 的真实后果取决于运行它的机器上
+     * 有没有声卡 —— 那是环境的性质，不是被测行为的性质。要断言
+     * "音量滑杆真的改变了增益"，就必须能在<b>任何</b>机器上拿到一个可观测的后端。
+     * 本构造器不改任何产品语义，只是把"后端是怎么来的"这一步跳过。
+     */
+    AudioManager(AudioBackend fixedBackend) {
+        this.backend = fixedBackend;
+        this.opened = true;
+        this.playing = fixedBackend != null;
+        this.status = fixedBackend == null ? "（测试）无后端" : "（测试）注入后端";
+    }
+
     // ============================================================ 内部
 
     private static boolean isDisabledByProperty() {

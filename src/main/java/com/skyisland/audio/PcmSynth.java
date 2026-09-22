@@ -36,8 +36,16 @@ public final class PcmSynth {
 
     private static final float FULL_SCALE = 32767f;
 
-    /** 淡入淡出窗口：用于消除 buffer 首尾的直流跳变（它会表现为"啪"的一声）。 */
-    private static final int FADE_IN_SAMPLES = (int) (0.0015 * SAMPLE_RATE);
+    /**
+     * 淡入淡出窗口：用于消除 buffer 首尾的阶跃（它会表现为额外的一声"啪"）。
+     *
+     * <p><b>淡入必须极短（16 个样本 ≈ 0.36 ms）：</b>短音的起音本来就在
+     * 0.2–0.6 ms 量级，淡入窗口一旦与它同宽，被削掉的就<b>正好是那个瞬态</b> ——
+     * 空仓咔哒声会因此变成一声闷响。实测过 1.5 ms 的窗口：gun_empty 的峰值
+     * 从满量程的 70% 掉到 35%，听上去像"隔着一层布"。淡入只需要让第 0 个样本为 0
+     * 即可，这 16 个样本已经足够。
+     */
+    private static final int FADE_IN_SAMPLES = 16;
     private static final int FADE_OUT_SAMPLES = (int) (0.0030 * SAMPLE_RATE);
 
     private PcmSynth() {

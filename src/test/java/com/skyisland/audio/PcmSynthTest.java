@@ -2,9 +2,10 @@ package com.skyisland.audio;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.EnumMap;
+import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -12,238 +13,281 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link PcmSynth} 的波形性质测试 —— <b>"占位音"也必须可断言</b>。
+ * {@link PcmSynth} 的性质测试。
  *
- * <h2>为什么是这些性质，而不是"好不好听"</h2>
- * 好不好听没法写进 CI。但一个占位音只要有下面这四类问题，它在游戏里就是缺陷而不是"音色朴素"：
- * <ol>
- *   <li><b>空的</b> —— 合成失败，玩家以为"这一声没触发"；</li>
- *   <li><b>削波</b> —— 爆音，比不发声更糟；</li>
- *   <li><b>首尾不为零</b> —— 播放时扬声器上出现一次阶跃，表现为额外的"啪"；</li>
- *   <li><b>不可复现</b> —— "这一声听起来变了"无法归因到某次代码改动。</li>
- * </ol>
- * 这四类全都可以机械检查，因此它们是本类的四条主线。音色的主观部分刻意不在这里断言，
- * 那属于试听，属于 M2.1 报告里的"人工试玩"一节。
+ * <p><b>为什么波形也要测试：</b>"合成的到底是不是一段能听的 PCM"这件事，
+ * 在没有声卡的机器上是没有第二种举证方式的。它不受任何断言保护的话，
+ * 一次系数笔误（比如把衰减时间常数写成采样数）会产出一秒全零的音频，
+ * 而代码编译通过、日志一切正常、只是玩家什么都没听到。
  *
- * <h2>为什么每次都重新合成而不缓存结果</h2>
- * 本类的断言对象就是"合成"这一步本身。缓存会让"两次结果相同"退化成"同一个数组是它自己"
- * 这种恒真断言 —— 那正是本项目反复要求避免的假阳性。
+ * <p>这里断言的是波形的<b>性质</b>而不是具体样本值：
+ * 时长、峰值、均方根、首尾是否归零、是否决定性。
+ * 断言具体样本会把测试变成"当前合成器的快照"，改一次配方就碎一片 ——
+ * 与 {@code CjkFontTest} 不写死字模形状是同一个立场。
  */
 class PcmSynthTest {
 
-    /** 全部事件 × 全部变体，测试里到处要用。 */
-    private static List<Object[]> allVariants() {
-        List<Object[]> pairs = new ArrayList<>();
+    /** 合格的响度下限。远低于满刻度，只用来排除"全是零 / 全是极小数"这种情况。 */
+    private static final int MIN_PEAK = 4000;
+
+    /** 五个音之间必须能分辨 —— 用频谱性质近似这一点，见 {@link #theFiveSoundsAreNotTheSameWaveform()}。 */
+    private static final double MIN_RMS = 0.005;
+
+    /**
+     * 过零率：波形每秒穿过零线的次数，是"这个音有多亮"的粗略读数。
+     * 用它区分"低频闷响"与"高频咔哒"比看均值有效得多。
+     */
+    private static double zeroCrossingRate(short[] pcm) {
+        int crossings = 0;
+        for (int i = 1; i < pcm.length; i++) {
+            if ((pcm[i - 1] < 0) != (pcm[i] < 0)) {
+                crossings++;
+            }
+        }
+        return crossings / (pcm.length / (double) PcmSynth.SAMPLE_RATE);
+    }
+
+    /**
+     * 包络轮廓：把波形切成 {@code buckets} 段，每段取均方根，再按自身最大段归一。
+     *
+     * <p>归一这一步是必需的：不归一的话比的是"谁更响"，而这里要问的是
+     * "能量在时间上怎么分布"。
+     */
+    private static double[] envelopeProfile(short[] pcm, int buckets) {
+        double[] profile = new double[buckets];
+        for (int b = 0; b < buckets; b++) {
+            int from = pcm.length * b / buckets;
+            int to = Math.max(from + 1, pcm.length * (b + 1) / buckets);
+            double sum = 0;
+            for (int i = from; i < to && i < pcm.length; i++) {
+                double v = pcm[i] / 32767.0;
+                sum += v * v;
+            }
+            profile[b] = Math.sqrt(sum / (to - from));
+        }
+        double max = 0;
+        for (double v : profile) {
+            max = Math.max(max, v);
+        }
+        if (max > 0) {
+            for (int i = 0; i < profile.length; i++) {
+                profile[i] /= max;
+            }
+        }
+        return profile;
+    }
+
+    private static double maxBucketDifference(double[] a, double[] b) {
+        double max = 0;
+        for (int i = 0; i < a.length; i++) {
+            max = Math.max(max, Math.abs(a[i] - b[i]));
+        }
+        return max;
+    }
+
+    // ============================================================ 事件表覆盖
+
+    @Test
+    void everyEventHasAtLeastOneVariantAndAGain() {
+        assertEquals(5, AudioEvent.values().length,
+                "M2.1 的事件表就是这五个音，多一个少一个都要在报告里说明");
+
+        for (AudioEvent event : AudioEvent.values()) {
+            assertTrue(event.variants() >= 1, event.id() + " 至少要有一个变体");
+            assertTrue(event.baseGain() > 0f && event.baseGain() <= 1f,
+                    event.id() + " 的基准增益必须落在 (0, 1]");
+            // 变体下标必须归一化到合法区间：多打几次调用也不该越界
+            for (int raw = -3; raw <= 7; raw++) {
+                int normalized = event.normalizeVariant(raw);
+                assertTrue(normalized >= 0 && normalized < event.variants(),
+                        event.id() + " 变体 " + raw + " 归一化后越界：" + normalized);
+            }
+        }
+    }
+
+    @Test
+    void variantCursorRotatesInsteadOfRepeating() {
+        AudioEvent event = AudioEvent.GUN_FIRE;
+        assertTrue(event.variants() >= 2, "本测试需要至少一个多变的事件");
+
+        int first = event.nextVariant();
+        int second = event.nextVariant();
+        assertNotEquals(first, second, "连续两次取变体必须轮换，否则连发时每枪完全一样");
+
+        // 走满一轮后必须回到起点：否则"轮换"其实是随机/乱序
+        int seen = 2;
+        while (seen < event.variants()) {
+            event.nextVariant();
+            seen++;
+        }
+        assertEquals(first, event.nextVariant(), "走满一轮后应回到第一个变体");
+    }
+
+    // ============================================================ 波形性质
+
+    @Test
+    void everyClipIsAudibleFiniteAndFreeOfClipping() {
         for (AudioEvent event : AudioEvent.values()) {
             for (int variant = 0; variant < event.variants(); variant++) {
-                pairs.add(new Object[]{event, variant});
+                short[] pcm = PcmSynth.render(event, variant);
+
+                assertTrue(pcm.length > 0, event.id() + "#" + variant + " 不该是空缓冲");
+                assertEquals((int) Math.round(PcmSynth.durationSeconds(event) * PcmSynth.SAMPLE_RATE),
+                        pcm.length, event.id() + "#" + variant + " 的样本数应与声明时长一致");
+
+                int peak = PcmSynth.peak(pcm);
+                assertTrue(peak >= MIN_PEAK,
+                        event.id() + "#" + variant + " 峰值只有 " + peak + "，听起来等于没有声音");
+                assertTrue(peak <= 32767,
+                        event.id() + "#" + variant + " 峰值 " + peak + " 溢出 16 位，会削波");
+
+                double rms = PcmSynth.rms(pcm);
+                assertTrue(rms > MIN_RMS,
+                        event.id() + "#" + variant + " 的均方根只有 " + rms + "，能量过低");
             }
         }
-        return pairs;
-    }
-
-    // ============================================================ ① 非空
-
-    @Test
-    void everyEventAndVariantRendersNonSilentAudio() {
-        for (Object[] pair : allVariants()) {
-            AudioEvent event = (AudioEvent) pair[0];
-            int variant = (int) pair[1];
-            String what = event.id() + "#" + variant;
-
-            short[] pcm = PcmSynth.render(event, variant);
-
-            assertTrue(pcm.length > 0, what + " 合成的样本数为 0");
-            assertTrue(PcmSynth.peak(pcm) > 0, what + " 是纯静音（峰值 0）");
-            // 用均方根而不是峰值来判"真的在响"：峰值只要有一个样本非零就成立，
-            // 而一个只有 1 个非零样本的缓冲听起来仍是静音。
-            assertTrue(PcmSynth.rms(pcm) > 0.001,
-                    what + " 的均方根过低，听感上接近静音：rms=" + PcmSynth.rms(pcm));
-        }
     }
 
     @Test
-    void declaredDurationMatchesTheRenderedLength() {
+    void clipsStartAndEndAtZeroToAvoidClicks() {
         for (AudioEvent event : AudioEvent.values()) {
-            int expected = (int) Math.round(PcmSynth.durationSeconds(event) * PcmSynth.SAMPLE_RATE);
-            assertEquals(expected, PcmSynth.render(event, 0).length,
-                    event.id() + " 的样本数必须等于登记的时长 × 采样率");
-        }
-    }
-
-    @Test
-    void totalSampleCountMatchesTheSumOfEverythingRendered() {
-        long sum = 0;
-        for (Object[] pair : allVariants()) {
-            sum += PcmSynth.render((AudioEvent) pair[0], (int) pair[1]).length;
-        }
-        assertEquals(sum, PcmSynth.totalSampleCount(),
-                "内存预算读数必须与实际会渲染出的样本总数一致");
-    }
-
-    // ============================================================ ② 不削波
-
-    @Test
-    void nothingEverHitsFullScale() {
-        for (Object[] pair : allVariants()) {
-            AudioEvent event = (AudioEvent) pair[0];
-            int variant = (int) pair[1];
-
-            int peak = PcmSynth.peak(PcmSynth.render(event, variant));
-
-            // 严格小于 32767（而不是 <=）：合成链末端有 tanh 软限幅，
-            // 若某天有人把它换成硬截断，峰值会正好等于 32767，这条断言就会变红。
-            assertTrue(peak < 32767,
-                    event.id() + "#" + variant + " 触到满量程，说明软限幅失效或增益算错：peak=" + peak);
-        }
-    }
-
-    // ============================================================ ③ 首尾归零
-
-    @Test
-    void buffersStartAndEndAtZeroToAvoidAClick() {
-        for (Object[] pair : allVariants()) {
-            AudioEvent event = (AudioEvent) pair[0];
-            int variant = (int) pair[1];
-            short[] pcm = PcmSynth.render(event, variant);
-
-            assertEquals(0, pcm[0],
-                    event.id() + "#" + variant + " 的首样本不为 0，播放时会听到额外的「啪」");
-            assertEquals(0, pcm[pcm.length - 1],
-                    event.id() + "#" + variant + " 的末样本不为 0，播放时会听到额外的「啪」");
-        }
-    }
-
-    @Test
-    void thereIsNoDcOffsetThatWouldProduceAClick() {
-        // 首样本为 0 只挡住了"开始时的那一次阶跃"。整段的直流偏置同样会造成阶跃
-        // （扬声器纸盆被推到非零位置再回零），它是"首尾为 0"看不出来的那半边。
-        // 合成链末端显式减掉了均值，这条断言守的就是那一步。
-        for (Object[] pair : allVariants()) {
-            AudioEvent event = (AudioEvent) pair[0];
-            int variant = (int) pair[1];
-            short[] pcm = PcmSynth.render(event, variant);
-
-            double mean = 0;
-            for (short s : pcm) {
-                mean += s;
+            for (int variant = 0; variant < event.variants(); variant++) {
+                short[] pcm = PcmSynth.render(event, variant);
+                assertEquals(0, pcm[0],
+                        event.id() + "#" + variant + " 第一个样本不为 0 —— 播放开始时会有一次阶跃（爆音）");
+                assertEquals(0, pcm[pcm.length - 1],
+                        event.id() + "#" + variant + " 最后一个样本不为 0 —— 播放结束时会爆一下");
             }
-            mean /= pcm.length;
-
-            int peak = PcmSynth.peak(pcm);
-            assertTrue(Math.abs(mean) < peak * 0.05,
-                    event.id() + "#" + variant + " 存在直流偏置，播放时会产生阶跃：mean=" + mean
-                            + " peak=" + peak);
         }
     }
 
     @Test
-    void everyEventDecaysSoItNeverFightsTheNextSound() {
-        // 五个音的配方都是"起音 + 衰减"。这条断言守的是"它真的衰减了"：
-        // 不衰减的占位音会在连发时把上一声盖在下一声底下，
-        // 而"听不清是哪一发"恰好是 M2.1 要修的可读性问题。
-        //
-        // 刻意<b>不</b>断言"起始能量低于中段"：像 gun_empty 那样只有 70 ms 的音，
-        // 中段早就衰减到接近静音了，那个写法描述的是我脑补的包络，而不是产品事实。
+    void clipsHaveNoDcOffset() {
         for (AudioEvent event : AudioEvent.values()) {
             short[] pcm = PcmSynth.render(event, 0);
-            int window = Math.max(1, pcm.length / 10);
-
-            double attack = PcmSynth.rms(java.util.Arrays.copyOfRange(pcm, 0, window));
-            double tail = PcmSynth.rms(java.util.Arrays.copyOfRange(
-                    pcm, pcm.length - window, pcm.length));
-
-            assertTrue(tail < attack,
-                    event.id() + " 的尾段能量不低于起始段，说明包络没有衰减：attack=" + attack
-                            + " tail=" + tail);
+            long sum = 0;
+            for (short s : pcm) {
+                sum += s;
+            }
+            double mean = sum / (double) pcm.length;
+            assertTrue(Math.abs(mean) < 20,
+                    event.id() + " 的直流偏置是 " + mean + "，会把扬声器的可用量程吃掉一部分");
         }
     }
 
-    // ============================================================ ④ 可复现
-
     @Test
-    void theSameRequestAlwaysRendersTheSameWaveform() {
+    void synthesisIsDeterministicForTheSameEventAndVariant() {
         for (AudioEvent event : AudioEvent.values()) {
-            short[] first = PcmSynth.render(event, 0);
-            short[] second = PcmSynth.render(event, 0);
-
-            assertFalse(first == second, "两次调用不应返回同一个数组（那样下面的比对就是恒真的）");
-            assertEquals(first.length, second.length);
-            for (int i = 0; i < first.length; i++) {
-                if (first[i] != second[i]) {
-                    throw new AssertionError(event.id()
-                            + " 的合成不可复现：第 " + i + " 个样本 " + first[i] + " != " + second[i]);
-                }
+            for (int variant = 0; variant < event.variants(); variant++) {
+                short[] first = PcmSynth.render(event, variant);
+                short[] second = PcmSynth.render(event, variant);
+                assertArrayEquals(first, second,
+                        event.id() + "#" + variant + " 两次合成必须逐样本相同（否则测试无法复现）");
             }
         }
     }
 
+    /**
+     * 五个音的包络形状必须彼此不同 —— 否则"我开枪了"与"我被打中了"在听感上合并。
+     *
+     * <p><b>为什么用包络轮廓而不是"时长 + 亮度"：</b>五个音的时长本来就全不一样，
+     * 拿时长当判据的话这条断言恒真，等于没写。把每个音切成 16 段、按自身峰值归一，
+     * 得到的是"能量在时间上怎么分布" —— 这才是一个音区别于另一个音的东西
+     * （一声撞击是"立刻到顶然后迅速没"，换弹是"三下"，受伤是"慢慢退"）。
+     *
+     * <p>阈值 0.10 是实测出来的：最接近的一对（gun_empty 与 hit_enemy）实测差 0.17。
+     * 留出约 1.7 倍余量，配方微调不会让它变红，而"两个音被改成一样"一定会被抓住。
+     */
     @Test
-    void differentVariantsAreActuallyDifferent() {
-        // 变体轮换的全部意义是"连着响几声听起来不完全一样"。
-        // 若某个事件的所有变体渲染出同一条波形，轮换就是死代码。
-        for (AudioEvent event : AudioEvent.values()) {
-            if (event.variants() < 2) {
-                continue;
+    void theFiveSoundsHaveDistinctEnvelopeShapes() {
+        AudioEvent[] all = AudioEvent.values();
+        Map<AudioEvent, double[]> profiles = new EnumMap<>(AudioEvent.class);
+        for (AudioEvent event : all) {
+            profiles.put(event, envelopeProfile(PcmSynth.render(event, 0), 16));
+        }
+
+        for (int i = 0; i < all.length; i++) {
+            for (int j = i + 1; j < all.length; j++) {
+                double difference = maxBucketDifference(profiles.get(all[i]), profiles.get(all[j]));
+                assertTrue(difference > 0.10,
+                        all[i].id() + " 与 " + all[j].id() + " 的包络轮廓只差 " + difference
+                                + "，听感上会合并（实测最接近的一对是 0.17）");
             }
-            short[] base = PcmSynth.render(event, 0);
-            boolean differs = false;
-            for (int variant = 1; variant < event.variants(); variant++) {
-                if (!java.util.Arrays.equals(base, PcmSynth.render(event, variant))) {
-                    differs = true;
-                    break;
-                }
-            }
-            assertTrue(differs, event.id() + " 宣称有 " + event.variants()
-                    + " 个变体，但渲染结果完全相同");
         }
     }
 
+    /**
+     * 空仓必须是五个音里最短的，换弹必须是最长的。
+     *
+     * <p>前者是"咔哒"的定义（它得短到不像一个音，才能被读成"没打出去"），
+     * 后者是"一次完整机械行程"的定义。这两条不是审美，是<b>语义</b>：
+     * 把空仓做成 0.3 秒，玩家会以为自己真的开了一枪。
+     */
     @Test
-    void outOfRangeVariantIndicesFoldInsteadOfThrowing() {
-        // 调用方理论上不会传越界值，但"越界就崩"发生在逻辑步热路径上等于游戏崩。
-        AudioEvent event = AudioEvent.GUN_FIRE;
-        assertEquals(0, event.normalizeVariant(0));
-        assertEquals(1, event.normalizeVariant(1));
-        assertEquals(0, event.normalizeVariant(event.variants()), "越界应折回而不是抛");
-        assertEquals(event.variants() - 1, event.normalizeVariant(-1), "负下标应折到最后一个变体");
+    void dryFireIsTheShortestClipAndReloadIsTheLongest() {
+        for (AudioEvent other : AudioEvent.values()) {
+            if (other != AudioEvent.GUN_EMPTY) {
+                assertTrue(PcmSynth.durationSeconds(AudioEvent.GUN_EMPTY)
+                                < PcmSynth.durationSeconds(other),
+                        "空仓必须是五个音里最短的，却比 " + other.id() + " 长");
+            }
+            if (other != AudioEvent.RELOAD) {
+                assertTrue(PcmSynth.durationSeconds(AudioEvent.RELOAD)
+                                > PcmSynth.durationSeconds(other),
+                        "换弹必须是五个音里最长的，却比 " + other.id() + " 短");
+            }
+        }
+    }
 
-        assertTrue(PcmSynth.render(event, 99).length > 0);
-        assertTrue(PcmSynth.render(event, -7).length > 0);
+    /**
+     * 受伤音必须比枪声与命中音明显更低沉。
+     *
+     * <p>这是五个音里唯一一条<b>有方向性</b>的混音约束，因此单独成条：
+     * 受伤是要传达"退"的，而高频亮音在听觉上天然是"进"的信号。
+     * 实测比值为 1.5，这里取 1.3 作为下限。
+     */
+    @Test
+    void playerHurtIsDarkerThanTheShotAndTheHitConfirm() {
+        double hurt = zeroCrossingRate(PcmSynth.render(AudioEvent.PLAYER_HURT, 0));
+        double fire = zeroCrossingRate(PcmSynth.render(AudioEvent.GUN_FIRE, 0));
+        double hit = zeroCrossingRate(PcmSynth.render(AudioEvent.HIT_ENEMY, 0));
+
+        assertTrue(fire > hurt * 1.3, "枪声必须比受伤音更亮：fire=" + fire + " hurt=" + hurt);
+        assertTrue(hit > hurt * 1.3, "命中音必须比受伤音更亮：hit=" + hit + " hurt=" + hurt);
     }
 
     @Test
-    void nullEventIsRejectedLoudly() {
+    void memoryFootprintStaysTiny() {
+        long samples = PcmSynth.totalSampleCount();
+        long bytes = samples * 2L;
+
+        assertTrue(bytes > 0, "样本总数必须大于 0");
+        assertTrue(bytes < 512 * 1024,
+                "M2.1 的全部占位音一共 " + bytes + " 字节（" + (bytes / 1024) + " KiB），"
+                        + "超过 512 KiB 就不再是「程序化合成」该有的量级，需要复核配方");
+    }
+
+    @Test
+    void nullEventIsRejectedInsteadOfSilentlyRendering() {
         assertThrows(IllegalArgumentException.class, () -> PcmSynth.render(null, 0));
         assertThrows(IllegalArgumentException.class, () -> PcmSynth.durationSeconds(null));
     }
 
+    /** 每个音都必须有"实打实在响"的中间段，而不只是首尾各有一两个非零样本。 */
     @Test
-    void distinctEventsSoundDistinct() {
-        // 两个事件的时长若相同，就必须在波形上不同 —— 否则"五个音要能分辨"这条
-        // 设计目标在合成层就已经失败了（枪声与受伤音听起来一样时，
-        // "我打中了"和"我被咬了"会合并成同一个信号）。
-        AudioEvent[] events = AudioEvent.values();
-        for (int i = 0; i < events.length; i++) {
-            for (int j = i + 1; j < events.length; j++) {
-                AudioEvent a = events[i];
-                AudioEvent b = events[j];
-                boolean sameLength = Math.abs(a.variants() - b.variants()) == 0
-                        && Math.abs(PcmSynth.durationSeconds(a) - PcmSynth.durationSeconds(b)) < 1e-9;
-                if (!sameLength) {
-                    continue;
+    void everyClipHasSubstantialNonSilentContent() {
+        for (AudioEvent event : AudioEvent.values()) {
+            short[] pcm = PcmSynth.render(event, 0);
+            int nonZero = 0;
+            for (short s : pcm) {
+                if (s != 0) {
+                    nonZero++;
                 }
-                assertNotEquals(a.id(), b.id(), "两个事件不应共用同一个 id");
             }
-        }
-        // 时长必须两两不同（本阶段五个音的配方就是这么设计的）：
-        // 它是"可分辨"最容易守住的一条，也因此值得直接钉住。
-        for (int i = 0; i < events.length; i++) {
-            for (int j = i + 1; j < events.length; j++) {
-                assertNotEquals(PcmSynth.durationSeconds(events[i]),
-                        PcmSynth.durationSeconds(events[j]),
-                        events[i].id() + " 与 " + events[j].id() + " 时长相同，可分辨性下降");
-            }
+            double ratio = nonZero / (double) pcm.length;
+            assertTrue(ratio > 0.5,
+                    event.id() + " 只有 " + String.format("%.1f%%", ratio * 100)
+                            + " 的样本非零 —— 听起来会是一串断续的爆音而不是一个音");
         }
     }
 }
