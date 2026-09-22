@@ -28,7 +28,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 import javax.imageio.ImageIO;
 
@@ -541,6 +543,41 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      * 且远小于两轮之间的间隔，因此不会让"上一轮的截图"冒充"本轮的"。当前取 2 秒。
      */
     private static final long SCREENSHOT_FRESHNESS_TOLERANCE_MS = 2_000L;
+
+    /**
+     * 本轮自测<b>起始时</b>截图目录里已存在的 {@code monster-in-view} PNG <b>文件名集合</b>。
+     *
+     * <p>这是与"时间容差"<b>互相独立的第二道门</b>：
+     * <ul>
+     *   <li><b>时间门</b>（{@link #thisRunScreenshotFloorMs()}）按 mtime 判断"够不够新"，
+     *       为吸收"请求时刻与落盘 mtime 落在同一秒"的抖动，必须留 2 秒容差；
+     *   <li><b>文件名门</b>（本集合）按<b>身份</b>判断"是不是起始时就已存在的那张" ——
+     *       文件名带毫秒时间戳、每轮唯一，因此"名字在快照里"等价于"这张图早于本轮就已存在"，
+     *       与 mtime 精度完全无关，取不到巧。
+     * </ul>
+     * 两道门各堵一类漏洞：时间门堵"时间太旧"，文件名门堵"时间恰好落在容差里"。命中若落在
+     * 集合内，与 {@code png == null} 同样处理。
+     *
+     * <p>快照在构造时即固定，只增不减。
+     */
+    private final Set<String> preexistingMonsterShotNames = snapshotPreexistingMonsterShots();
+
+    /** 见 {@link #preexistingMonsterShotNames}；目录不存在或无匹配文件时返回空集合。 */
+    private static Set<String> snapshotPreexistingMonsterShots() {
+        Path dir = Path.of(System.getProperty("skyisland.screenshotDir", "screenshots"));
+        Set<String> names = new HashSet<>();
+        if (!Files.isDirectory(dir)) {
+            return names;
+        }
+        try (Stream<Path> walk = Files.list(dir)) {
+            walk.filter(p -> p.getFileName().toString().contains("monster-in-view"))
+                    .filter(p -> p.getFileName().toString().endsWith(".png"))
+                    .forEach(p -> names.add(p.getFileName().toString()));
+        } catch (IOException e) {
+            Log.noteWarning("自测", "快照 monster-in-view 文件名失败（按空集合处理）：" + e);
+        }
+        return names;
+    }
 
     private long breakParticlesAfterFirstBreak = -1;
     private boolean breakScreenshotTaken;
@@ -1989,6 +2026,12 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      * <p><b>兜底下界也曾经是一条退路，现在被删掉了。</b>中间版本曾允许"请求时刻未赋值时
      * 退化为 {@link #runStartMillis} 作下界"；那等于给绿灯留了一条"读到的时间恰好落在容差里"
      * 的解释。现在未发起请求即直接判无截图，绿灯只剩一条解释：<b>本轮确实产出了这张新图</b>。
+     *
+     * <p><b>时间容差与文件名快照是两道不同的门</b>：时间门（mtime ≥ 本轮请求时刻 − 2 秒容差）
+     * 堵"时间太旧"，但为吸收"请求时刻与落盘 mtime 落在同一秒"的抖动必须留容差；文件名门
+     * （{@link #preexistingMonsterShotNames}：起始时把目录里已有的 monster-in-view 文件名记下，
+     * 命中必须落在集合之外）按<b>身份</b>判定"是不是起始即存在的旧图"，与 mtime 精度无关，
+     * 专门堵"时间恰好落在容差里"这条缝。两者互相独立，谁也替代不了谁。
      */
     public void verifyMonsterFramebuffer() {
         Log.info("================ M2.1 自测：怪物帧缓冲像素证据 ================");
@@ -2072,11 +2115,18 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      * 未发起 ⇒ 直接返回 {@code null}，<b>不退化成 runStartMillis 兜底</b>：此时目录里任何
      * monster-in-view PNG 都必然来自别的轮次，不存在"本轮的截图"。
      *
-     * <h2>第二道：选择口径</h2>
-     * 过门后，把所有文件名匹配 {@code *monster-in-view*.png} 的候选<b>按 mtime 降序</b>
-     * （从新到旧）排列，取第一个 mtime {@code >=} 本轮下界的；一个都不满足就返回 {@code null}。
-     * <b>不要</b>再退回"只挑最新一张"：共享目录里最新的一张可能来自上一轮，那样判据测的会是
-     * "历史某轮有怪"而不是"本轮这一帧有怪"（历史假绿漏洞）。
+     * <h2>第二、三道：文件名门 + 时间门（两道互相独立的门）</h2>
+     * 过门后，把所有文件名匹配 {@code *monster-in-view*.png} 的候选<b>按 mtime 降序</b>排列，
+     * 取第一个<b>同时</b>满足下面两条的：
+     * <ol>
+     *   <li><b>文件名门</b>：文件名不在本轮起始快照
+     *       {@link #preexistingMonsterShotNames} 内（按<b>身份</b>排除"起始时就已存在的旧图"）；</li>
+     *   <li><b>时间门</b>：mtime {@code >=} 本轮请求时刻 − 容差
+     *       （见 {@link #thisRunScreenshotFloorMs()}）。</li>
+     * </ol>
+     * 两道门各堵一类漏洞：时间门堵"时间太旧"，文件名门堵"时间恰好落在容差里"，谁也替代不了谁。
+     * 一个候选都不满足就返回 {@code null}。<b>不要</b>再退回"只挑最新一张"：共享目录里最新的
+     * 一张可能来自上一轮，那样判据测的会是"历史某轮有怪"而不是"本轮这一帧有怪"（历史假绿漏洞）。
      *
      * @return 本轮产出且最新的 monster-in-view PNG；本轮没有则 {@code null}
      */
@@ -2084,7 +2134,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         if (!screenshotRequestedThisRun()) {
             return null;                                  // 硬门：本轮没发起请求 → 不存在本轮的截图
         }
-        return newestMonsterPngAtLeast(dir, thisRunScreenshotFloorMs());
+        return newestMonsterPngAtLeast(dir, thisRunScreenshotFloorMs(), preexistingMonsterShotNames);
     }
 
     /**
@@ -2102,7 +2152,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      * 以便人工排查 —— 绝不可拿它当作像素判据的输入（那正是历史假绿的来源）。
      */
     private Path newestMonsterPngAnyRun(Path dir) {
-        return newestMonsterPngAtLeast(dir, Long.MIN_VALUE);
+        return newestMonsterPngAtLeast(dir, Long.MIN_VALUE, Set.of());
     }
 
     /**
@@ -2125,12 +2175,14 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     }
 
     /**
-     * 组装"本轮是否有截图"的消息，让三种失败原因在日志里各自可辨：
+     * 组装"本轮是否有截图"的消息，让四种失败原因在日志里各自可辨：
      * <ol>
      *   <li>本轮没发起请求（{@code 请求 epochMs=-1}）；</li>
-     *   <li>发起过请求，但目录里没有本轮的新图（只有旧图，或根本没有图）；</li>
-     *   <li>发起了请求且有图，但 mtime 早于本轮下界（旧图冒充本轮）。</li>
+     *   <li>发起过请求，但目录里根本没有 monster-in-view 图；</li>
+     *   <li>命中的最新图与起始快照同名 —— 文件名门判定为"起始即存在的旧图"；</li>
+     *   <li>命中的最新图名字是新图，但 mtime 早于本轮下界 —— 时间门判定为旧图。</li>
      * </ol>
+     * 成功时消息里也会带上"起始快照张数"，便于一眼看出这轮开始时目录里堆了多少历史图。
      */
     private String monsterScreenshotFreshnessDetail(boolean requested, Path png, long pngTs,
             Path newestAny, long newestAnyTs) {
@@ -2142,21 +2194,48 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         } else {
             sb.append("，本轮请求 epochMs=-1（本轮未发起 monster-in-view 请求）");
         }
+        // 文件名门的快照规模：一眼看出"本轮开始时目录里已经堆了多少张历史图"。
+        sb.append("，起始快照 monster-in-view 文件 ").append(preexistingMonsterShotNames.size())
+                .append(" 张");
         if (png != null) {
             sb.append("；本轮 PNG=").append(png.getFileName()).append(" mtime=").append(pngTs);
-        } else if (!requested) {
+            return sb.toString();
+        }
+        /*
+         * 四种失败原因各自可辨：
+         *   ①本轮没发起请求；
+         *   ②请求了但目录里根本没有 monster-in-view 图；
+         *   ③命中的最新图与起始快照同名 —— 文件名门判定为"起始即存在的旧图"；
+         *   ④命中的最新图名字是新图，但 mtime 早于本轮下界 —— 时间门判定为旧图。
+         */
+        if (!requested) {
             sb.append("；结论：本轮根本没请求过截图，目录里任何图都来自别的轮次");
         } else if (newestAny == null) {
             sb.append("；目录里没有任何 monster-in-view PNG（本轮请求了却没落盘？）");
+        } else if (preexistingMonsterShotNames.contains(newestAny.getFileName().toString())) {
+            sb.append("；目录里最新的是 ").append(newestAny.getFileName())
+                    .append(" mtime=").append(newestAnyTs)
+                    .append("（与起始快照同名 —— 文件名门判定为旧图）");
+        } else if (newestAnyTs < thisRunScreenshotFloorMs()) {
+            sb.append("；目录里最新的是 ").append(newestAny.getFileName())
+                    .append(" mtime=").append(newestAnyTs)
+                    .append("（早于本轮下界 —— 时间门判定为旧图）");
         } else {
             sb.append("；目录里最新的是 ").append(newestAny.getFileName())
-                    .append(" mtime=").append(newestAnyTs).append("（早于本轮下界，是旧图）");
+                    .append(" mtime=").append(newestAnyTs)
+                    .append("（两道门都过却没被选中？请复查选择逻辑）");
         }
         return sb.toString();
     }
 
-    /** 按 mtime <b>降序</b>排列候选取第一个 mtime {@code >= floor} 者；没有则 {@code null}。 */
-    private Path newestMonsterPngAtLeast(Path dir, long floor) {
+    /**
+     * 按 mtime <b>降序</b>排列候选，取第一个<b>同时</b>满足：文件名不在 {@code excludedNames} 内、
+     * 且 mtime {@code >= floor} 者；没有则 {@code null}。
+     *
+     * <p>{@code excludedNames} 即"本轮起始快照"（文件名门）；诊断用法传空集
+     * （见 {@link #newestMonsterPngAnyRun(Path)}），此时只剩 mtime 一个约束。
+     */
+    private Path newestMonsterPngAtLeast(Path dir, long floor, Set<String> excludedNames) {
         if (!Files.isDirectory(dir)) {
             return null;
         }
@@ -2164,6 +2243,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             return walk
                     .filter(p -> p.getFileName().toString().contains("monster-in-view"))
                     .filter(p -> p.getFileName().toString().endsWith(".png"))
+                    .filter(p -> !excludedNames.contains(p.getFileName().toString()))
                     .filter(p -> mtimeMs(p) >= floor)
                     .sorted(Comparator.comparingLong(this::mtimeMs).reversed())
                     .findFirst()
