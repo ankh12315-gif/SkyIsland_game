@@ -424,6 +424,38 @@ class MonsterModelTest {
         assertEquals(written / 7 / 36, MonsterModel.PART_COUNT);
     }
 
+    /**
+     * 绕 Y 轴转满 360°（每 15° 一个朝向）之后，parts 的并集仍必须落在碰撞箱里。
+     *
+     * <h2>这条测试以前为什么是「假阳性」（留痕：本项目反复栽的坑）</h2>
+     * 旧版本用 {@code double dy = out[i + 1] - TestWorlds.SURFACE_FEET_Y;} 把顶点高度
+     * 减去一个<b>常量脚底高度</b>，再断言 {@code dy <= HEIGHT + 1e-3}（<b>单边上界</b>）。
+     * 两处一起，使它<b>结构上不可能</b>发现"渲染器忘记把世界 Y 加回去"这个缺陷：
+     * <ol>
+     *   <li><b>锚点错了</b>：渲染器把 pivotY 写成 {@code 0.0} 时，{@code out[i+1]} 恰好等于
+     *       局部高度；减掉常量 64 得到 {@code 局部高度 − 64}。这不是"离脚底多高"，
+     *       而是一个恒为负的量 —— 它根本没参与"世界 Y 是否等于实体位置"这件事；</li>
+     *   <li><b>只有上界</b>：缺陷把几何整体往<b>低</b>的方向推了 62 格，
+     *       而 {@code -62.2 ≤ 1.8} 恒真，上界对此完全失明。</li>
+     * </ol>
+     * 结果：整具怪被画到地下、屏幕上零像素，而这条跑得最勤的几何测试一直全绿。
+     *
+     * <h2>现在为什么能变红</h2>
+     * 锚点改用<b>实体的世界 Y</b>（{@code monster.position().y}，即脚底中心；这也是
+     * {@link MonsterModel} 的局部原点），于是读数变成真正的"离脚底的高度"，
+     * 并同时压三条约束：
+     * <ul>
+     *   <li><b>上界</b>（头不得戳出碰撞箱）：{@code worldDy <= HEIGHT + 1e-3}；</li>
+     *   <li><b>下界</b>（<u>抓本缺陷的那一条</u>）：脚底最多只能因为行走起伏下沉一个
+     *       {@link MonsterModel#BOB_AMPLITUDE}；渲染器丢掉世界 Y 时实测约 −64，
+     *       立刻跌破下界并变红；</li>
+     *   <li><b>存在性</b>：必须真的存在接近顶部的顶点（{@code >= 1.5}），
+     *       否则"整只怪塌到脚底"也能满足上面那条上界。</li>
+     * </ul>
+     *
+     * <p>前置条件：{@code monster.position().y} 必须非零，否则"减 0"会退化成旧口径。
+     * 夹具用 {@link TestWorlds#SURFACE_FEET_Y}（= 64），天然满足。
+     */
     @Test
     void rotatedPartsStillFitInsideTheCollisionBox() {
         // 走真正的渲染路径（含朝向旋转），核对"转过去之后"仍然不越界。
@@ -434,28 +466,36 @@ class MonsterModelTest {
         World world = TestWorlds.flatWorld();
         double worstAbsX = 0;
         double worstAbsZ = 0;
+        double worstMinY = Double.MAX_VALUE;
         double worstMaxY = -Double.MAX_VALUE;
 
         for (int deg = 0; deg < 360; deg += 15) {
             double rad = Math.toRadians(deg);
             // 把玩家放在怪物的某个方向上，tick 一次即让怪物转向他
-            MeleeMonster monster = new MeleeMonster(0.5, TestWorlds.SURFACE_FEET_Y, 0.5);
-            Player player = new Player(0.5 + Math.sin(rad) * 6.0,
+            MeleeMonster monster;
+            Player player;
+            monster = new MeleeMonster(0.5, TestWorlds.SURFACE_FEET_Y, 0.5);
+            player = new Player(0.5 + Math.sin(rad) * 6.0,
                     TestWorlds.SURFACE_FEET_Y, 0.5 + Math.cos(rad) * 6.0);
             monster.tick(world, player, 1.0 / 60.0);
 
             int written = renderer.buildMonsterVertices(monster, 0, 0, 0f, out, 0);
             assertEquals(MonsterModel.PART_COUNT * EntityRenderer.floatsPerBox(), written);
 
+            // ★ 锚点 = 实体的世界 Y（脚底中心），不是某个常量。
+            //   旧版本减的是常量 SURFACE_FEET_Y —— 那恰好就是"渲染器忘记加的那一项"，
+            //   于是缺陷被减掉了，详见方法 javadoc。
             double cx = monster.position().x;
+            double cy = monster.position().y;
             double cz = monster.position().z;
             for (int i = 0; i < written; i += 7) {
                 double dx = out[i] - cx;
-                double dy = out[i + 1] - TestWorlds.SURFACE_FEET_Y;
+                double worldDy = out[i + 1] - cy;   // 离脚底的世界高度
                 double dz = out[i + 2] - cz;
                 worstAbsX = Math.max(worstAbsX, Math.abs(dx));
                 worstAbsZ = Math.max(worstAbsZ, Math.abs(dz));
-                worstMaxY = Math.max(worstMaxY, dy);
+                worstMinY = Math.min(worstMinY, worldDy);
+                worstMaxY = Math.max(worstMaxY, worldDy);
             }
         }
 
@@ -464,9 +504,20 @@ class MonsterModelTest {
                 "任何朝向下左右都不得超出旋转容差（实测 " + worstAbsX + "，容差 " + limit + "）");
         assertTrue(worstAbsZ <= limit,
                 "任何朝向下前后都不得超出旋转容差（实测 " + worstAbsZ + "，容差 " + limit + "）");
+        // 上界：头不得戳出碰撞箱顶。
         assertTrue(worstMaxY <= MonsterModel.HEIGHT + 1e-3,
                 "任何朝向下头顶点都不得超出碰撞箱（实测 " + worstMaxY + "）—— "
                         + "垂直方向没有容差：绕 Y 轴转不改变 y，超了就是模型做错了");
+        // ★ 下界：抓「渲染器丢掉世界 Y」的那一条。旧口径只测上界，对"整体沉到地下"完全失明。
+        assertTrue(worstMinY >= -MonsterModel.BOB_AMPLITUDE - 1e-3,
+                "任何朝向下最低的顶点都不得低于脚底超过行走起伏幅度"
+                        + "（实测最低 " + worstMinY + "，下界 " + (-MonsterModel.BOB_AMPLITUDE) + "）—— "
+                        + "跌破下界说明渲染出的几何整体沉到了脚底之下，"
+                        + "最常见的原因是渲染器没有把世界 Y（pivotY = position().y）加回去");
+        // ★ 存在性：确认"确实有部件在顶部"，否则"整只怪塌到脚底"也能满足上面的上界。
+        assertTrue(worstMaxY >= 1.5,
+                "必须存在接近头部的顶点（实测最高 " + worstMaxY + "）—— "
+                        + "若整只模型塌到脚底附近，上面的上界断言会失去意义");
     }
 
     @Test

@@ -321,6 +321,28 @@ public final class EntityRenderer {
      * 于是"带着朝向旋转之后 parts 的并集是否还在碰撞箱里"可以被单测直接举证 ——
      * 而那正是 parts 模型唯一可能悄悄变坏的方式。
      * 实例方法而不是静态方法，是为了复用 {@link #parts} 暂存而不必每帧 new。
+     *
+     * <h2>pivot 的三个分量不是一回事（这里曾经写错过）</h2>
+     * {@link Boxes#write} 的最后一步是"旋转后平移 {@code (pivotX, pivotY, pivotZ)}"，
+     * 三个分量必须各自填对，但它们的口径<b>并不相同</b>：
+     * <ul>
+     *   <li><b>X / Z 要减世界偏移</b>（{@code -offsetX / -offsetZ}）：
+     *       整批实体共用一份 {@code uChunkOffset}，顶点里只放相对量。要减偏移的理由是
+     *       <b>浮点精度</b> —— 世界坐标可以到几百上千格，直接写进 float 顶点会让远处的实体
+     *       抖动；减掉相机所在方块后相对量恒在小范围内。offset 只作用于水平两轴
+     *       （世界偏移本身就是水平概念，见 {@link com.skyisland.render.mesh.CrackOverlay}）。</li>
+     *   <li><b>Y 不需要、也不可能减世界偏移</b>：竖直方向没有偏移量可比。更关键的是，
+     *       它必须等于实体<b>脚底</b>的世界高度 —— {@link MonsterModel} 的局部 y 就是
+     *       "相对脚底的绝对高度"（见其类注释「局部坐标系」），所以这个平移项
+     *       <b>恰好等于 {@code entity.position().y}</b>，不多一个常数、也不少一个常数。
+     *       写成 {@code 0.0} 的后果不是"丑"，而是<b>整具模型的世界 Y 与实体位置脱钩</b>：
+     *       局部高度 0–1.8 会被当成世界高度，怪被画在 y≈0–1.8 的地下，
+     *       而它的逻辑碰撞箱仍在 {@code position().y} 处 —— 所见与所中彻底分离。</li>
+     * </ul>
+     * 这条曾经真的写错过（pivotY 被硬编码成 {@code 0.0}），后果是"按 F4 生成的怪
+     * 在画面里一个像素都没有，却能正常追人咬人"。抓它的断言见
+     * {@code MonsterModelTest#rotatedPartsStillFitInsideTheCollisionBox} 的<b>下界</b>
+     * 与"部件确实在顶部"的存在性断言 —— 单边上界看不见"整体沉到地下"。
      */
     public int buildMonsterVertices(Entity entity, int offsetX, int offsetZ, float flash,
                                     float[] out, int start) {
@@ -330,7 +352,9 @@ public final class EntityRenderer {
         MonsterModel.write(parts, 0, phase, swing);
 
         double yaw = Math.toRadians(entity.facingDeg());
+        // X/Z 减世界偏移（浮点精度）；Y 不做偏移，且必须 = 脚底世界高度 = position().y。
         double pivotX = entity.position().x - offsetX;
+        double pivotY = entity.position().y;
         double pivotZ = entity.position().z - offsetZ;
 
         int p = start;
@@ -345,7 +369,7 @@ public final class EntityRenderer {
             p = Boxes.write(out, p,
                     parts[b], parts[b + 1], parts[b + 2],
                     parts[b + 3], parts[b + 4], parts[b + 5],
-                    pivotX, 0.0, pivotZ,
+                    pivotX, pivotY, pivotZ,
                     yaw, 0.0, 0.0,
                     cr, cg, cb, 1.0f);
         }
