@@ -109,6 +109,36 @@ public final class M2CombatSelfTest implements CombatController.Listener {
          */
         MeleeMonster spawnMonsterInFront();
 
+        /**
+         * M2.1：上一轮 {@code debugSpawnMonster} 里四个硬条件的<b>拒绝计数</b>
+         * （索引 0=地面 1=落差 2=视锥 3=视线）。
+         *
+         * <p>由产品刷怪路径自己累积，自测只读 —— 用来证明"失败是哪一条判据造成的"，
+         * 而不是"碰巧没刷出来"。
+         */
+        int[] lastSpawnRejectCounts();
+
+        /**
+         * M2.1：上一轮 {@code debugSpawnMonster} 里视锥判据是否<b>真的参与</b>判定
+         * （无渲染器时短路 → false，不伪装成"通过"）。
+         */
+        boolean lastFrustumEvaluated();
+
+        /**
+         * M2.1：切换 F3 调试 overlay（与玩家按 F3 走<b>同一条产品方法</b>），返回切换后的状态。
+         */
+        boolean toggleDebugOverlay();
+
+        /** M2.1：{@code EntityRenderer} 当前的碰撞箱调试开关（用于断言它跟随 F3）。 */
+        boolean debugHitboxEnabled();
+
+        /**
+         * M2.1：按给定 overlay 开关真跑一遍 F3 实体叠层（走产品的产出闸门），返回它产出的行。
+         *
+         * <p>自测不自造行格式：返回的就是 {@code HudModel.extraDebugLines} 里那一批。
+         */
+        java.util.List<String> debugEntityOverlayLines(boolean overlayOn);
+
         /** 走产品的 F6「调试补给」路径（{@code SkyIslandGame.grantStartingGear}）。 */
         void grantDebugSupply();
 
@@ -2346,7 +2376,142 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                         && entities.totalSpawned() == spawnedBefore2,
                 "alive " + aliveBefore2 + "→" + entities.aliveCount()
                         + "，spawned " + spawnedBefore2 + "→" + entities.totalSpawned());
+
+        // ---- 用例 3（用户规格 §2 点名「边缘」）：水平前方 4–8 格全是虚空（脚下无地面）----
+        // 摆位：出生点 (0.5, 64, 0.5)，yaw=-135° → 水平前向 = 归一化 (+1,+1)/√2，
+        // 正好指向测试世界的虚空坑（x∈[3,6], z∈[3,6] 无方块柱）。9 个候选落点
+        // （t=4.0…8.0 沿对角线的投影全落在 x=z∈[3,6]）都在无方块柱上 →
+        // findSpawnGroundY 一路探不到地面 → 每条候选都在「地面」这一条被拒。
+        // 这条是上一轮把"下方无地面则返回 null"换成语义后【净损失】的那块覆盖，这里补回。
+        player.teleport(SPAWN_X, SPAWN_Y, SPAWN_Z);
+        player.camera().setAngles(-135, 0);
+        player.step(world, PlayerIntent.NONE, GameLoop.FIXED_DT);
+        int aliveBefore3 = entities.aliveCount();
+        int spawnedBefore3 = entities.totalSpawned();
+        MeleeMonster overVoid = host.spawnMonsterInFront();
+        int[] rejEdge = host.lastSpawnRejectCounts();
+        int cand = spawnCandidateCount();
+        record("边缘（水平前方全虚空）刷怪返回 null（脚下无可站立地面）",
+                overVoid == null,
+                overVoid == null
+                        ? "返回 null；拒绝计数 地面=" + rejEdge[0] + " 落差=" + rejEdge[1]
+                                + " 视锥=" + rejEdge[2] + " 视线=" + rejEdge[3]
+                                + "（候选数=" + cand + "）"
+                        : String.format("竟生成了 (%.2f, %.2f, %.2f)",
+                                overVoid.position().x, overVoid.position().y, overVoid.position().z));
+        record("边缘（水平前方全虚空）实体数不变（没有偷偷塞一只）",
+                entities.aliveCount() == aliveBefore3
+                        && entities.totalSpawned() == spawnedBefore3,
+                "alive " + aliveBefore3 + "→" + entities.aliveCount()
+                        + "，spawned " + spawnedBefore3 + "→" + entities.totalSpawned());
+        // 归因：这条位姿下 9 个候选必须【全部】被「地面」拒（其余三条一个都没轮到），
+        // 否则"边缘"这个场景就没被真正构造出来（可能被别的判据顺手拒了）。
+        record("边缘（水平前方全虚空）拒绝归因：全部来自「地面」判据",
+                rejEdge[0] == cand && rejEdge[1] == 0 && rejEdge[2] == 0 && rejEdge[3] == 0,
+                "拒绝计数 地面=" + rejEdge[0] + " 落差=" + rejEdge[1]
+                        + " 视锥=" + rejEdge[2] + " 视线=" + rejEdge[3] + "（候选数=" + cand + "）");
+
+        // ---- 用例 4（用户规格 §2 点名「4–8 格高台」）：站在 ≥4 格高台上朝外 → 绝不生成 ----
+        // 摆位：测试世界高台顶面 y=69（比地表顶面 63 高 6 格，≥4），站 (-12, 70, -12)、
+        // yaw=180° → 水平前向 +Z（朝台外）。前方 4–8 格的列全在地表（顶面 63）→
+        // findSpawnGroundY 得 64 → Δy = 64-70 = -6，|Δy| > 3，9 个候选全部被「落差」拒。
+        player.teleport(-12.0, 70.0, -12.0);
+        player.camera().setAngles(180, 0);
+        player.step(world, PlayerIntent.NONE, GameLoop.FIXED_DT);
+        int aliveBefore4 = entities.aliveCount();
+        int spawnedBefore4 = entities.totalSpawned();
+        MeleeMonster offPlateau = host.spawnMonsterInFront();
+        int[] rejPlateau = host.lastSpawnRejectCounts();
+        record("≥4 格高台朝外：刷怪返回 null（落差超限，不刷到台下/脚下）",
+                offPlateau == null,
+                offPlateau == null
+                        ? "返回 null；拒绝计数 地面=" + rejPlateau[0] + " 落差=" + rejPlateau[1]
+                                + " 视锥=" + rejPlateau[2] + " 视线=" + rejPlateau[3]
+                                + "（候选数=" + cand + "）"
+                        : String.format("竟生成了 (%.2f, %.2f, %.2f) —— 落差 %.1f 格",
+                                offPlateau.position().x, offPlateau.position().y,
+                                offPlateau.position().z,
+                                offPlateau.position().y - player.position().y));
+        record("≥4 格高台朝外：实体数不变（没有偷偷塞一只）",
+                entities.aliveCount() == aliveBefore4
+                        && entities.totalSpawned() == spawnedBefore4,
+                "alive " + aliveBefore4 + "→" + entities.aliveCount()
+                        + "，spawned " + spawnedBefore4 + "→" + entities.totalSpawned());
+        record("≥4 格高台朝外：拒绝归因：全部来自「落差」判据",
+                rejPlateau[1] == cand && rejPlateau[0] == 0
+                        && rejPlateau[2] == 0 && rejPlateau[3] == 0,
+                "拒绝计数 地面=" + rejPlateau[0] + " 落差=" + rejPlateau[1]
+                        + " 视锥=" + rejPlateau[2] + " 视线=" + rejPlateau[3] + "（候选数=" + cand + "）");
+
+        // ---- 用例 4b：同一个高台上朝台内（前方仍有同层地面）→ 成功且 Δy≈0 ----
+        // 摆位：站高台西南角 (-15.5, 70, -15.5)，yaw=-90° → 水平前向 +X（朝台内）。
+        // 候选 t=4 → x=-11.5（floor=-12 仍在高台内，顶面 69）→ groundY 70 → Δy=0 →
+        // 四条硬条件全过。这让"高台"这个场景【正反两面】都有断言（不是只有拒绝）。
+        player.teleport(-15.5, 70.0, -15.5);
+        player.camera().setAngles(-90, 0);
+        player.step(world, PlayerIntent.NONE, GameLoop.FIXED_DT);
+        MeleeMonster onPlateau = host.spawnMonsterInFront();
+        record("≥4 格高台朝台内：刷怪成功（前方仍有同层地面）",
+                onPlateau != null,
+                onPlateau == null
+                        ? "返回 null（本应成功 —— 台内前 4 格就是同层地面）"
+                        : String.format("怪 (%.2f, %.2f, %.2f)，Δy=%.2f",
+                                onPlateau.position().x, onPlateau.position().y,
+                                onPlateau.position().z,
+                                onPlateau.position().y - player.position().y));
+        record("≥4 格高台朝台内：Δy≈0（怪与玩家同层）",
+                onPlateau != null
+                        && Math.abs(onPlateau.position().y - player.position().y) < 0.05,
+                onPlateau == null ? "monster=null"
+                        : String.format("玩家 y=%.4f，怪 y=%.4f，Δy=%.4f",
+                                player.position().y, onPlateau.position().y,
+                                onPlateau.position().y - player.position().y));
+
+        // ---- 用例 5（用户规格 §4/§7）：只有「视锥」会拒的位姿 —— 视锥硬条件的专属守门人 ----
+        // 摆位：回到地表出生点、水平朝 -Z（候选全在平地：地面/落差/视线都成立），
+        // 但把 pitch 压到 89°（几乎朝天）—— 候选方向仍取"相机水平前向"，而怪物中心
+        // 相对视线（几乎垂直向上）的偏轴角 ≈ 90° > 半 FOV（35°），落在视锥之外。
+        // 这条专门给「视锥」一个会变红的断言：把它改成恒真（always-true），本用例必红。
+        player.teleport(SPAWN_X, SPAWN_Y, SPAWN_Z);
+        player.camera().setAngles(0, 89.0);
+        player.step(world, PlayerIntent.NONE, GameLoop.FIXED_DT);
+        int aliveBefore5 = entities.aliveCount();
+        int spawnedBefore5 = entities.totalSpawned();
+        MeleeMonster offScreen = host.spawnMonsterInFront();
+        int[] rejFrustum = host.lastSpawnRejectCounts();
+        boolean frustumEvaluated = host.lastFrustumEvaluated();
+        record("视锥外刷怪返回 null（候选在视野外）",
+                offScreen == null,
+                offScreen == null ? "返回 null"
+                        : String.format("竟生成了 (%.2f, %.2f, %.2f)",
+                                offScreen.position().x, offScreen.position().y,
+                                offScreen.position().z));
+        record("视锥外实体数不变（没有偷偷塞一只）",
+                entities.aliveCount() == aliveBefore5
+                        && entities.totalSpawned() == spawnedBefore5,
+                "alive " + aliveBefore5 + "→" + entities.aliveCount()
+                        + "，spawned " + spawnedBefore5 + "→" + entities.totalSpawned());
+        // 关键：证明"是视锥拒的"而不是碰巧被别的判据拒的 —— 视锥必须真的参与，
+        // 且 9 个候选全部【只】被视锥这一条拒（地面/落差/视线均为 0）。
+        record("视锥外拒绝归因：全部来自「视锥」判据（地面/落差/视线均为 0）",
+                frustumEvaluated && rejFrustum[0] == 0 && rejFrustum[1] == 0
+                        && rejFrustum[3] == 0 && rejFrustum[2] == cand,
+                "视锥参与=" + frustumEvaluated + "；拒绝计数 地面=" + rejFrustum[0]
+                        + " 落差=" + rejFrustum[1] + " 视锥=" + rejFrustum[2]
+                        + " 视线=" + rejFrustum[3] + "（候选数=" + cand + "）");
         Log.info("==========================================================");
+    }
+
+    /**
+     * F4 候选带上候选点的个数（与 {@code SkyIslandGame} 的搜索规格同源）。
+     *
+     * <p>断言里凡是"9 个候选全部被某一条拒"的归因，都用它而不是写死 9 ——
+     * 若候选规格将来改了，断言会跟着改，不会变成一条口径漂移的假断言。
+     */
+    private static int spawnCandidateCount() {
+        return (int) Math.round(
+                (SkyIslandGame.SPAWN_CANDIDATE_MAX - SkyIslandGame.SPAWN_CANDIDATE_MIN)
+                        / SkyIslandGame.SPAWN_CANDIDATE_STEP) + 1;
     }
 
     /**
@@ -2408,6 +2573,115 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         record("同层咬击：记录的竖直偏移 ≈ 0",
                 !Double.isNaN(biteV) && Math.abs(biteV) < 1e-6,
                 "竖直 Δy = " + biteV + " 格");
+        Log.info("==========================================================");
+    }
+
+    /**
+     * M2.1：<b>F3 实体叠层 + 碰撞箱同步</b>的守门人。
+     *
+     * <h2>它补的是哪一段缺口</h2>
+     * {@code SkyIslandGame.appendEntityDebugLines()} 与
+     * {@code EntityRenderer.setDebugHitbox()} 都曾经是"定义了、没人登记"的接线：
+     * 方法齐备、渲染分支也在，却没有任何断言跟着它们。于是"F3 打开后叠层有没有真的产出"
+     * 与"碰撞箱开关有没有跟着 F3 走"这两件事在门禁里全是空白 —— 改坏了也不会红。
+     *
+     * <h2>为什么必须走产品的产出闸门</h2>
+     * 断言通过 {@code Host.debugEntityOverlayLines()} 调用<b>产品自己的</b>
+     * {@code appendEntityDebugLinesIfEnabled()}，不自造行格式、不在这里重写 {@code if}：
+     * 若把那条闸门删掉或改成恒真，"overlay 关 → 0 行"就会变红。
+     *
+     * <h2>为什么"视锥 是 / 否 同时出现"才算真判定</h2>
+     * 视锥字段若被写死成常量，"身前=是、身后=否"不可能同时成立 —— 这条断言专门堵死
+     * "把字段填成字面量"。它用的是与 F4 刷怪同一份判定工具（{@link Frustum}）。
+     */
+    public void verifyDebugEntityOverlay() {
+        Log.info("================ M2.1 自测：F3 实体叠层 + 碰撞箱同步 ================");
+        Player player = host.player();
+        World world = host.world();
+        EntityManager entities = host.entities();
+
+        // 摆位：站出生点、水平朝 -Z。放 3 只怪：2 只在正前方（视锥内）、1 只在身后（视锥外）。
+        entities.clear();
+        player.teleport(SPAWN_X, SPAWN_Y, SPAWN_Z);
+        player.camera().setAngles(0, 0);
+        player.step(world, PlayerIntent.NONE, GameLoop.FIXED_DT);
+        entities.spawnMeleeMonster(SPAWN_X - 0.8, SPAWN_Y, SPAWN_Z - 4.0);
+        entities.spawnMeleeMonster(SPAWN_X + 0.8, SPAWN_Y, SPAWN_Z - 5.0);
+        entities.spawnMeleeMonster(SPAWN_X, SPAWN_Y, SPAWN_Z + 4.0);   // 身后 → 视锥外
+        int alive = entities.aliveCount();
+
+        List<String> on = host.debugEntityOverlayLines(true);
+        List<String> off = host.debugEntityOverlayLines(false);
+
+        // 断言①：overlay 开 → 每只存活实体一行 + 一行汇总
+        int expectedOn = alive + 1;
+        record("F3 开：实体叠层每只存活实体一行 + 一行汇总",
+                on.size() == expectedOn,
+                "存活=" + alive + "，产出行数=" + on.size() + "（期望 " + expectedOn + "）");
+
+        int withBoth = 0;
+        boolean hasFrustumYes = false;
+        boolean hasFrustumNo = false;
+        boolean hasLos = false;
+        for (String line : on) {
+            if (line.contains("视锥") && line.contains("视线")) {
+                withBoth++;
+            }
+            if (line.contains("视锥 是")) {
+                hasFrustumYes = true;
+            }
+            if (line.contains("视锥 否")) {
+                hasFrustumNo = true;
+            }
+            if (line.contains("视线 是") || line.contains("视线 否")) {
+                hasLos = true;
+            }
+        }
+        record("F3 开：每行都带 视锥/视线 字段（来自真实判定）",
+                withBoth == alive && hasLos,
+                "含 视锥/视线 的行数=" + withBoth + "（存活=" + alive + "），视线字段可辨=" + hasLos);
+        record("F3 开：视锥字段是真判定（身前=是、身后=否 同时出现）",
+                hasFrustumYes && hasFrustumNo,
+                "出现「视锥 是」=" + hasFrustumYes + "，出现「视锥 否」=" + hasFrustumNo);
+
+        // 断言①（反向）：overlay 关 → 一行都不产出
+        record("F3 关：实体叠层一行都不产出",
+                off.isEmpty(),
+                "产出行数=" + off.size() + (off.isEmpty() ? "" : "，首行=" + off.get(0)));
+
+        // 断言①（上限口径）：实体数 > DEBUG_ENTITY_LINES_MAX 时只列上限只 + 汇总
+        entities.clear();
+        int overflow = SkyIslandGame.DEBUG_ENTITY_LINES_MAX + 2;
+        for (int i = 0; i < overflow; i++) {
+            entities.spawnMeleeMonster(SPAWN_X + (i % 3) - 1.0, SPAWN_Y, SPAWN_Z - 1.0 - i);
+        }
+        int many = entities.aliveCount();
+        List<String> capped = host.debugEntityOverlayLines(true);
+        int max = SkyIslandGame.DEBUG_ENTITY_LINES_MAX;
+        record("F3 开：实体超上限时只列 DEBUG_ENTITY_LINES_MAX 只 + 汇总",
+                many > max && capped.size() == max + 1,
+                "存活=" + many + "，上限=" + max + "，产出行数=" + capped.size()
+                        + "（期望 " + (max + 1) + "）");
+        record("F3 开：汇总行写明 存活 N / 显示 M（不静默吞掉省略数）",
+                !capped.isEmpty()
+                        && capped.get(capped.size() - 1).contains("存活 " + many)
+                        && capped.get(capped.size() - 1).contains("显示 " + max),
+                "末行=\"" + (capped.isEmpty() ? "<无>" : capped.get(capped.size() - 1)) + "\"");
+
+        // 断言②：EntityRenderer.setDebugHitbox 与 F3 状态同步（F3 开⇒true，关⇒false）。
+        // 起点确定：先经产品闸门把 overlay 置为关，再连续切换两次，逐次断言碰撞箱跟随。
+        host.debugEntityOverlayLines(false);
+        boolean overlay1 = host.toggleDebugOverlay();     // 关 → 开
+        boolean hitbox1 = host.debugHitboxEnabled();
+        record("F3 切换：碰撞箱开关与 overlay 同步（第 1 次：开）",
+                hitbox1 == overlay1 && overlay1,
+                "overlay=" + overlay1 + "，EntityRenderer.isDebugHitbox=" + hitbox1);
+        boolean overlay2 = host.toggleDebugOverlay();     // 开 → 关
+        boolean hitbox2 = host.debugHitboxEnabled();
+        record("F3 切换：碰撞箱开关与 overlay 同步（第 2 次：关）",
+                hitbox2 == overlay2 && !overlay2,
+                "overlay=" + overlay2 + "，EntityRenderer.isDebugHitbox=" + hitbox2);
+        host.debugEntityOverlayLines(false);              // 复位：overlay 关
         Log.info("==========================================================");
     }
 

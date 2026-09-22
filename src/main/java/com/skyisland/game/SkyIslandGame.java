@@ -54,6 +54,7 @@ import java.lang.management.RuntimeMXBean;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -234,7 +235,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      * 因此按到玩家的水平距离取最近的 8 只，其余用一行"存活 N / 显示 M"汇总 ——
      * 让"被省略了多少"这件事不会被静默吞掉。
      */
-    private static final int DEBUG_ENTITY_LINES_MAX = 8;
+    static final int DEBUG_ENTITY_LINES_MAX = 8;
 
     // ============================================================ 运行参数
 
@@ -400,6 +401,26 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      * （与 {@link #losDirection} 同一取向：渲染路径上不制造临时分配）。
      */
     private final List<Entity> debugEntityScratch = new ArrayList<>();
+
+    /**
+     * M2.1：上一轮 {@link #debugSpawnMonster()} 里四个硬条件各自的<b>拒绝计数</b>
+     * （索引 0=地面 1=落差 2=视锥 3=视线）。
+     *
+     * <p><b>为什么必须由产品路径自己累积：</b>失败提示只告诉玩家"没有合适的位置"，
+     * 却说不清是哪一条判据把所有候选都拒了 —— 排查"F4 按了没反应"时，
+     * 唯一的线索就是这个分布。若由自测另算一套，它证明的是脚手架的判断而不是产品的。
+     * 每次 {@code debugSpawnMonster()} 开始时清零，因此它<u>恒指最近一次</u>。
+     */
+    private final int[] lastSpawnRejectCounts = new int[4];
+
+    /**
+     * M2.1：上一轮 {@link #debugSpawnMonster()} 里视锥判据是否<b>真的参与</b>。
+     *
+     * <p>无渲染器时 {@link #refreshCameraFrustum()} 返回 {@code null}，
+     * 视锥判据因短路<u>整条不执行</u>。此时它既不是"通过"、也不是"拒绝" ——
+     * 本字段让这两种情形在日志里可辨，绝不把"没判"伪装成"判过了"。
+     */
+    private boolean lastFrustumEvaluated;
 
     // ---- M2.1：最小音频反馈链 ----
 
@@ -1255,15 +1276,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     /** 与逻辑步解耦的帧级边沿动作：本帧内立即处理。 */
     private void handleFrameEdges() {
         if (frameIntent.toggleDebugPressed()) {
-            hud.showDebugOverlay = !hud.showDebugOverlay;
-            // M2.1：F3 同时开关实体的碰撞箱线框。EntityRenderer.setDebugHitbox 此前是
-            // 一处"死接线"——方法齐备、渲染分支也在，但全项目零调用，于是 F3 永远看不到碰撞箱。
-            // 这里把它接到唯一的调试开关上：F3 开 = overlay + 碰撞箱都开，两者语义同为"给我的眼睛看"。
-            // 注意它是 static 方法，只加调用点，不改 EntityRenderer 本身。
-            EntityRenderer.setDebugHitbox(hud.showDebugOverlay);
-            Log.info("[HUD] F3 调试 overlay: %s（实体碰撞箱线框 %s）",
-                    hud.showDebugOverlay ? "开" : "关",
-                    hud.showDebugOverlay ? "开" : "关");
+            toggleDebugOverlay();
         }
         if (frameIntent.screenshotPressed()) {
             pendingScreenshotLabel = "manual";
@@ -1292,6 +1305,26 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             entities.clear();
             showEvent("已清空 " + removed + " 个实体", 2.0);
         }
+    }
+
+    /**
+     * M2.1：F3 调试 overlay 的<b>唯一切换点</b>（玩家按 F3 与自测走同一条）。
+     *
+     * <p>它同时把 {@code EntityRenderer.setDebugHitbox} 与 overlay 状态绑在一起。
+     * 该方法此前是一处<b>死接线</b>（方法齐备、渲染分支也在，但全项目零调用，
+     * 于是 F3 永远看不到碰撞箱）—— 把切换逻辑收进一个命名方法，是为了让它可被自测
+     * 直接调用并断言"碰撞箱开关确实跟着 F3 走"，而不是只能靠读代码相信。
+     *
+     * @return 切换后的 overlay 状态（true = 开）
+     */
+    private boolean toggleDebugOverlay() {
+        hud.showDebugOverlay = !hud.showDebugOverlay;
+        // 注意 setDebugHitbox 是 static：只加调用点，不改 EntityRenderer 本身。
+        EntityRenderer.setDebugHitbox(hud.showDebugOverlay);
+        Log.info("[HUD] F3 调试 overlay: %s（实体碰撞箱线框 %s）",
+                hud.showDebugOverlay ? "开" : "关",
+                hud.showDebugOverlay ? "开" : "关");
+        return hud.showDebugOverlay;
     }
 
     /**
@@ -1361,6 +1394,11 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         // 而不是上一帧 renderWorld 留下的残留（两者在正常帧里相同，在天旋地转的边界帧里不同）。
         Frustum frustum = refreshCameraFrustum();
 
+        // 归因计数清零，并记下"视锥判据这一次到底参没参与"。
+        // 二者都是产品路径自己产生的观测值 —— 不是为了自测另算一套。
+        Arrays.fill(lastSpawnRejectCounts, 0);
+        lastFrustumEvaluated = frustum != null;
+
         int candidateCount = (int) Math.round(
                 (SPAWN_CANDIDATE_MAX - SPAWN_CANDIDATE_MIN) / SPAWN_CANDIDATE_STEP) + 1;
 
@@ -1370,12 +1408,18 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             double cz = feetZ + fz * t;
 
             // (a)+(b) 地面与头顶净空：复用缺陷 B 的竖直落地搜索。
+            // 每条判据只有一个执行点：布尔结果既是"是否 continue"的依据，
+            // 也是成功后写进日志的那一项 —— 不再是裸字面量。
             Double groundY = findSpawnGroundY(cx, feetY, cz);
-            if (groundY == null) {
+            boolean groundOk = groundY != null;
+            if (!groundOk) {
+                lastSpawnRejectCounts[0]++;
                 continue;
             }
             double dy = groundY - feetY;
-            if (Math.abs(dy) > SPAWN_MAX_VERTICAL_OFFSET) {
+            boolean offsetOk = Math.abs(dy) <= SPAWN_MAX_VERTICAL_OFFSET;
+            if (!offsetOk) {
+                lastSpawnRejectCounts[1]++;
                 continue;
             }
 
@@ -1383,14 +1427,23 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
 
             // (c) 视锥：单点测试用一个退化的 AABB（min == max）。
             // Frustum 的 p-vertex 判定是保守的（可能多判可见），对"别把该看见的刷没"这个方向是对的。
-            if (frustum != null && !frustum.intersectsAABB(
-                    (float) cx, (float) centerY, (float) cz,
-                    (float) cx, (float) centerY, (float) cz)) {
-                continue;
+            // frustum == null ⇒ 判据整条未参与（短路），此时 frustumOk 保持 true 但【不】计入
+            // 拒绝计数、也【不】在日志里写成"通过"（见 success 处的 frustumLabel）。
+            boolean frustumOk = true;
+            if (frustum != null) {
+                frustumOk = frustum.intersectsAABB(
+                        (float) cx, (float) centerY, (float) cz,
+                        (float) cx, (float) centerY, (float) cz);
+                if (!frustumOk) {
+                    lastSpawnRejectCounts[2]++;
+                    continue;
+                }
             }
 
             // (d) 视线：眼睛 → 怪物中心的体素射线。
-            if (!hasLineOfSight(cx, centerY, cz)) {
+            boolean losOk = hasLineOfSight(cx, centerY, cz);
+            if (!losOk) {
+                lastSpawnRejectCounts[3]++;
                 continue;
             }
 
@@ -1416,21 +1469,32 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             // 自证日志：把四个判据的输入与结果一次写全。特别保留"相机前方向与落点方向的夹角"
             // —— 它是"明明刷在前面却不在视野里"这类问题唯一能一眼看穿的数字：旧实现下它随俯仰漂移，
             // 新实现下它等于"从准星中心到怪物中心的真实偏轴角"（受视锥判据约束，必在视野内）。
+            //
+            // ★ 修正（M2.1 收口）：四个字段全部来自上面真实的布尔结果，不再是裸字面量 true。
+            //   旧写法 "...视锥=%b 视线=%b", ..., true, true 是常量 —— 它天然无法区分
+            //   "判过且可见"与"根本没判"（视锥在 frustum==null 时短路，日志照样写 true）。
+            //   现在"未参与"显式写成"未参与(无渲染器)"，与"通过"彻底分开。
             Vector3d eye = player.eyePosition();
             double angleDeg = angleDegBetween(
                     cam.forward().x(), cam.forward().y(), cam.forward().z(),
                     cx - eye.x, centerY - eye.y, cz - eye.z);
+            String frustumLabel = frustum == null ? "未参与(无渲染器)" : String.valueOf(frustumOk);
             Log.info("[战斗] F4 刷怪 水平前向=(%.3f, %.3f) 俯仰=%.1f° 选中距离 t=%.1f "
                             + "落点=(%.2f, %.2f, %.2f) 水平距离=%.2f 竖直落差 Δy=%.2f "
-                            + "视锥=%b 视线=%b 相机前向与落点方向夹角=%.1f°",
-                    fx, fz, pitchDeg, t, cx, groundY, cz, horizontal, dy, true, true, angleDeg);
+                            + "地面=%b 落差=%b 视锥=%s 视线=%b 相机前向与落点方向夹角=%.1f°",
+                    fx, fz, pitchDeg, t, cx, groundY, cz, horizontal, dy,
+                    groundOk, offsetOk, frustumLabel, losOk, angleDeg);
             return monster;
         }
 
         // 一个候选都不满足 → 绝不生成（宁可什么都不发生，也不刷一只玩家找不到的怪）。
+        // 失败提示带上四条判据各自的拒绝计数：让"按了没反应"可归因（哪一条把候选全拒了）。
         Log.noteWarning("SkyIslandGame", String.format(
-                "F4 刷怪失败：水平前方 %.0f–%.0f 格内没有同时满足 地面 / 落差 / 视锥 / 视线 的候选位置",
-                SPAWN_CANDIDATE_MIN, SPAWN_CANDIDATE_MAX));
+                "F4 刷怪失败：水平前方 %.0f–%.0f 格内没有同时满足 地面 / 落差 / 视锥 / 视线 的候选位置"
+                        + "（拒绝计数 共 %d 个候选：地面=%d 落差=%d 视锥=%d%s 视线=%d）",
+                SPAWN_CANDIDATE_MIN, SPAWN_CANDIDATE_MAX, candidateCount,
+                lastSpawnRejectCounts[0], lastSpawnRejectCounts[1], lastSpawnRejectCounts[2],
+                lastFrustumEvaluated ? "" : "(未参与:无渲染器)", lastSpawnRejectCounts[3]));
         showEvent("前方 4–8 格内没有合适的位置，转个方向再试", 2.5);
         return null;
     }
@@ -2189,6 +2253,18 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         // ---- M2.1：F3 overlay 的实体信息（任务 C）----
         // 只在 overlay 打开时计算：LOS 是体素射线，虽然只有个位数实体、微秒级，
         // 但没必要在 F3 关着时每帧白跑。
+        appendEntityDebugLinesIfEnabled();
+    }
+
+    /**
+     * M2.1：F3 实体叠层的<b>唯一产出闸门</b>。
+     *
+     * <p>把 {@code if (hud.showDebugOverlay)} 这条判据收进一个命名方法，是为了让它成为
+     * 一条<u>唯一</u>且可被自测直接调用的执行点：自测按 overlay 开 / 关各跑一次，
+     * 断言"开 → 每只存活实体一行 + 汇总；关 → 一行都不产出"。
+     * 若把闸门删掉或改成恒真，自测的"关 → 0 行"就会变红。
+     */
+    private void appendEntityDebugLinesIfEnabled() {
         if (hud.showDebugOverlay) {
             appendEntityDebugLines();
         }
@@ -2750,6 +2826,37 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         }
 
         @Override
+        public int[] lastSpawnRejectCounts() {
+            // 复制一份：这是产品的观测值，自测只读，不得反过来改它。
+            return lastSpawnRejectCounts.clone();
+        }
+
+        @Override
+        public boolean lastFrustumEvaluated() {
+            return lastFrustumEvaluated;
+        }
+
+        @Override
+        public boolean toggleDebugOverlay() {
+            return SkyIslandGame.this.toggleDebugOverlay();
+        }
+
+        @Override
+        public boolean debugHitboxEnabled() {
+            return EntityRenderer.isDebugHitbox();
+        }
+
+        @Override
+        public List<String> debugEntityOverlayLines(boolean overlayOn) {
+            // 走产品自己的闸门 appendEntityDebugLinesIfEnabled()，不在这里重写 if：
+            // 若闸门被改成恒真，"overlay 关 → 0 行"这条断言就会红。
+            hud.showDebugOverlay = overlayOn;
+            hud.extraDebugLines.clear();
+            appendEntityDebugLinesIfEnabled();
+            return List.copyOf(hud.extraDebugLines);
+        }
+
+        @Override
         public void grantDebugSupply() {
             grantStartingGear("M2 战斗自测补给（F6 路径）");
         }
@@ -2848,6 +2955,14 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                 combatSelfTest.verifyMeleeVerticalGate();
             } catch (Throwable t) {
                 Log.error("[自测] M2 近战竖直判定校验过程异常", t);
+            }
+            // 2.10) M2.1 任务 C：F3 实体叠层 + 碰撞箱同步。与前几条并列而不是合并 ——
+            // 它失败的原因（"叠层没产出/字段是写死的" 或 "碰撞箱开关没跟着 F3 走"）
+            // 与刷怪落点、近战判定都无关，合并会让失败信息指向错误方向。
+            try {
+                combatSelfTest.verifyDebugEntityOverlay();
+            } catch (Throwable t) {
+                Log.error("[自测] M2 实体叠层校验过程异常", t);
             }
         }
 
