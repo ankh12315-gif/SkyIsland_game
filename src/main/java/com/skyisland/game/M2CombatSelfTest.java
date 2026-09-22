@@ -510,34 +510,35 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private boolean approachScreenshotTaken;
 
     /**
-     * M2.1 像素证据：请求 {@code monster-in-view} 截图时的墙钟时刻（毫秒）。
+     * M2.1 像素证据：请求 {@code monster-in-view} 截图时的墙钟时刻（毫秒）；
+     * <b>本轮未发起请求时恒为 {@code -1}</b>。
      *
      * <p>截图目录是<b>共享</b>的（多次运行会累积同名文件），因此收尾做像素校验时
-     * 不能只挑"最新的 monster-in-view PNG"——必须挑<b>本次运行之后新产生的</b>那一张。
-     * 用请求时刻做下界即可唯一定位。
+     * 不能只挑"最新的 monster-in-view PNG"——必须挑<b>本轮之后新产生的</b>那一张。
      *
-     * <p><b>但请求时刻不能单独当"本轮"的凭据</b>：它只在跑到 {@code SPAWN_AND_APPROACH}
-     * 第 30 步时才会被赋值。若本轮因故没跑到那一步（阶段提前结束 / 截图请求被丢弃 /
-     * 目录不可写），它会一直是 {@code -1}，下界就退化成 {@code Long.MIN_VALUE}，
-     * 选取逻辑会安静地读到<b>上一轮</b>的截图并变绿 —— 这正是历史上出现过的假绿漏洞。
-     * 因此必须用下面 {@link #runStartMillis} 这个"任何一轮都必有值"的下界兜底，
-     * 详见 {@link #newestMonsterPng(Path)}。
+     * <p>本字段既作 mtime 下界，也是把判据绑定到"本轮"的<b>硬门</b>：它只在跑到
+     * {@code SPAWN_AND_APPROACH} 第 30 步时才会被赋值。若本轮没跑到那一步，它就一直是
+     * {@code -1} —— 此时目录里<b>任何</b> monster-in-view PNG 都必然来自别的轮次，
+     * 不存在"本轮的截图"。见 {@link #screenshotRequestedThisRun()} 与
+     * {@link #newestMonsterPng(Path)}。
      */
     private long approachScreenshotRequestedAtMs = -1;
 
     /**
-     * 本轮自测的起始墙钟时刻（毫秒）：在自测对象构造时即固定，与"是否请求过截图"无关，
-     * 因此<b>任何</b>一轮都有值，是判定"某张截图是不是本轮产出"的兜底下界。
+     * 本轮自测的起始墙钟时刻（毫秒）：在自测对象构造时即固定。
      *
-     * <p>为什么不复用 {@link #approachScreenshotRequestedAtMs}：见该字段的说明 ——
-     * 请求时刻可能永远是 {@code -1}，那样会把"本轮"退化成"任意轮"。
+     * <p><b>它已不再承担"兜底下界"的角色</b>：中间版本曾用它兜底（请求时刻未赋值时
+     * 退化为 {@code runStartMillis} 作下界），但那条退路本身就是一种假绿可能 ——
+     * 它给绿灯留了一条"读到的时间恰好落在容差里"的解释。现在改为硬门
+     * （{@link #screenshotRequestedThisRun()}），本字段只用于在失败消息里给 mtime
+     * 一个本轮参照。
      */
     private final long runStartMillis = System.currentTimeMillis();
 
     /**
-     * 截图"新近度"容差（毫秒）：文件系统 mtime 可能被截断到秒级，故允许本轮下界
-     * 向前放宽这么多，仅用于吸收这种粒度误差；它<b>远小于</b>两轮之间的间隔，
-     * 因此不会让"上一轮的截图"冒充"本轮的"。当前取 2 秒。
+     * 截图"新近度"容差（毫秒）：<b>仅</b>用于吸收"请求时刻与落盘 mtime 落在同一秒
+     * （文件系统 mtime 秒级截断）"的抖动。它<b>不再承担"兜底下界"的角色</b>，
+     * 且远小于两轮之间的间隔，因此不会让"上一轮的截图"冒充"本轮的"。当前取 2 秒。
      */
     private static final long SCREENSHOT_FRESHNESS_TOLERANCE_MS = 2_000L;
 
@@ -1980,38 +1981,32 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      * "最新的 monster-in-view PNG"。若<b>本轮</b>因故没产出这张图（阶段没跑到第 30 步 /
      * 截图请求被丢弃 / 目录不可写），选取逻辑会安静地返回<b>上一轮</b>留下的那张，
      * 于是判据名为"本轮这一帧里有怪"、实测却是"历史某轮有怪"，<b>在缺陷仍然存在时也会变绿</b>。
-     * 修法见 {@link #newestMonsterPng(Path)}：把 mtime 下界绑定到本轮
-     * （构造时固定的 {@link #runStartMillis} 兜底 + 第 30 步的
-     * {@link #approachScreenshotRequestedAtMs} 收紧），并把"新近度"单独升格成一条
-     * {@code record(...)} 断言，消息里同时打印 PNG 的 mtime 与本轮时间 —— 这样"没截图"
-     * 与"读到旧图"是两条各自会变红、且一眼可分辨的失败。
+     * 修法见 {@link #newestMonsterPng(Path)}：先过硬门
+     * {@link #screenshotRequestedThisRun()}（本轮必须真的发起过请求），再把 mtime 下界
+     * 绑定到本轮请求时刻（见 {@link #thisRunScreenshotFloorMs()}），并把"新近度"单独升格成
+     * 一条 {@code record(...)} 断言，消息里同时打印 PNG 的 mtime、本轮起始与本轮请求时刻。
+     *
+     * <p><b>兜底下界也曾经是一条退路，现在被删掉了。</b>中间版本曾允许"请求时刻未赋值时
+     * 退化为 {@link #runStartMillis} 作下界"；那等于给绿灯留了一条"读到的时间恰好落在容差里"
+     * 的解释。现在未发起请求即直接判无截图，绿灯只剩一条解释：<b>本轮确实产出了这张新图</b>。
      */
     public void verifyMonsterFramebuffer() {
         Log.info("================ M2.1 自测：怪物帧缓冲像素证据 ================");
         Path dir = Path.of(System.getProperty("skyisland.screenshotDir", "screenshots"));
-        Path png = newestMonsterPng(dir);                 // 只认<b>本轮</b>产出的
+        boolean requested = screenshotRequestedThisRun();
+        Path png = newestMonsterPng(dir);                 // 先过硬门，再只认本轮产出的
         Path newestAny = newestMonsterPngAnyRun(dir);     // 仅用于失败时打印目录现状
         long pngTs = png == null ? Long.MIN_VALUE : mtimeMs(png);
         long newestAnyTs = newestAny == null ? Long.MIN_VALUE : mtimeMs(newestAny);
 
         /*
          * 独立的"新近度"断言：把"有没有截图"与"截图是不是本轮的"分成两条各自会变红的判据。
-         * 本轮没产出 → 这条红；目录里只剩上一轮的旧图 → 这条也红，且消息同时打出两个时间，
-         * 一眼能看出是"旧图冒充了本轮"。这是对历史上那个假绿漏洞的正面封堵。
+         * 三种失败原因在消息里各自可辨：①本轮压根没发起请求；②请求了但目录里没有本轮的新图；
+         * ③有图但 mtime 早于本轮下界（旧图）。这是对历史上那个假绿漏洞的正面封堵。
          */
         record("monster-in-view 截图来自本轮运行",
                 png != null,
-                png != null
-                        ? "本轮 PNG=" + png.getFileName() + " mtime=" + pngTs
-                                + "，本轮起始 epochMs=" + runStartMillis
-                        : "本轮起始 epochMs=" + runStartMillis
-                                + "，本轮请求 epochMs=" + approachScreenshotRequestedAtMs
-                                + "，本轮 mtime 下界=" + thisRunScreenshotFloorMs()
-                                + "；目录里最新的是 "
-                                + (newestAny == null
-                                        ? "（没有任何 monster-in-view PNG）"
-                                        : newestAny.getFileName() + " mtime=" + newestAnyTs
-                                                + "（早于本轮下界）"));
+                monsterScreenshotFreshnessDetail(requested, png, pngTs, newestAny, newestAnyTs));
 
         if (png == null) {
             record("monster-in-view 截图已落盘（否则无像素可读）", false,
@@ -2072,23 +2067,34 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     /**
      * 在截图目录里找<b>本轮</b>写出的 {@code monster-in-view} PNG。
      *
-     * <h2>选择口径</h2>
-     * 把所有文件名匹配 {@code *monster-in-view*.png} 的候选<b>按 mtime 降序</b>（从新到旧）
-     * 排列，取第一个满足下界的；一个候选都不满足下界就返回 {@code null} —— 调用方据此判
-     * "本轮没产出截图"。<b>不要</b>再退回"只挑最新一张"：共享目录里最新的一张可能来自上一轮，
-     * 那样判据测的会是"历史某轮有怪"而不是"本轮这一帧有怪"（历史假绿漏洞）。
+     * <h2>第一道：硬门（绑定"本轮"）</h2>
+     * 本轮必须真的发起过 {@code monster-in-view} 请求（{@link #screenshotRequestedThisRun()}）。
+     * 未发起 ⇒ 直接返回 {@code null}，<b>不退化成 runStartMillis 兜底</b>：此时目录里任何
+     * monster-in-view PNG 都必然来自别的轮次，不存在"本轮的截图"。
      *
-     * <h2>下界怎么取（本方法的关键）</h2>
-     * 下界 = {@code max(runStartMillis, approachScreenshotRequestedAtMs)} −
-     * {@link #SCREENSHOT_FRESHNESS_TOLERANCE_MS} 毫秒，见 {@link #thisRunScreenshotFloorMs()}。
-     * 两个时刻<b>只增不减地绑定到本轮</b>：{@link #runStartMillis} 在构造时即固定，
-     * 任何一轮都有值（兜底）；{@link #approachScreenshotRequestedAtMs} 一旦有值就比
-     * 起始时刻更晚，可把"本轮"卡得更死。
+     * <h2>第二道：选择口径</h2>
+     * 过门后，把所有文件名匹配 {@code *monster-in-view*.png} 的候选<b>按 mtime 降序</b>
+     * （从新到旧）排列，取第一个 mtime {@code >=} 本轮下界的；一个都不满足就返回 {@code null}。
+     * <b>不要</b>再退回"只挑最新一张"：共享目录里最新的一张可能来自上一轮，那样判据测的会是
+     * "历史某轮有怪"而不是"本轮这一帧有怪"（历史假绿漏洞）。
      *
      * @return 本轮产出且最新的 monster-in-view PNG；本轮没有则 {@code null}
      */
     private Path newestMonsterPng(Path dir) {
+        if (!screenshotRequestedThisRun()) {
+            return null;                                  // 硬门：本轮没发起请求 → 不存在本轮的截图
+        }
         return newestMonsterPngAtLeast(dir, thisRunScreenshotFloorMs());
+    }
+
+    /**
+     * 本轮是否真的发起过 {@code monster-in-view} 截图请求。
+     *
+     * <p>这是把判据绑定到"本轮"的<b>硬门</b>：请求时刻只在跑到 {@code SPAWN_AND_APPROACH}
+     * 第 30 步时才会被赋值。判据只有过了这道门，才有资格谈"本轮的截图"。
+     */
+    private boolean screenshotRequestedThisRun() {
+        return approachScreenshotRequestedAtMs >= 0;
     }
 
     /**
@@ -2100,18 +2106,53 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     }
 
     /**
-     * "本轮"截图的允许 mtime 下界（毫秒）。
+     * "本轮"截图允许的最小 mtime（毫秒）= 本轮请求时刻 − {@link #SCREENSHOT_FRESHNESS_TOLERANCE_MS}。
      *
-     * <p>基准取 {@code max(runStartMillis, approachScreenshotRequestedAtMs)}：请求时刻未赋值
-     * （{@code -1}）时退化为 {@link #runStartMillis}，因此<b>永远有一个本轮下界</b>，
-     * 不会再出现"下界 = {@code Long.MIN_VALUE} → 任意轮都能过"的假绿。再减去新近度容差，
-     * 见 {@link #SCREENSHOT_FRESHNESS_TOLERANCE_MS}。
+     * <p>容差只用来吸收"请求时刻与落盘 mtime 落在同一秒（mtime 秒级截断）"的抖动，
+     * <b>不再承担"兜底下界"的角色</b>。本方法<b>只有</b>在本轮确实发起过请求时才有意义，
+     * 调用前必须先过 {@link #screenshotRequestedThisRun()}。
+     *
+     * @throws IllegalStateException 在本轮未发起请求时被调用 —— 这是编程错误（漏了硬门），
+     *                               不是运行期分支；宁可显式炸掉也不静默退化成兜底下界
      */
     private long thisRunScreenshotFloorMs() {
-        long base = approachScreenshotRequestedAtMs >= 0
-                ? Math.max(runStartMillis, approachScreenshotRequestedAtMs)
-                : runStartMillis;
-        return base - SCREENSHOT_FRESHNESS_TOLERANCE_MS;
+        if (!screenshotRequestedThisRun()) {
+            throw new IllegalStateException(
+                    "thisRunScreenshotFloorMs() 只能在本轮已发起 monster-in-view 请求时调用；"
+                            + "调用方必须先判 screenshotRequestedThisRun()");
+        }
+        return approachScreenshotRequestedAtMs - SCREENSHOT_FRESHNESS_TOLERANCE_MS;
+    }
+
+    /**
+     * 组装"本轮是否有截图"的消息，让三种失败原因在日志里各自可辨：
+     * <ol>
+     *   <li>本轮没发起请求（{@code 请求 epochMs=-1}）；</li>
+     *   <li>发起过请求，但目录里没有本轮的新图（只有旧图，或根本没有图）；</li>
+     *   <li>发起了请求且有图，但 mtime 早于本轮下界（旧图冒充本轮）。</li>
+     * </ol>
+     */
+    private String monsterScreenshotFreshnessDetail(boolean requested, Path png, long pngTs,
+            Path newestAny, long newestAnyTs) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("本轮起始 epochMs=").append(runStartMillis);
+        if (requested) {
+            sb.append("，本轮请求 epochMs=").append(approachScreenshotRequestedAtMs)
+                    .append("，本轮 mtime 下界 epochMs=").append(thisRunScreenshotFloorMs());
+        } else {
+            sb.append("，本轮请求 epochMs=-1（本轮未发起 monster-in-view 请求）");
+        }
+        if (png != null) {
+            sb.append("；本轮 PNG=").append(png.getFileName()).append(" mtime=").append(pngTs);
+        } else if (!requested) {
+            sb.append("；结论：本轮根本没请求过截图，目录里任何图都来自别的轮次");
+        } else if (newestAny == null) {
+            sb.append("；目录里没有任何 monster-in-view PNG（本轮请求了却没落盘？）");
+        } else {
+            sb.append("；目录里最新的是 ").append(newestAny.getFileName())
+                    .append(" mtime=").append(newestAnyTs).append("（早于本轮下界，是旧图）");
+        }
+        return sb.toString();
     }
 
     /** 按 mtime <b>降序</b>排列候选取第一个 mtime {@code >= floor} 者；没有则 {@code null}。 */
