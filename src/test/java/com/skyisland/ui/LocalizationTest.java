@@ -148,6 +148,37 @@ class LocalizationTest {
     }
 
     @Test
+    void m2_2MenuKeysAreAllRegisteredAndNotFallingBackToTheKey() {
+        // M2.2 菜单重构新增的每一句文案都必须登记，且不得回退成 key 本身
+        // （漏登记时 text() 会把 key 原样印在屏幕上，反射测试 everyDeclaredTextKeyIsActuallyRegistered
+        //  已覆盖"每个常量都登记"，这里再逐条钉一次，便于报告里对照"哪一句来自哪"）。
+        for (String key : new String[]{
+                Localization.MENU_MAIN_CONTINUE, Localization.MENU_MAIN_NEW_WORLD,
+                Localization.MENU_MAIN_SETTINGS, Localization.MENU_MAIN_QUIT,
+                Localization.MENU_MAIN_SUBTITLE, Localization.MENU_MAIN_NO_SAVE,
+                Localization.MENU_PAUSE_RESUME, Localization.MENU_PAUSE_SAVE_EXIT,
+                Localization.MENU_PAUSE_TITLE, Localization.MENU_PAUSE_SUBTITLE,
+                Localization.MENU_SETTINGS_TITLE, Localization.MENU_SETTINGS_GROUP_CONTROL,
+                Localization.MENU_SETTINGS_GROUP_DISPLAY, Localization.MENU_SETTINGS_GROUP_AUDIO,
+                Localization.MENU_SETTINGS_SENSITIVITY, Localization.MENU_SETTINGS_INVERT_Y,
+                Localization.MENU_SETTINGS_FOV, Localization.MENU_SETTINGS_VSYNC,
+                Localization.MENU_SETTINGS_SHOW_FPS, Localization.MENU_SETTINGS_MASTER_VOLUME,
+                Localization.MENU_SETTINGS_SFX_VOLUME, Localization.MENU_SETTINGS_RESTORE_DEFAULTS,
+                Localization.MENU_SETTINGS_BACK, Localization.MENU_SETTINGS_KEY_BINDINGS,
+                Localization.MENU_SETTINGS_AUDIO_NOTE,
+                Localization.INV_TITLE, Localization.INV_TOOLTIP_COUNT,
+                Localization.INV_TOOLTIP_MAX_STACK, Localization.INV_CURSOR_HINT,
+                Localization.MSG_INV_DROPPED_ON_CLOSE, Localization.MSG_INV_MOVE_BLOCKED,
+                Localization.HINT_MAIN, Localization.HINT_PAUSE,
+                Localization.HINT_SETTINGS, Localization.HINT_INVENTORY}) {
+            assertTrue(Localization.hasText(key), "M2.2 文案 key 未登记: " + key);
+            String text = Localization.text(key);
+            assertFalse(text.equals(key),
+                    "文案不得回退成 key 本身（漏登记症状）: " + key);
+        }
+    }
+
+    @Test
     void noPlayerFacingTextStartsWithTheInternalIdPrefix() throws Exception {
         // stable ID 出现在玩家可见文案里，等于把内部标识漏给了玩家
         for (Field field : Localization.class.getDeclaredFields()) {

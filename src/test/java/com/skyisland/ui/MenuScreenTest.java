@@ -62,12 +62,31 @@ class MenuScreenTest {
     }
 
     @Test
-    void mainMenuStartsWithStartGameSelected() {
-        MenuScreen m = Menus.mainMenu();
+    void mainMenuWithSaveShowsSelectableContinue() {
+        MenuScreen m = Menus.mainMenu(true);
 
-        assertEquals(Menus.ID_START_GAME, m.selectedId(),
-                "封面默认停在'开始游戏'，玩家按回车就能进游戏");
-        assertEquals("SKYISLAND", m.title());
+        assertEquals(Menus.ID_CONTINUE, m.selectedId(),
+                "有存档时封面默认停在'继续游戏'，玩家按回车就能进游戏");
+        MenuEntry cont = m.entry(Menus.ID_CONTINUE);
+        assertNotNull(cont, "有存档时主菜单应有'继续游戏'项");
+        assertTrue(cont.selectable(), "'继续游戏'应当可选");
+        assertEquals("继续游戏", cont.label());
+        assertEquals("SKYISLAND", m.title(), "品牌名保持 ASCII，不被本地化");
+        assertEquals("体素生存原型", m.subtitle(), "副标题应来自 Localization");
+    }
+
+    @Test
+    void mainMenuWithoutSaveShowsNonSelectableNoSaveHint() {
+        MenuScreen m = Menus.mainMenu(false);
+
+        assertNull(m.entry(Menus.ID_CONTINUE),
+                "无存档时不应有可选的'继续游戏'项（否则会变成'点了没反应'）");
+        boolean hasNoSaveInfo = m.entries().stream()
+                .anyMatch(e -> e.kind() == MenuEntry.Kind.INFO && e.label().contains("尚无存档"));
+        assertTrue(hasNoSaveInfo, "无存档时应以不可选的 INFO 行提示'尚无存档'");
+        // 无存档时第一项可选中行应是"新建世界"
+        assertEquals(Menus.ID_NEW_WORLD, m.selectedId(),
+                "无存档时默认选中'新建世界'");
     }
 
     // ============================================================ 导航
@@ -241,16 +260,67 @@ class MenuScreenTest {
         }
     }
 
+    /**
+     * M2.2：设置界面的可见标签必须来自 {@link Localization}（中文），不得有英文/中文硬编码残留。
+     *
+     * <p>判据：每个<b>非键位绑定</b>的行（分组标题 / 滑杆 / 开关 / 动作 / INFO 说明）都必须含有
+     * CJK 字符 —— 因为 Localization 里这些 key 的中文文案是 CJK，而 {@code Action#label()}
+     * 是英文 ASCII。若有人"顺手把某行写成英文字面量"或"绕开 Localization 直接写中文"，
+     * 这条断言就会抓住它。键位绑定行按规格保留英文（落盘契约），单独豁免。
+     */
     @Test
-    void settingsMenuTextIsAsciiOnly() {
+    void settingsVisibleLabelsAreLocalizedChineseNotHardcodedAscii() {
         MenuScreen s = Menus.settingsMenu(new com.skyisland.settings.GameSettings());
 
         for (MenuEntry e : s.entries()) {
-            assertTrue(isAscii(e.label()), "行标题必须是 ASCII：" + e.label());
-            assertTrue(isAscii(e.value()), "行值必须是 ASCII：" + e.value());
+            if (e.kind() == MenuEntry.Kind.BINDING) {
+                continue; // 键位行允许英文 ASCII（Action.label 是落盘契约）
+            }
+            if (e.kind() == MenuEntry.Kind.SPACER) {
+                // 分组之间的空行本来就没有文字。但它必须**真的**没有文字 ——
+                // 否则"空行"就成了一个能藏英文字面量的盲区。
+                assertEquals("", e.label(), "空行不得携带任何可见文字: " + e.label());
+                continue;
+            }
+            assertTrue(containsCjk(e.label()),
+                    "设置界面的可见标签必须是中文（来自 Localization），不得是英文硬编码: " + e.label());
         }
-        assertTrue(isAscii(s.subtitle()));
-        assertTrue(isAscii(s.title()));
+        assertTrue(containsCjk(s.subtitle()), "设置副标题（操作提示）必须来自 Localization");
+        assertTrue(containsCjk(s.title()), "设置标题必须来自 Localization");
+    }
+
+    /** 各设置项标签确实等于 {@code Localization.text(...)} —— 证明走了唯一来源，而不是又写了一份字面量。 */
+    @Test
+    void settingsItemLabelsComeFromLocalization() {
+        MenuScreen s = Menus.settingsMenu(new com.skyisland.settings.GameSettings());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_SENSITIVITY), s.entry(Menus.ID_SENSITIVITY).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_INVERT_Y), s.entry(Menus.ID_INVERT_Y).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_FOV), s.entry(Menus.ID_FOV).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_VSYNC), s.entry(Menus.ID_VSYNC).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_SHOW_FPS), s.entry(Menus.ID_SHOW_FPS).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_MASTER_VOLUME), s.entry(Menus.ID_MASTER_VOLUME).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_SFX_VOLUME), s.entry(Menus.ID_SFX_VOLUME).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_RESTORE_DEFAULTS), s.entry(Menus.ID_RESTORE_DEFAULTS).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_BACK), s.entry(Menus.ID_BACK).label());
+        assertEquals(Localization.text(Localization.MENU_SETTINGS_GROUP_CONTROL),
+                s.entries().stream().filter(e -> e.kind() == MenuEntry.Kind.HEADER).findFirst().orElseThrow().label());
+    }
+
+    /** 三个分组标题都存在，且相对顺序为 控制 → 显示 → 音频（键位绑定是控制下的小节，不计入独立分组）。 */
+    @Test
+    void threeSettingGroupsAppearInOrderControlDisplayAudio() {
+        MenuScreen s = Menus.settingsMenu(new com.skyisland.settings.GameSettings());
+        java.util.List<String> headers = s.entries().stream()
+                .filter(e -> e.kind() == MenuEntry.Kind.HEADER)
+                .map(MenuEntry::label)
+                .toList();
+        String control = Localization.text(Localization.MENU_SETTINGS_GROUP_CONTROL);
+        String display = Localization.text(Localization.MENU_SETTINGS_GROUP_DISPLAY);
+        String audio = Localization.text(Localization.MENU_SETTINGS_GROUP_AUDIO);
+        assertTrue(headers.contains(control) && headers.contains(display) && headers.contains(audio),
+                "三个分组标题都必须存在");
+        assertTrue(headers.indexOf(control) < headers.indexOf(display), "控制 必须在 显示 之前");
+        assertTrue(headers.indexOf(display) < headers.indexOf(audio), "显示 必须在 音频 之前");
     }
 
     @Test
@@ -262,6 +332,26 @@ class MenuScreenTest {
         assertNotNull(p.entry(Menus.ID_SAVE_TO_MAIN_MENU));
         assertNotNull(p.entry(Menus.ID_QUIT_GAME));
         assertEquals(Menus.ID_RESUME, p.selectedId(), "暂停菜单默认选中'继续游戏'");
+    }
+
+    /** 主菜单与暂停菜单的可见动作项、标题、副标题都必须来自 Localization（中文），不得是英文硬编码。 */
+    @Test
+    void mainAndPauseMenuLabelsAreLocalizedChinese() {
+        MenuScreen main = Menus.mainMenu(true);
+        for (MenuEntry e : main.entries()) {
+            if (e.kind() == MenuEntry.Kind.ACTION) {
+                assertTrue(containsCjk(e.label()), "主菜单动作项必须中文: " + e.label());
+            }
+        }
+
+        MenuScreen pause = Menus.pauseMenu();
+        for (MenuEntry e : pause.entries()) {
+            if (e.selectable()) {
+                assertTrue(containsCjk(e.label()), "暂停菜单动作项必须中文: " + e.label());
+            }
+        }
+        assertEquals("已暂停", pause.title());
+        assertEquals("世界时间已冻结", pause.subtitle());
     }
 
     @Test
@@ -296,14 +386,15 @@ class MenuScreenTest {
     }
 
     @Test
-    void volumeRowsAreMarkedAsHavingNoAudioBackend() {
+    void audioGroupStatesTheHonestOpenAlStatus() {
+        // M2.1 已接入 OpenAL：界面必须诚实说明"音量已生效，是否有声音取决于本机音频设备"，
+        // 而不是 M1.5 那种"无音频后端"。这条 INFO 行来自 Localization（中文），不得消失。
         MenuScreen s = Menus.settingsMenu(new com.skyisland.settings.GameSettings());
 
-        boolean marked = s.entries().stream()
-                .anyMatch(e -> e.kind() == MenuEntry.Kind.HEADER
-                        && e.label().toLowerCase().contains("no audio backend"));
-
-        assertTrue(marked, "音量在本阶段没有任何听觉效果，界面上必须直说");
+        boolean noted = s.entries().stream()
+                .anyMatch(e -> e.kind() == MenuEntry.Kind.INFO
+                        && e.label().equals(Localization.text(Localization.MENU_SETTINGS_AUDIO_NOTE)));
+        assertTrue(noted, "音频小节必须诚实说明 M2.1 的 OpenAL 状态，不得再写'no audio backend'");
     }
 
     @Test
@@ -316,7 +407,8 @@ class MenuScreenTest {
         assertNull(Menus.actionOfBindId(null));
     }
 
-    private static boolean isAscii(String text) {
-        return text.chars().allMatch(c -> c >= 32 && c < 127);
+    /** 字符串是否含至少一个 CJK 统一表意文字（U+4E00–U+9FFF），用于判断标签是否来自 Localization。 */
+    private static boolean containsCjk(String text) {
+        return text.chars().anyMatch(c -> c >= 0x4E00 && c <= 0x9FFF);
     }
 }

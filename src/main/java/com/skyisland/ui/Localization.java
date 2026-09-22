@@ -79,6 +79,12 @@ public final class Localization {
     public static final String MSG_SAVE_OK = "msg.save_ok";
     public static final String MSG_SAVE_FAILED = "msg.save_failed";
 
+    // ---- M2.2 存档会话（主菜单「继续游戏 / 新建世界」的反馈）----
+    public static final String MSG_WORLD_LOADED = "msg.world_loaded";
+    public static final String MSG_WORLD_STARTED = "msg.world_started";
+    public static final String MSG_WORLD_RESET = "msg.world_reset";
+    public static final String MSG_WORLD_LOAD_FAILED = "msg.world_load_failed";
+
     // ---- 死亡文案（PRD 6.7「死亡文案」）----
     public static final String DEATH_TITLE = "death.title";
     public static final String DEATH_ITEMS_DROPPED = "death.items_dropped";
@@ -86,6 +92,58 @@ public final class Localization {
 
     // ---- 调试 overlay（开发者可见，仍按 PRD 要求走同一张表） ----
     public static final String DBG_MODE = "dbg.mode";
+
+    // ============================================================ M2.2 菜单 / 设置 / 背包 文案
+    // CJK 字模自 M2.1 起可用（CjkFont 由 tools/fontgen/GenCjkFont.java 扫描全部源码生成），
+    // 故界面文案回到 zh-CN。
+    // 下列各 key 的常量名沿用 menu.xxx / hud.xxx / msg.xxx / inv.xxx 风格。
+    // ★ 新增中文后必须重跑字形生成器，否则 CjkFontTest 会变红（这是设计，不是麻烦）。
+
+    // ---- 主菜单 ----
+    public static final String MENU_MAIN_CONTINUE = "menu.main.continue";
+    public static final String MENU_MAIN_NEW_WORLD = "menu.main.new_world";
+    public static final String MENU_MAIN_SETTINGS = "menu.main.settings";
+    public static final String MENU_MAIN_QUIT = "menu.main.quit";
+    public static final String MENU_MAIN_SUBTITLE = "menu.main.subtitle";
+    public static final String MENU_MAIN_NO_SAVE = "menu.main.no_save";
+
+    // ---- 暂停菜单 ----
+    public static final String MENU_PAUSE_RESUME = "menu.pause.resume";
+    public static final String MENU_PAUSE_SAVE_EXIT = "menu.pause.save_exit";
+    public static final String MENU_PAUSE_TITLE = "menu.pause.title";
+    public static final String MENU_PAUSE_SUBTITLE = "menu.pause.subtitle";
+
+    // ---- 设置界面（标题 + 三类分组 + 各项 + 键位小节） ----
+    public static final String MENU_SETTINGS_TITLE = "menu.settings.title";
+    public static final String MENU_SETTINGS_GROUP_CONTROL = "menu.settings.group.control";
+    public static final String MENU_SETTINGS_GROUP_DISPLAY = "menu.settings.group.display";
+    public static final String MENU_SETTINGS_GROUP_AUDIO = "menu.settings.group.audio";
+    public static final String MENU_SETTINGS_SENSITIVITY = "menu.settings.sensitivity";
+    public static final String MENU_SETTINGS_INVERT_Y = "menu.settings.invert_y";
+    public static final String MENU_SETTINGS_FOV = "menu.settings.fov";
+    public static final String MENU_SETTINGS_VSYNC = "menu.settings.vsync";
+    public static final String MENU_SETTINGS_SHOW_FPS = "menu.settings.show_fps";
+    public static final String MENU_SETTINGS_MASTER_VOLUME = "menu.settings.master_volume";
+    public static final String MENU_SETTINGS_SFX_VOLUME = "menu.settings.sfx_volume";
+    public static final String MENU_SETTINGS_RESTORE_DEFAULTS = "menu.settings.restore_defaults";
+    public static final String MENU_SETTINGS_BACK = "menu.settings.back";
+    public static final String MENU_SETTINGS_KEY_BINDINGS = "menu.settings.key_bindings";
+    /** M2.1 已接入 OpenAL：音量调节已生效，是否有声音取决于本机音频设备（诚实表述）。 */
+    public static final String MENU_SETTINGS_AUDIO_NOTE = "menu.settings.audio_note";
+
+    // ---- 背包 ----
+    public static final String INV_TITLE = "inv.title";
+    public static final String INV_TOOLTIP_COUNT = "inv.tooltip.count";
+    public static final String INV_TOOLTIP_MAX_STACK = "inv.tooltip.max_stack";
+    public static final String INV_CURSOR_HINT = "inv.cursor_hint";
+    public static final String MSG_INV_DROPPED_ON_CLOSE = "msg.inv_dropped_on_close";
+    public static final String MSG_INV_MOVE_BLOCKED = "msg.inv_move_blocked";
+
+    // ---- 底部操作提示 ----
+    public static final String HINT_MAIN = "hint.main";
+    public static final String HINT_PAUSE = "hint.pause";
+    public static final String HINT_SETTINGS = "hint.settings";
+    public static final String HINT_INVENTORY = "hint.inventory";
 
     private static final Map<String, String> TEXT = new HashMap<>();
     private static final Map<String, String> DISPLAY_NAMES = new HashMap<>();
@@ -114,14 +172,67 @@ public final class Localization {
         TEXT.put(MSG_RELOAD_BLOCKS_FIRE, "换弹中，无法开火");
         TEXT.put(MSG_GEAR_GRANTED, "已获得 手枪 + 手枪弹 ×%d");
         TEXT.put(MSG_HIT_ENTITY, "击中 %s：%.1f 格，伤害 %d");
-        TEXT.put(MSG_SAVE_OK, "已保存");
-        TEXT.put(MSG_SAVE_FAILED, "保存失败");
+    TEXT.put(MSG_SAVE_OK, "已保存");
+    TEXT.put(MSG_SAVE_FAILED, "保存失败");
+    TEXT.put(MSG_WORLD_LOADED, "已载入存档 %s（%d 个区块 / %d 处改动）");
+    TEXT.put(MSG_WORLD_STARTED, "新世界 %s（地形种子 %d）");
+    TEXT.put(MSG_WORLD_RESET, "已新建世界：地形复位、进度清空（M2.2 不含地形生成）");
+    TEXT.put(MSG_WORLD_LOAD_FAILED, "读档失败，按新世界继续：%s");
 
         TEXT.put(DEATH_TITLE, "你倒下了");
         TEXT.put(DEATH_ITEMS_DROPPED, "物品已掉落");
         TEXT.put(DEATH_NO_DROP, "死亡掉落已关闭");
 
         TEXT.put(DBG_MODE, "模式");
+
+        // ---------------------------------------------------------- M2.2 菜单 / 设置 / 背包 文案
+        // CJK 字模自 M2.1 起可用（CjkFont 已烘焙 1484 字），界面文案回到 zh-CN，
+        // 唯一来源是 Localization（PRD 6.7：禁止在 Java UI 代码里散落中文）。
+
+        // 主菜单
+        TEXT.put(MENU_MAIN_CONTINUE, "继续游戏");
+        TEXT.put(MENU_MAIN_NEW_WORLD, "新建世界");
+        TEXT.put(MENU_MAIN_SETTINGS, "设置");
+        TEXT.put(MENU_MAIN_QUIT, "退出游戏");
+        TEXT.put(MENU_MAIN_SUBTITLE, "体素生存原型");
+        TEXT.put(MENU_MAIN_NO_SAVE, "尚无存档");
+
+        // 暂停菜单
+        TEXT.put(MENU_PAUSE_RESUME, "继续");
+        TEXT.put(MENU_PAUSE_SAVE_EXIT, "保存并返回主菜单");
+        TEXT.put(MENU_PAUSE_TITLE, "已暂停");
+        TEXT.put(MENU_PAUSE_SUBTITLE, "世界时间已冻结");
+
+        // 设置界面
+        TEXT.put(MENU_SETTINGS_TITLE, "设置");
+        TEXT.put(MENU_SETTINGS_GROUP_CONTROL, "控制");
+        TEXT.put(MENU_SETTINGS_GROUP_DISPLAY, "显示");
+        TEXT.put(MENU_SETTINGS_GROUP_AUDIO, "音频");
+        TEXT.put(MENU_SETTINGS_SENSITIVITY, "鼠标灵敏度");
+        TEXT.put(MENU_SETTINGS_INVERT_Y, "反转鼠标 Y");
+        TEXT.put(MENU_SETTINGS_FOV, "视野");
+        TEXT.put(MENU_SETTINGS_VSYNC, "垂直同步");
+        TEXT.put(MENU_SETTINGS_SHOW_FPS, "显示 FPS");
+        TEXT.put(MENU_SETTINGS_MASTER_VOLUME, "主音量");
+        TEXT.put(MENU_SETTINGS_SFX_VOLUME, "音效音量");
+        TEXT.put(MENU_SETTINGS_RESTORE_DEFAULTS, "恢复默认");
+        TEXT.put(MENU_SETTINGS_BACK, "返回");
+        TEXT.put(MENU_SETTINGS_KEY_BINDINGS, "键位绑定");
+        TEXT.put(MENU_SETTINGS_AUDIO_NOTE, "音频（音量已生效，是否有声音取决于本机音频设备）");
+
+        // 背包
+        TEXT.put(INV_TITLE, "背包");
+        TEXT.put(INV_TOOLTIP_COUNT, "数量 %d");
+        TEXT.put(INV_TOOLTIP_MAX_STACK, "上限 %d");
+        TEXT.put(INV_CURSOR_HINT, "左键取放，Shift+左键快速移动，E/Esc 关闭");
+        TEXT.put(MSG_INV_DROPPED_ON_CLOSE, "背包已满，%d 个物品已丢弃");
+        TEXT.put(MSG_INV_MOVE_BLOCKED, "没有空位，无法移动");
+
+        // 底部操作提示
+        TEXT.put(HINT_MAIN, "继续游戏 / 新建世界 / 设置 / 退出游戏");
+        TEXT.put(HINT_PAUSE, "继续 / 设置 / 保存返回 / 退出游戏");
+        TEXT.put(HINT_SETTINGS, "回车 切换或改键，左右 调整，Esc 返回");
+        TEXT.put(HINT_INVENTORY, "E 或 Esc 关闭背包");
 
         // ---------------------------------------------------------- Display Name
         // PRD 6.7 点名的四个是硬性示例（pistol/pistol_ammo/iron_ore/coal），
