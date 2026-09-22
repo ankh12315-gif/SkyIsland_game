@@ -1659,6 +1659,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             case PAUSED -> pauseMenuScreen;
             case SETTINGS -> settingsMenu == null ? null : settingsMenu.screen();
             case PLAYING -> null;
+            case INVENTORY -> null;
         };
     }
 
@@ -2093,6 +2094,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             case PAUSED -> "Up/Down = move    Enter / Click = select    Esc = resume";
             case SETTINGS -> "Enter = toggle / rebind    Left/Right = adjust    Esc = back";
             case PLAYING -> "";
+            case INVENTORY -> "";
         };
     }
 
@@ -2158,8 +2160,10 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         hud.blocksPlaced = player.blocksPlaced();
 
         hud.hotbarSelected = player.inventory().selectedSlot();
+        // 快捷栏在绝对索引 27..35（M2.2 契约）。HUD 只画这 9 格，必须用 hotbarSlot 读，
+        // 不能读 slot(i) —— 后者现在读的是主背包 0..8，会让 HUD 显示与手里拿的完全脱节。
         for (int i = 0; i < hud.hotbarRuntimeId.length; i++) {
-            ItemStack stack = player.inventory().slot(i);
+            ItemStack stack = player.inventory().hotbarSlot(i);
             hud.hotbarRuntimeId[i] = stack.blockRuntimeId();
             hud.hotbarItemRuntimeId[i] = stack.itemRuntimeId();
             hud.hotbarCount[i] = stack.count();

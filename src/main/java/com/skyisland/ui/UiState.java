@@ -30,7 +30,17 @@ public enum UiState {
     PLAYING("Playing", true, true),
 
     /** 暂停菜单：世界仍然渲染，但物理 / 世界时间 / 玩家输入全部冻结。 */
-    PAUSED("Paused", false, false);
+    PAUSED("Paused", false, false),
+
+    /**
+     * 背包界面：<b>世界不暂停</b>（物理 / 实体 / 世界时间继续推进，怪物继续动、
+     * 玩家继续掉血、方块继续被挖）。这是"单机生存"的手感，也是本状态与
+     * {@link #PAUSED} 的根本区别。光标必须可见（要拿鼠标点格子），
+     * 玩法 HUD（准星 / 快捷栏 / 挖掘条）不画（快捷栏由背包界面自己画
+     * —— 它是 36 格里的后 9 格，属"同一模型、同一渲染器"，不许画两份），
+     * 但生命条与通知（vitals）仍然显示，否则玩家看不到自己正在挨打。
+     */
+    INVENTORY("背包", true, false);
 
     private final String label;
     private final boolean simulationRunning;
@@ -63,6 +73,17 @@ public enum UiState {
 
     /** 该状态下是否显示菜单层。 */
     public boolean menuVisible() {
-        return this == MAIN_MENU || this == SETTINGS || this == PAUSED;
+        return this == MAIN_MENU || this == SETTINGS || this == PAUSED || this == INVENTORY;
+    }
+
+    /**
+     * 该状态下是否显示生命条与通知（vitals）。
+     *
+     * <p>主菜单 / 设置界面下没有"玩家在挨打"的语义，故为 {@code false}；
+     * 游玩中、暂停、以及<u>背包打开时</u>都为 {@code true} ——
+     * 玩家不能因为开了背包就看不见自己在掉血。
+     */
+    public boolean vitalsVisible() {
+        return this == PLAYING || this == PAUSED || this == INVENTORY;
     }
 }

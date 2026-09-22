@@ -26,27 +26,33 @@ class UiStateMachineTest {
     // ============================================================ 派生属性
 
     @Test
-    void onlyPlayingRunsSimulationAndCapturesTheCursor() {
+    void onlyPlayingAndInventoryRunSimulation() {
         for (UiState s : UiState.values()) {
+            boolean sim = (s == UiState.PLAYING || s == UiState.INVENTORY);
+            assertEquals(sim, s.simulationRunning(),
+                    s + " 仅 PLAYING 与 INVENTORY 推进物理（开背包不暂停世界）");
             if (s == UiState.PLAYING) {
-                assertTrue(s.simulationRunning(), s + " 是唯一推进物理的状态");
                 assertTrue(s.mouseCaptured());
                 assertTrue(s.gameplayHudVisible());
                 assertFalse(s.menuVisible());
             } else {
-                assertFalse(s.simulationRunning(), s + " 不得推进物理");
-                assertFalse(s.mouseCaptured(), s + " 必须放开光标，否则菜单点不了");
+                assertFalse(s.mouseCaptured(), s + " 必须放开光标，否则菜单/背包点不了");
                 assertFalse(s.gameplayHudVisible());
-                assertTrue(s.menuVisible());
+                assertTrue(s.menuVisible(), s + " 菜单层需可见");
             }
         }
     }
 
     @Test
-    void stateLabelsAreAsciiOnly() {
+    void stateLabelsAreAsciiExceptInventoryWhichIsChinese() {
         for (UiState s : UiState.values()) {
-            assertTrue(s.label().chars().allMatch(c -> c < 128),
-                    "状态名会进窗口标题与 HUD，必须是 ASCII，实际=" + s.label());
+            if (s == UiState.INVENTORY) {
+                assertTrue(s.label().chars().anyMatch(c -> c >= 0x4E00),
+                        "背包界面标签需为中文，写进窗口标题（如 'SkyIsland 0.3.x | 背包'），实际=" + s.label());
+            } else {
+                assertTrue(s.label().chars().allMatch(c -> c < 128),
+                        "状态名会进窗口标题与 HUD，必须是 ASCII，实际=" + s.label());
+            }
         }
     }
 
@@ -136,6 +142,86 @@ class UiStateMachineTest {
         assertEquals(3, m.pauseCount());
         assertEquals(2, m.resumeCount());
         assertEquals(0, m.rejectedTransitions(), "来回切换全程都是合法迁移");
+    }
+
+    // ============================================================ 背包界面（M2.2）
+
+    @Test
+    void inventoryOpensFromPlayingAndClosesBack() {
+        UiStateMachine m = new UiStateMachine(UiState.PLAYING);
+
+        assertTrue(m.openInventory(), "PLAYING → INVENTORY 必须成功");
+        assertEquals(UiState.INVENTORY, m.state());
+
+        assertTrue(m.closeInventory(), "INVENTORY → PLAYING 必须成功");
+        assertEquals(UiState.PLAYING, m.state());
+    }
+
+    /**
+     * 产品语义核心断言（M2.2 规格）：打开背包<u>不暂停世界</u>。
+     * 这条单独成条，任何一条不成立都必须变红。
+     */
+    @Test
+    void inventoryKeepsSimulationRunningAndReleasesCursor() {
+        UiStateMachine m = new UiStateMachine(UiState.PLAYING);
+        assertTrue(m.openInventory());
+
+        assertTrue(m.isSimulationRunning(),
+                "INVENTORY 下世界必须继续推进（怪物动、玩家掉血、方块被挖）—— 这是与 PAUSED 的根本区别");
+        assertFalse(m.isMouseCaptured(), "INVENTORY 下光标必须可见，才能点格子");
+        assertTrue(m.state().menuVisible(), "INVENTORY 是模态层，菜单层必须可见（吞掉游戏内输入）");
+        assertFalse(m.state().gameplayHudVisible(), "INVENTORY 下不画准星/快捷栏/挖掘条（快捷栏由背包界面自己画）");
+        assertTrue(m.state().vitalsVisible(), "INVENTORY 下生命条与通知仍要显示，玩家不能开背包就看不见挨打");
+    }
+
+    @Test
+    void inventoryCannotBeOpenedFromMenuPauseOrSettings() {
+        for (UiState from : new UiState[] { UiState.MAIN_MENU, UiState.PAUSED, UiState.SETTINGS }) {
+            UiStateMachine m = new UiStateMachine(from);
+            int before = m.rejectedTransitions();
+            assertFalse(m.openInventory(), from + " → INVENTORY 必须被拒绝");
+            assertEquals(from, m.state(), from + " 下被拒的 openInventory 不得改变状态");
+            assertEquals(before + 1, m.rejectedTransitions(), from + " 下的非法请求必须被计数");
+        }
+    }
+
+    @Test
+    void inventoryBlocksOpenSettings() {
+        UiStateMachine m = new UiStateMachine(UiState.PLAYING);
+        assertTrue(m.openInventory());
+
+        assertFalse(m.openSettings(), "背包里开设置会让'背包还开着吗'变成歧义，必须被拒绝");
+        assertEquals(UiState.INVENTORY, m.state(), "被拒的 openSettings 不得改变状态");
+    }
+
+    @Test
+    void escapeClosesInventoryBackToPlaying() {
+        UiStateMachine m = new UiStateMachine(UiState.PLAYING);
+        assertTrue(m.openInventory());
+
+        assertTrue(m.onEscape(), "INVENTORY 下 ESC 必须关闭背包");
+        assertEquals(UiState.PLAYING, m.state(), "INVENTORY → ESC 必须回到游玩");
+    }
+
+    @Test
+    void toggleInventoryReturnsToOriginAfterTwoToggles() {
+        UiStateMachine m = new UiStateMachine(UiState.PLAYING);
+
+        assertTrue(m.toggleInventory());
+        assertEquals(UiState.INVENTORY, m.state());
+
+        assertTrue(m.toggleInventory());
+        assertEquals(UiState.PLAYING, m.state(), "连按两次 toggle 必须回到原点");
+    }
+
+    @Test
+    void pauseFromInventoryIsLegalAndGoesToPaused() {
+        UiStateMachine m = new UiStateMachine(UiState.PLAYING);
+        assertTrue(m.openInventory());
+
+        assertTrue(m.pause(), "背包里按暂停必须合法（状态机不处理光标持有物，由调用方负责）");
+        assertEquals(UiState.PAUSED, m.state());
+        assertFalse(m.isSimulationRunning(), "转到 PAUSED 后世界冻结");
     }
 
     // ============================================================ 设置界面来源

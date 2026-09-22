@@ -94,9 +94,17 @@ public final class UiStateMachine {
         return transition(UiState.PLAYING, "开始游戏");
     }
 
-    /** 游玩中 → 暂停菜单。 */
+    /**
+     * 游玩中 → 暂停菜单。
+     *
+     * <p>从 {@link UiState#INVENTORY}（背包打开时）暂停也定义为<u>合法</u>：
+     * 背包不冻结世界，因此"开着背包按暂停"与"游玩中按暂停"语义一致，都转到
+     * {@link UiState#PAUSED}。但<b>本方法不处理光标持有物</b> —— 若玩家背包里
+     * 正"拿着"某格物品（鼠标拖着的临时持有物），归位 / 丢弃由调用方在调用本方法前负责，
+     * 状态机只管界面迁移、不碰背包数据。
+     */
     public boolean pause() {
-        if (state != UiState.PLAYING) {
+        if (state != UiState.PLAYING && state != UiState.INVENTORY) {
             return reject("暂停", UiState.PAUSED);
         }
         boolean ok = transition(UiState.PAUSED, "暂停");
@@ -118,7 +126,13 @@ public final class UiStateMachine {
         return ok;
     }
 
-    /** 打开设置（可从主菜单或暂停菜单）。 */
+    /**
+     * 打开设置（可从主菜单或暂停菜单）。
+     *
+     * <p>从 {@link UiState#INVENTORY}（背包打开时）打开设置定义为<b>不合法</b>，返回
+     * {@code false}：背包里再开设置会让"背包到底还开着没"变成歧义（关闭设置后该回到
+     * 背包还是游玩？），因此必须先关背包（{@link #closeInventory()}）才能开设置。
+     */
     public boolean openSettings() {
         if (state != UiState.MAIN_MENU && state != UiState.PAUSED) {
             return reject("打开设置", UiState.SETTINGS);
@@ -138,6 +152,38 @@ public final class UiStateMachine {
             return reject("关闭设置", settingsOrigin);
         }
         return transition(settingsOrigin, "关闭设置（返回来源界面）");
+    }
+
+    /** 游玩中 → 背包界面。其它状态下为非法迁移，返回 {@code false} 且不改变状态。 */
+    public boolean openInventory() {
+        if (state != UiState.PLAYING) {
+            return reject("打开背包", UiState.INVENTORY);
+        }
+        return transition(UiState.INVENTORY, "打开背包");
+    }
+
+    /** 背包界面 → 游玩中。其它状态下为非法迁移，返回 {@code false} 且不改变状态。 */
+    public boolean closeInventory() {
+        if (state != UiState.INVENTORY) {
+            return reject("关闭背包", UiState.PLAYING);
+        }
+        return transition(UiState.PLAYING, "关闭背包");
+    }
+
+    /**
+     * 在游玩与背包之间切换（通常绑在 {@code E} / 专用按键上）。
+     *
+     * <p>{@code PLAYING} → {@code INVENTORY}、{@code INVENTORY} → {@code PLAYING}
+     * 为合法；其它状态返回 {@code false}（非法迁移，不改变状态、不记录历史）。
+     */
+    public boolean toggleInventory() {
+        if (state == UiState.PLAYING) {
+            return openInventory();
+        }
+        if (state == UiState.INVENTORY) {
+            return closeInventory();
+        }
+        return reject("切换背包（开/关）", state);
     }
 
     /** 回到主菜单。可由暂停菜单或设置界面触发。 */
@@ -166,6 +212,7 @@ public final class UiStateMachine {
      * <ul>
      *   <li>{@code PLAYING} → 暂停（继续按 ESC 可回到游戏）；</li>
      *   <li>{@code PAUSED} → 继续游戏；</li>
+     *   <li>{@code INVENTORY} → 关闭背包回到游玩（与 {@code PAUSED} 同级处理）；</li>
      *   <li>{@code SETTINGS} → 返回来源界面；</li>
      *   <li>{@code MAIN_MENU} → 无动作（主菜单是"家"，退出必须显式点"退出游戏"，
      *       否则一次误按 ESC 就结束了游戏）。</li>
@@ -182,6 +229,10 @@ public final class UiStateMachine {
             case PAUSED -> {
                 Log.info("[界面] ESC：暂停中 → 继续游戏");
                 return resume();
+            }
+            case INVENTORY -> {
+                Log.info("[界面] ESC：背包界面 → 继续游戏（关闭背包）");
+                return closeInventory();
             }
             case SETTINGS -> {
                 Log.info("[界面] ESC：设置界面 → 返回 %s", settingsOrigin.label());
