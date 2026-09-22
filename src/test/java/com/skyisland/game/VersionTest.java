@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class VersionTest {
 
     /** 与 {@code pom.xml} 的 {@code project.version} 必须一致。 */
-    private static final String EXPECTED_VERSION = "0.3.1-M2_1-COMBAT-FEEL";
+    private static final String EXPECTED_VERSION = "0.3.2-M2_2-UI-INVENTORY";
 
     @Test
     void theVersionResourceIsOnTheClasspathNotFallingBackToTheSentinel() {
@@ -34,7 +34,7 @@ class VersionTest {
         assertFalse(version.contains("MISSING"),
                 "version.properties 没被打进 classpath —— 当前读到的是哨兵值：" + version
                         + "（报告里引用它就是假证据）");
-        assertTrue(version.contains("M2_1"),
+        assertTrue(version.contains("M2_2"),
                 "读到的版本看起来不属于 M2.1：" + version);
     }
 

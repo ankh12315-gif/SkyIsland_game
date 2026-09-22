@@ -7,7 +7,7 @@
 
   <groupId>com.skyisland</groupId>
   <artifactId>skyisland</artifactId>
-  <version>0.3.1-M2_1-COMBAT-FEEL</version>
+  <version>0.3.2-M2_2-UI-INVENTORY</version>
   <packaging>jar</packaging>
 
   <name>SkyIsland</name>

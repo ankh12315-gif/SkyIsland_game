@@ -23,7 +23,7 @@ public final class Version {
      * 不能伪装成"一个正常的旧版本"。
      */
     private static final String FALLBACK = "0.0.0-VERSION-RESOURCE-MISSING";
-    private static final String BUILD_LABEL = "M2.1 Combat Feel";
+    private static final String BUILD_LABEL = "M2.2 UI & Inventory";
 
     private static final String VERSION = load();
 
