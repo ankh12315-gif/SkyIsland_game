@@ -1,11 +1,8 @@
 package com.skyisland.render.ui;
 
-import com.skyisland.item.Item;
-import com.skyisland.item.ItemRegistry;
 import com.skyisland.render.shader.ShaderProgram;
 import com.skyisland.ui.Localization;
-import com.skyisland.world.block.Block;
-import com.skyisland.world.block.BlockRegistry;
+import static com.skyisland.render.ui.UiTheme.*;
 import org.lwjgl.opengl.GL11;
 
 import java.util.Locale;
@@ -44,39 +41,14 @@ import java.util.Locale;
  */
 public final class HudRenderer {
 
-    /** 基准高度：1280×720。所有 HUD 尺寸都按这个高度下的像素给出。 */
-    private static final int REFERENCE_HEIGHT = 720;
+    // 配色已集中到 UiTheme（M2.2）：本类只引用 UiTheme.*，不再持有任何 float[] 色值。
+    // 缩放口径集中到 UiMetrics（uiScale）。
 
-    // ---- 配色（集中定义，避免各处硬编码色值导致观感不一致） ----
-    private static final float[] CROSSHAIR = {1.00f, 1.00f, 1.00f, 0.85f};
-    /** 瞄准目标时的准星色（PRD 6.1「高亮」）：暖黄，与白色普通态一眼可分。 */
-    private static final float[] CROSSHAIR_TARGET = {1.00f, 0.86f, 0.35f, 0.95f};
-    /**
-     * M2.1：命中标记的准星色（打中怪物那一瞬间）。
-     *
-     * <p>取红而不是白：它与"白色普通态 / 暖黄瞄准态"都拉得开距离，
-     * 而"更亮的白"在瞄准态下几乎读不出来 —— 命中反馈最忌讳的就是"好像有什么变了"。
-     */
-    private static final float[] CROSSHAIR_HIT = {1.00f, 0.28f, 0.26f, 1.00f};
-    private static final float[] TEXT_PRIMARY = {0.94f, 0.96f, 0.98f, 1.00f};
-    private static final float[] TEXT_DIM = {0.72f, 0.76f, 0.82f, 1.00f};
-    private static final float[] TEXT_WARN = {1.00f, 0.78f, 0.35f, 1.00f};
-    private static final float[] PANEL_BG = {0.03f, 0.04f, 0.06f, 0.62f};
-    private static final float[] SLOT_BG = {0.06f, 0.07f, 0.09f, 0.66f};
-    private static final float[] SLOT_BORDER = {0.34f, 0.37f, 0.42f, 0.90f};
-    private static final float[] SLOT_SELECTED = {1.00f, 0.98f, 0.90f, 1.00f};
-
-    // ---- M2：生命与枪械 ----
+    // ---- M2：生命与枪械（尺寸常量，非配色）----
     /** 一颗心的基准尺寸（9×8 单位，见 {@link #drawHeart}）。 */
     private static final int HEART_SIZE = 9;
     /** 生命低值预警阈值（PRD 6.1：生命 ≤ 6 时闪烁）。 */
     private static final int LOW_HEALTH_THRESHOLD = 6;
-    private static final float[] HEART_FULL = {0.90f, 0.20f, 0.24f, 1.00f};
-    private static final float[] HEART_EMPTY = {0.16f, 0.14f, 0.16f, 0.85f};
-    /** 非方块物品（枪械 / 弹药）在快捷栏里的代表色。 */
-    private static final float[] ITEM_GUN_COLOR = {0.28f, 0.30f, 0.34f, 1.00f};
-    private static final float[] ITEM_AMMO_COLOR = {0.78f, 0.66f, 0.28f, 1.00f};
-    private static final float[] ITEM_MATERIAL_COLOR = {0.22f, 0.22f, 0.24f, 1.00f};
 
     private final UiBatch batch = new UiBatch();
 
@@ -87,7 +59,7 @@ public final class HudRenderer {
     }
 
     public void render(HudModel model, ShaderProgram uiShader, int fbWidth, int fbHeight) {
-        uiScale = Math.max(1, Math.round(fbHeight / (float) REFERENCE_HEIGHT));
+        uiScale = UiMetrics.uiScale(fbHeight);
 
         GL11.glDisable(GL11.GL_DEPTH_TEST);
         GL11.glDisable(GL11.GL_CULL_FACE);
@@ -101,10 +73,15 @@ public final class HudRenderer {
         // 会让人误以为攻击键仍然有效 —— 而暂停期间它们是明确被冻结的。
         if (model.showGameplayHud) {
             drawCrosshair(model, fbWidth, fbHeight);
-            drawHealthBar(model, fbWidth, fbHeight);
             drawHotbar(model, fbWidth, fbHeight);
             drawMiningBar(model, fbWidth, fbHeight);
             drawWeaponPanel(model, fbWidth, fbHeight);
+        }
+        // M2.2：生命条从"玩法层"里拿出来，单独由 showVitals 控制。
+        // 开背包时世界仍在跑（怪物照常走过来），生命必须还在屏幕上 ——
+        // 但它不再属于"我正在操作世界"那一层，所以不能跟准星一起被关掉。
+        if (model.showVitals) {
+            drawHealthBar(model, fbWidth, fbHeight);
         }
         // 死亡遮罩放在玩法层之外：玩家倒下时它是<b>唯一</b>该看的东西，
         // 而"死亡提示也在 PLAYING 里显示"这件事不能依赖 gameplayHud 的开关。
@@ -139,7 +116,7 @@ public final class HudRenderer {
         int centerX = fbWidth / 2;
         int centerY = fbHeight / 2;
         // 高亮：指着可命中的东西时换色（PRD 6.1「对准可交互方块时高亮」）
-        float[] color = model.targetInteractable ? CROSSHAIR_TARGET : CROSSHAIR;
+        float[] color = model.targetInteractable ? UiTheme.CROSSHAIR_TARGET : UiTheme.CROSSHAIR;
         int thickness = 1 * uiScale;
         // M2.1：命中标记的剩余强度（0..1）。它来自 CombatFxModel 的同一份读数，
         // HUD 不自己计时 —— 否则"命中的那一刻"在两条时间线上会各说各话。
@@ -148,17 +125,17 @@ public final class HudRenderer {
 
         if (model.aiming) {
             // 四臂紧贴中心（无缺口）+ 中点：视觉上"收拢"
-            batch.rect(centerX - arm, centerY, arm, thickness, marker > 0 ? CROSSHAIR_HIT : color);
-            batch.rect(centerX + thickness, centerY, arm, thickness, marker > 0 ? CROSSHAIR_HIT : color);
-            batch.rect(centerX, centerY - arm, thickness, arm, marker > 0 ? CROSSHAIR_HIT : color);
-            batch.rect(centerX, centerY + thickness, thickness, arm, marker > 0 ? CROSSHAIR_HIT : color);
-            batch.rect(centerX, centerY, thickness, thickness, marker > 0 ? CROSSHAIR_HIT : color);
+            batch.rect(centerX - arm, centerY, arm, thickness, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
+            batch.rect(centerX + thickness, centerY, arm, thickness, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
+            batch.rect(centerX, centerY - arm, thickness, arm, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
+            batch.rect(centerX, centerY + thickness, thickness, arm, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
+            batch.rect(centerX, centerY, thickness, thickness, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
         } else {
             // 中间留出缺口，准星不遮挡真正瞄准的那个点
-            batch.rect(centerX - arm, centerY, arm - thickness, thickness, marker > 0 ? CROSSHAIR_HIT : color);
-            batch.rect(centerX + thickness, centerY, arm - thickness, thickness, marker > 0 ? CROSSHAIR_HIT : color);
-            batch.rect(centerX, centerY - arm, thickness, arm - thickness, marker > 0 ? CROSSHAIR_HIT : color);
-            batch.rect(centerX, centerY + thickness, thickness, arm - thickness, marker > 0 ? CROSSHAIR_HIT : color);
+            batch.rect(centerX - arm, centerY, arm - thickness, thickness, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
+            batch.rect(centerX + thickness, centerY, arm - thickness, thickness, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
+            batch.rect(centerX, centerY - arm, thickness, arm - thickness, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
+            batch.rect(centerX, centerY + thickness, thickness, arm - thickness, marker > 0 ? UiTheme.CROSSHAIR_HIT : color);
         }
 
         if (marker > 0) {
@@ -185,10 +162,10 @@ public final class HudRenderer {
         int reach = (int) Math.round((baseArm + 4 * uiScale) * strength);
         for (int d = 1; d <= reach; d += step) {
             // 四个象限各一枚小方块，合起来是 X 的四条臂
-            batch.rect(centerX + d, centerY + d, step, step, CROSSHAIR_HIT);
-            batch.rect(centerX - d - step, centerY + d, step, step, CROSSHAIR_HIT);
-            batch.rect(centerX + d, centerY - d - step, step, step, CROSSHAIR_HIT);
-            batch.rect(centerX - d - step, centerY - d - step, step, step, CROSSHAIR_HIT);
+            batch.rect(centerX + d, centerY + d, step, step, UiTheme.CROSSHAIR_HIT);
+            batch.rect(centerX - d - step, centerY + d, step, step, UiTheme.CROSSHAIR_HIT);
+            batch.rect(centerX + d, centerY - d - step, step, step, UiTheme.CROSSHAIR_HIT);
+            batch.rect(centerX - d - step, centerY - d - step, step, step, UiTheme.CROSSHAIR_HIT);
         }
     }
 
@@ -226,11 +203,11 @@ public final class HudRenderer {
         for (int i = 0; i < count; i++) {
             int points = health - i * 2;                 // 每颗心 2 点生命
             int x = x0 + i * (size + gap);
-            drawHeart(x, y, scale, 0.0f, HEART_EMPTY);
+            drawHeart(x, y, scale, 0.0f, UiTheme.HEART_EMPTY);
             if (points >= 2) {
-                drawHeart(x, y, scale, 9.0f, HEART_FULL);
+                drawHeart(x, y, scale, 9.0f, UiTheme.HEART_FULL);
             } else if (points == 1) {
-                drawHeart(x, y, scale, 4.5f, HEART_FULL);   // 半颗心
+                drawHeart(x, y, scale, 4.5f, UiTheme.HEART_FULL);   // 半颗心
             }
         }
     }
@@ -288,14 +265,14 @@ public final class HudRenderer {
                 + String.format(Locale.ROOT, "  %.1f", model.deathTimerLeft);
         float detailWidth = BitmapFont.textWidth(detail, scale);
         batch.text((fbWidth - detailWidth) / 2f, fbHeight / 2f + 6 * scale,
-                detail, scale, TEXT_DIM[0], TEXT_DIM[1], TEXT_DIM[2], 1f);
+                detail, scale, UiTheme.TEXT_DIM);
     }
 
     // ============================================================ 快捷栏
 
     private void drawHotbar(HudModel model, int fbWidth, int fbHeight) {
-        int slot = 20 * uiScale;
-        int gap = 2 * uiScale;
+        int slot = UiMetrics.SLOT_SIZE * uiScale;
+        int gap = UiMetrics.SLOT_GAP * uiScale;
         int count = model.hotbarRuntimeId.length;
         int totalWidth = count * slot + (count - 1) * gap;
         int startX = (fbWidth - totalWidth) / 2;
@@ -303,57 +280,24 @@ public final class HudRenderer {
 
         for (int i = 0; i < count; i++) {
             int x = startX + i * (slot + gap);
-            boolean selected = i == model.hotbarSelected;
-            batch.rect(x, y, slot, slot, SLOT_BG);
-
-            int blockId = model.hotbarRuntimeId[i];
             int itemId = model.hotbarItemRuntimeId[i];
             int itemCount = model.hotbarCount[i];
-            if (itemId > 0 && itemCount > 0) {
-                int inner = slot - 6 * uiScale;
-                float[] color = iconColor(blockId, itemId);
-                batch.rect(x + 3 * uiScale, y + 3 * uiScale, inner, inner, color);
-                if (itemCount > 1) {
-                    String label = String.valueOf(itemCount);
-                    float textWidth = BitmapFont.textWidth(label, uiScale);
-                    batch.text(x + slot - textWidth - 2 * uiScale,
-                            y + slot - BitmapFont.lineHeight(uiScale),
-                            label, uiScale, 1f, 1f, 1f, 1f);
-                }
-            }
-
-            if (selected) {
-                batch.rectOutline(x - uiScale, y - uiScale, slot + 2 * uiScale, slot + 2 * uiScale,
-                        uiScale, SLOT_SELECTED);
-            } else {
-                batch.rectOutline(x, y, slot, slot, uiScale, SLOT_BORDER);
-            }
+            SlotRenderer.SlotState state = (i == model.hotbarSelected)
+                    ? SlotRenderer.SlotState.SELECTED
+                    : SlotRenderer.SlotState.NORMAL;
+            SlotRenderer.drawSlot(batch, x, y, slot, uiScale, itemId, itemCount, state);
         }
     }
 
     /**
      * 快捷栏图标的颜色。
      *
-     * <p><b>M2 必须区分"方块物品"与"非方块物品"</b>：M1 的写法是直接拿
-     * {@code ItemStack.blockRuntimeId()} 去查方块表，而枪与弹药的 blockRuntimeId 是
-     * {@code -1}（"不是方块"；0 是空气）—— 于是手枪在快捷栏里会**完全消失**，
-     * 而玩家会以为"开局没给枪"。这里非方块物品改用 {@code ItemKind} 分色，
-     * 让"手里有东西"这件事在画面上成立。
+     * <p><b>M2.2 迁移：</b>原实现在这里查方块表 / 按 {@code ItemKind} 分色，
+     * 现直接委托 {@link ItemIcon#baseColor(int)} —— 物品图标的"主色"来源收拢到
+     * {@code ItemIcon}，HUD 与背包共用同一份口径，不再各写一遍。
      */
     private float[] iconColor(int blockRuntimeId, int itemRuntimeId) {
-        if (blockRuntimeId > 0) {
-            Block block = BlockRegistry.byRuntimeId(blockRuntimeId);
-            return new float[]{block.colorR(), block.colorG(), block.colorB(), 1.0f};
-        }
-        Item item = ItemRegistry.byRuntimeId(itemRuntimeId);
-        if (item == null) {
-            return ITEM_MATERIAL_COLOR;
-        }
-        return switch (item.kind()) {
-            case GUN -> ITEM_GUN_COLOR;
-            case AMMO -> ITEM_AMMO_COLOR;
-            default -> ITEM_MATERIAL_COLOR;
-        };
+        return ItemIcon.baseColor(itemRuntimeId);
     }
 
     // ============================================================ 枪械面板（M2）
@@ -386,13 +330,13 @@ public final class HudRenderer {
                         model.magazineAmmo, model.reserveAmmo);
         float ammoWidth = BitmapFont.textWidth(ammo, 2 * scale);
         batch.text(right - ammoWidth, y, ammo, 2 * scale,
-                TEXT_PRIMARY[0], TEXT_PRIMARY[1], TEXT_PRIMARY[2], 1f);
+                UiTheme.TEXT_PRIMARY);
 
         // 枪械名（简体中文显示名，PRD 6.1「当前枪械名」）
         String gunName = model.gunDisplayName;
         float nameWidth = BitmapFont.textWidth(gunName, scale);
         batch.text(right - nameWidth, y - BitmapFont.lineHeight(scale) - 4 * scale,
-                gunName, scale, TEXT_DIM[0], TEXT_DIM[1], TEXT_DIM[2], 1f);
+                gunName, scale, UiTheme.TEXT_DIM);
 
         // 换弹进度
         if (model.reloading) {
@@ -402,11 +346,11 @@ public final class HudRenderer {
             batch.rect(right - barWidth, barY, barWidth, barHeight, 0.18f, 0.18f, 0.20f, 1f);
             float progress = (float) Math.max(0, Math.min(1, model.reloadProgress));
             batch.rect(right - barWidth, barY, barWidth * progress, barHeight,
-                    TEXT_WARN[0], TEXT_WARN[1], TEXT_WARN[2], 1f);
+                    UiTheme.TEXT_WARN);
             String label = Localization.text(Localization.HUD_RELOADING);
             float labelWidth = BitmapFont.textWidth(label, scale);
             batch.text(right - labelWidth, barY + barHeight + 2 * scale,
-                    label, scale, TEXT_WARN[0], TEXT_WARN[1], TEXT_WARN[2], 1f);
+                    label, scale, UiTheme.TEXT_WARN);
         }
     }
 
@@ -441,7 +385,7 @@ public final class HudRenderer {
         int labelY = y - 4 * uiScale - BitmapFont.lineHeight(uiScale);
         batch.text((fbWidth - BitmapFont.textWidth(label, uiScale)) / 2f,
                 labelY,
-                label, uiScale, TEXT_PRIMARY[0], TEXT_PRIMARY[1], TEXT_PRIMARY[2], TEXT_PRIMARY[3]);
+                label, uiScale, UiTheme.TEXT_PRIMARY);
     }
 
     // ============================================================ 事件提示
@@ -454,9 +398,13 @@ public final class HudRenderer {
         float width = BitmapFont.textWidth(model.eventMessage, uiScale);
         float x = (fbWidth - width) / 2f;
         float y = fbHeight - 84 * uiScale;
+        // ★ 这里刻意展开成四个 float 而不是传 float[]：背景的 alpha 要随淡出变化，
+        //   而 UiTheme 里的色板是常量数组（改它就等于改全局配色）。
+        //   数组重载只适用于"整块用同一个色"的场景（如 F3 overlay）。
         batch.textWithBackground(x, y, model.eventMessage, uiScale, 4 * uiScale,
                 0.02f, 0.03f, 0.05f, 0.70f * alpha,
-                TEXT_PRIMARY[0], TEXT_PRIMARY[1], TEXT_PRIMARY[2], alpha);
+                UiTheme.TEXT_PRIMARY[0], UiTheme.TEXT_PRIMARY[1],
+                UiTheme.TEXT_PRIMARY[2], alpha);
     }
 
     // ============================================================ 读数
@@ -483,19 +431,19 @@ public final class HudRenderer {
         int y = 6 * scale;
 
         if (model.showFps) {
-            y = textLine(x, y, scale, lineHeight, TEXT_PRIMARY, String.format(
+            y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_PRIMARY, String.format(
                     "FPS %.0f  TPS %.1f  %.2f ms  P99 %.2f ms",
                     model.fps, model.tps, model.meanFrameMs, model.p99FrameMs));
         }
-        y = textLine(x, y, scale, lineHeight, TEXT_PRIMARY, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_PRIMARY, String.format(
                 "XYZ %.2f %.2f %.2f  Yaw/Pitch %.1f/%.1f%s",
                 model.playerX, model.playerY, model.playerZ, model.yaw, model.pitch,
                 model.onGround ? "  onGround" : ""));
-        y = textLine(x, y, scale, lineHeight, TEXT_PRIMARY, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_PRIMARY, String.format(
                 "CHUNK %d %d  LOCAL %d %d  BLOCK %d %d %d",
                 model.chunkX, model.chunkZ, model.localX, model.localZ,
                 model.blockX, model.blockY, model.blockZ));
-        textLine(x, y, scale, lineHeight, TEXT_PRIMARY, String.format(
+        textLine(x, y, scale, lineHeight, UiTheme.TEXT_PRIMARY, String.format(
                 "AIM %s [%s] %.2f m   Broke %d  Placed %d  Deaths %d",
                 model.targetBlockId, model.targetFace, model.targetDistance,
                 model.blocksBroken, model.blocksPlaced, model.deaths));
@@ -503,8 +451,7 @@ public final class HudRenderer {
 
     private int textLine(int x, int y, int scale, int lineHeight, float[] color, String text) {
         batch.textWithBackground(x, y, text, scale, 2 * scale,
-                PANEL_BG[0], PANEL_BG[1], PANEL_BG[2], PANEL_BG[3],
-                color[0], color[1], color[2], color[3]);
+                UiTheme.PANEL_BG, color);
         return y + lineHeight;
     }
 
@@ -524,56 +471,56 @@ public final class HudRenderer {
         int x = 6 * scale;
         int y = 6 * scale;
 
-        y = textLine(x, y, scale, lineHeight, TEXT_PRIMARY, "==== PERF ====");
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_PRIMARY, "==== PERF ====");
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "FPS %.2f  TPS %.2f  frame %.3f ms  P99 %.3f ms  max %.3f ms",
                 model.fps, model.tps, model.meanFrameMs, model.p99FrameMs, model.maxFrameMs));
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "logic steps/frame %.3f  frames>50ms %d  clamped %d",
                 model.fps > 1e-9 ? model.tps / model.fps : 0, model.spikesOver50Ms, model.clampedFrames));
         y += lineHeight;
 
-        y = textLine(x, y, scale, lineHeight, TEXT_PRIMARY, "==== WORLD ====");
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_PRIMARY, "==== WORLD ====");
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "chunks %d  meshes %d  %s",
                 model.loadedChunks, model.meshCount,
                 model.loadedChunks == model.meshCount ? "all ready" : "rebuild pending"));
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "rebuild queue %d  peak %d  total %d  mean %.3f ms",
                 model.pendingMeshRebuilds, model.meshQueueHighWaterMark,
                 model.meshBuildCount, model.meanMeshBuildMs));
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "broke %d  placed %d  rejected %d  neighbor marks %d  emitters %d",
                 model.breakCount, model.placeCount, model.rejectedCount,
                 model.neighborMarkCount, model.emissiveSourceCount));
         y += lineHeight;
 
-        y = textLine(x, y, scale, lineHeight, TEXT_PRIMARY, "==== PLAYER ====");
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_PRIMARY, "==== PLAYER ====");
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "pos %.3f %.3f %.3f  yaw/pitch %.2f / %.2f  vy %.3f",
                 model.playerX, model.playerY, model.playerZ, model.yaw, model.pitch, model.velocityY));
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "block %d %d %d  chunk %d %d  local %d %d  onGround %s",
                 model.blockX, model.blockY, model.blockZ, model.chunkX, model.chunkZ,
                 model.localX, model.localZ, model.onGround));
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "deaths %d  broke %d  placed %d  hotbar slot %d",
                 model.deaths, model.blocksBroken, model.blocksPlaced, model.hotbarSelected + 1));
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "aim %s  face=%s  dist=%.3f  %s",
                 model.targetBlockId, model.targetFace, model.targetDistance,
                 model.mining ? ("mining " + Math.round(model.miningProgress * 100) + "%") : "idle"));
-        y = textLine(x, y, scale, lineHeight, TEXT_WARN, "place result: " + model.lastPlacementMessage);
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_WARN, "place result: " + model.lastPlacementMessage);
         y += lineHeight;
 
-        y = textLine(x, y, scale, lineHeight, TEXT_PRIMARY, "==== RENDER ====");
-        y = textLine(x, y, scale, lineHeight, TEXT_DIM, String.format(
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_PRIMARY, "==== RENDER ====");
+        y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, String.format(
                 "draw calls %d  triangles %d  frustum-culled %d  fb %d×%d  uiScale %d",
                 model.drawCalls, model.renderedTriangles, model.culledChunks,
                 fbWidth, fbHeight, uiScale));
 
         for (String extra : model.extraDebugLines) {
-            y = textLine(x, y, scale, lineHeight, TEXT_DIM, extra);
+            y = textLine(x, y, scale, lineHeight, UiTheme.TEXT_DIM, extra);
         }
     }
 

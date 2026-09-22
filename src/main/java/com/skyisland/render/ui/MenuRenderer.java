@@ -26,23 +26,7 @@ import java.util.List;
  */
 public final class MenuRenderer {
 
-    // ---- 配色（集中在顶部，避免各处硬编码导致观感不一致）----
-    private static final float[] DIM = {0.02f, 0.03f, 0.05f, 0.66f};
-    private static final float[] PANEL_BG = {0.03f, 0.04f, 0.06f, 0.62f};
-    private static final float[] TITLE = {0.95f, 0.97f, 1.00f, 1.00f};
-    private static final float[] SUBTITLE = {0.62f, 0.68f, 0.76f, 1.00f};
-    private static final float[] HEADER = {0.55f, 0.78f, 0.98f, 1.00f};
-    private static final float[] ITEM = {0.86f, 0.89f, 0.93f, 1.00f};
-    private static final float[] ITEM_SELECTED = {1.00f, 1.00f, 1.00f, 1.00f};
-    private static final float[] VALUE = {0.72f, 0.86f, 1.00f, 1.00f};
-    private static final float[] VALUE_CUSTOM = {1.00f, 0.85f, 0.45f, 1.00f};
-    private static final float[] INFO = {0.52f, 0.57f, 0.64f, 1.00f};
-    private static final float[] SELECT_BAR = {0.24f, 0.50f, 0.78f, 0.55f};
-    private static final float[] SELECT_EDGE = {0.60f, 0.84f, 1.00f, 0.95f};
-    private static final float[] SEPARATOR = {0.30f, 0.36f, 0.44f, 0.80f};
-    private static final float[] DIALOG_BG = {0.06f, 0.07f, 0.10f, 0.94f};
-    private static final float[] DIALOG_EDGE = {0.72f, 0.82f, 0.95f, 1.00f};
-    private static final float[] VERSION_COLOR = {0.45f, 0.50f, 0.58f, 1.00f};
+    // 配色已集中到 UiTheme（M2.2）：本类只引用 UiTheme.*，不再持有任何 float[] 色值。
 
     private final UiBatch batch = new UiBatch();
 
@@ -74,12 +58,12 @@ public final class MenuRenderer {
         int scale = layout.uiScale();
 
         // ---- 1) 背景压暗：让游戏画面退到背景，同时保留"这是一个真实场景"的观感 ----
-        batch.rect(0, 0, fbWidth, fbHeight, DIM);
+        batch.rect(0, 0, fbWidth, fbHeight, UiTheme.DIM);
 
         // ---- 2) 标题与副标题 ----
-        drawCentered(screen.title(), layout.titleY(), titleScale(layout), scale, TITLE, fbWidth);
+        drawCentered(screen.title(), layout.titleY(), titleScale(layout), scale, UiTheme.TITLE, fbWidth);
         if (screen.subtitle() != null && !screen.subtitle().isEmpty()) {
-            drawCentered(screen.subtitle(), layout.subtitleY(), 2, scale, SUBTITLE, fbWidth);
+            drawCentered(screen.subtitle(), layout.subtitleY(), 2, scale, UiTheme.SUBTITLE, fbWidth);
         }
 
         // ---- 3) 菜单列底板 ----
@@ -88,7 +72,7 @@ public final class MenuRenderer {
                 : layout.rowY(layout.rowCount() - 1) + layout.rowHeight(layout.rowCount() - 1);
         batch.rect(layout.columnX() - 8 * scale, layout.firstRowY() - 8 * scale,
                 layout.columnWidth() + 16 * scale, rowsBottom - layout.firstRowY() + 16 * scale,
-                PANEL_BG);
+                UiTheme.PANEL_BG);
 
         // ---- 4) 各行 ----
         List<MenuEntry> entries = screen.entries();
@@ -98,12 +82,12 @@ public final class MenuRenderer {
 
         // ---- 5) 底部提示与版本 ----
         if (footerHint != null && !footerHint.isEmpty()) {
-            drawCentered(footerHint, layout.hintY(), 1, scale, INFO, fbWidth);
+            drawCentered(footerHint, layout.hintY(), 1, scale, UiTheme.INFO, fbWidth);
         }
         if (versionLine != null && !versionLine.isEmpty()) {
             float w = BitmapFont.textWidth(versionLine, 1 * scale);
             batch.text(fbWidth - w - 8 * scale, layout.versionY(), versionLine, 1 * scale,
-                    VERSION_COLOR[0], VERSION_COLOR[1], VERSION_COLOR[2], VERSION_COLOR[3]);
+                    UiTheme.VERSION_COLOR);
         }
 
         // ---- 6) 覆盖层（等待输入 / 冲突确认）----
@@ -131,22 +115,22 @@ public final class MenuRenderer {
             }
             case HEADER -> {
                 batch.text(layout.labelX(), y + 4 * scale, entry.label(), 2 * scale,
-                        HEADER[0], HEADER[1], HEADER[2], HEADER[3]);
+                        UiTheme.HEADER);
                 batch.rect(layout.columnX() + 6 * scale, y + rowH - 4 * scale,
-                        layout.columnWidth() - 12 * scale, Math.max(1, scale), SEPARATOR);
+                        layout.columnWidth() - 12 * scale, Math.max(1, scale), UiTheme.SEPARATOR);
             }
             case INFO -> batch.text(layout.labelX(), y + 2 * scale, entry.label(), 1 * scale,
-                    INFO[0], INFO[1], INFO[2], INFO[3]);
+                    UiTheme.INFO);
             default -> {
                 boolean selected = index == screen.selectedIndex();
                 if (selected) {
                     batch.rect(layout.columnX() + 2 * scale, y, layout.columnWidth() - 4 * scale,
-                            rowH, SELECT_BAR);
-                    batch.rect(layout.columnX() + 2 * scale, y, 3 * scale, rowH, SELECT_EDGE);
+                            rowH, UiTheme.SELECT_BAR);
+                    batch.rect(layout.columnX() + 2 * scale, y, 3 * scale, rowH, UiTheme.SELECT_EDGE);
                 }
-                float[] labelColor = selected ? ITEM_SELECTED : ITEM;
+                float[] labelColor = selected ? UiTheme.ITEM_SELECTED : UiTheme.ITEM;
                 batch.text(layout.labelX(), textY, entry.label(), 2 * scale,
-                        labelColor[0], labelColor[1], labelColor[2], labelColor[3]);
+                        labelColor);
                 drawValue(entry, layout, textY, scale, selected);
             }
         }
@@ -158,23 +142,24 @@ public final class MenuRenderer {
         if (value == null || value.isEmpty() || entry.kind() == MenuEntry.Kind.ACTION) {
             return;
         }
-        float[] color = VALUE;
+        float[] color = UiTheme.VALUE;
         if (entry.kind() == MenuEntry.Kind.BINDING) {
             // 未绑定 / 等待中 / 冲突：用告警色，让"这行现在不可用"一眼可见
             if ("(none)".equals(value) || value.startsWith("(") || value.contains("->")) {
-                color = VALUE_CUSTOM;
+                color = UiTheme.VALUE_CUSTOM;
             }
         } else if (entry.kind() == MenuEntry.Kind.SLIDER
                 && ("0".equals(value) || "100".equals(value))) {
             // 滑杆到端点时也提示一下（避免"按了没反应"的错觉）
-            color = VALUE_CUSTOM;
+            color = UiTheme.VALUE_CUSTOM;
         }
         if (selected) {
-            color = new float[]{VALUE[0], VALUE[1], VALUE[2], 1.0f};
+            // 选中行把数值的 alpha 提到 1.0：整行高亮时若数值还半透明，
+            // 看上去会像"这行没被选中"，而选中态正是鼠标/键盘导航唯一的反馈。
+            color = new float[]{UiTheme.VALUE[0], UiTheme.VALUE[1], UiTheme.VALUE[2], 1.0f};
         }
         float w = BitmapFont.textWidth(value, 2 * scale);
-        batch.text(layout.valueRightX() - w, textY, value, 2 * scale,
-                color[0], color[1], color[2], color[3]);
+        batch.text(layout.valueRightX() - w, textY, value, 2 * scale, color);
     }
 
     // ============================================================ 覆盖层
@@ -205,17 +190,17 @@ public final class MenuRenderer {
         int boxY = (fbHeight - boxH) / 2;
 
         if (dialog) {
-            batch.rect(boxX, boxY, boxW + padX * 2, boxH, DIALOG_BG);
-            batch.rectOutline(boxX, boxY, boxW + padX * 2, boxH, Math.max(1, scale), DIALOG_EDGE);
+            batch.rect(boxX, boxY, boxW + padX * 2, boxH, UiTheme.DIALOG_BG);
+            batch.rectOutline(boxX, boxY, boxW + padX * 2, boxH, Math.max(1, scale), UiTheme.DIALOG_EDGE);
         } else {
-            batch.rect(boxX, boxY, boxW + padX * 2, boxH, PANEL_BG);
+            batch.rect(boxX, boxY, boxW + padX * 2, boxH, UiTheme.PANEL_BG);
         }
 
         int y = boxY + padY;
         for (String line : lines) {
             batch.text((fbWidth - BitmapFont.textWidth(line, textScale * scale)) / 2f, y,
                     line, textScale * scale,
-                    TITLE[0], TITLE[1], TITLE[2], TITLE[3]);
+                    UiTheme.TITLE);
             y += lineH;
         }
     }
@@ -257,7 +242,7 @@ public final class MenuRenderer {
         int effective = textScale * scale;
         float w = BitmapFont.textWidth(text, effective);
         batch.text((fbWidth - w) / 2f, y, text, effective,
-                color[0], color[1], color[2], color[3]);
+                color);
     }
 
     private static int titleScale(MenuLayout layout) {

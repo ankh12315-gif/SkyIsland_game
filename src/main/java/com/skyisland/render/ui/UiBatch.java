@@ -154,6 +154,15 @@ public final class UiBatch {
     }
 
     /**
+     * {@code rgba} 数组重载 —— 与 {@link #rect(float, float, float, float, float[])} 对称，
+     * 让集中定义在 {@link UiTheme} 的配色能<b>直接传数组</b>，避免在调用方写
+     * {@code color[0], color[1], color[2], color[3]} 这类下标访问。
+     */
+    public float text(float x, float y, String text, int scale, float[] rgba) {
+        return text(x, y, text, scale, rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
+
+    /**
      * 带底色的文字行（先铺半透明底再写字），用于 F3 overlay 的可读性。
      *
      * <p><b>M2：底色高度改用 {@link BitmapFont#lineHeight(int)}（每行 12 像素），
@@ -169,6 +178,16 @@ public final class UiBatch {
                 BitmapFont.textWidth(text, scale) + padding * 2,
                 BitmapFont.lineHeight(scale) + padding * 2, bgR, bgG, bgB, bgA);
         return text(x, y, text, scale, fgR, fgG, fgB, fgA);
+    }
+
+    /**
+     * {@code bg / fg} 数组重载 —— 与 {@link #text(float, float, String, int, float[])} 对称，
+     * 让 {@link UiTheme} 的配色能直接传数组，避免调用方写下标访问。
+     */
+    public float textWithBackground(float x, float y, String text, int scale, float padding,
+                                    float[] bg, float[] fg) {
+        return textWithBackground(x, y, text, scale, padding,
+                bg[0], bg[1], bg[2], bg[3], fg[0], fg[1], fg[2], fg[3]);
     }
 
     // ============================================================ 上传与绘制
