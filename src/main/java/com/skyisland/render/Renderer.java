@@ -5,6 +5,8 @@ import com.skyisland.render.mesh.CrackOverlay;
 import com.skyisland.render.shader.ShaderProgram;
 import com.skyisland.render.ui.HudModel;
 import com.skyisland.render.ui.HudRenderer;
+import com.skyisland.render.ui.InventoryRenderModel;
+import com.skyisland.render.ui.InventoryRenderer;
 import com.skyisland.render.ui.MenuLayout;
 import com.skyisland.render.ui.MenuRenderer;
 import com.skyisland.render.viewmodel.ViewmodelModel;
@@ -55,6 +57,7 @@ public final class Renderer {
     private final ViewmodelRenderer viewmodelRenderer = new ViewmodelRenderer();
     private final HudRenderer hudRenderer = new HudRenderer();
     private final MenuRenderer menuRenderer = new MenuRenderer();
+    private final InventoryRenderer inventoryRenderer = new InventoryRenderer();
     private final Frustum frustum = new Frustum();
 
     private ShaderProgram voxelShader;
@@ -73,6 +76,7 @@ public final class Renderer {
                 "shaders/ui.vert", "shaders/ui.frag");
         hudRenderer.init();
         menuRenderer.init();
+        inventoryRenderer.init();
         crackOverlay.init();
         entityRenderer.init();
         combatFxRenderer.init();
@@ -195,6 +199,36 @@ public final class Renderer {
                 overlayText, overlayDialog, framebufferWidth, framebufferHeight);
     }
 
+    /**
+     * 背包 pass（M2.2）。<b>调用顺序：世界 → 手持物 → HUD → 背包 → 菜单。</b>
+     *
+     * <p><b>为什么背包必须盖住 HUD：</b>背包是模态层。若 HUD 画在它之上，
+     * 开着背包时准星仍会浮在面板中央 —— 而那一刻鼠标正在点格子、不是在瞄准，
+     * 玩家会合理地以为"我还能开枪"（实际上 INVENTORY 状态下攻击是被吞掉的）。
+     *
+     * <p><b>为什么背包与菜单的先后无所谓：</b>二者互斥 ——
+     * {@code UiStateMachine} 判定"从背包打开设置"非法，而从背包暂停会直接转到
+     * PAUSED（那一刻已经不是 INVENTORY 了）。因此两者不会同帧出现。
+     * 这里把背包放在菜单之前，只是为了让"背包 → 暂停"这条路径上
+     * 菜单永远是最上面那一层。
+     *
+     * @param model 可为 null 或 {@code visible == false}：此时不画，也不碰 GL 状态
+     */
+    public void renderInventory(InventoryRenderModel model) {
+        inventoryRenderer.render(uiShader, model, framebufferWidth, framebufferHeight);
+    }
+
+    /**
+     * 输入层取背包布局的<b>唯一</b>入口。
+     *
+     * <p><b>为什么必须经过这里，而不是让输入层自己 {@code InventoryLayout.compute}：</b>
+     * 命中判定与绘制必须读<u>同一份</u>布局。两边各算一次的话，
+     * "悬停高亮在第 5 格、点击却动了第 12 格"就只是两份坐标何时漂移的问题。
+     */
+    public InventoryRenderer inventoryRenderer() {
+        return inventoryRenderer;
+    }
+
     /** 限量消费区块网格重建队列。返回实际重建的区块数。 */
     public int processMeshRebuilds(World world) {
         return chunkRenderer.processRebuildQueue(world);
@@ -233,6 +267,7 @@ public final class Renderer {
         viewmodelRenderer.dispose();
         hudRenderer.dispose();
         menuRenderer.dispose();
+        inventoryRenderer.dispose();
         if (voxelShader != null) {
             voxelShader.dispose();
             voxelShader = null;
