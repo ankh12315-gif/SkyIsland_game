@@ -19,7 +19,22 @@ public final class SaveFormat {
      * 改变地形算法的后果只是"未探索区域与新版本不同"，增量数据仍然可读。
      * 把两者合成一个版本号会让"只改了地形"也触发一次存档迁移。
      */
-    public static final int SAVE_VERSION = 1;
+    public static final int SAVE_VERSION = 2;
+
+    /**
+     * v1 → v2 的分界：<b>v1 的 {@code player.json} 里，{@code slot} 是快捷栏内索引（0..8）</b>。
+     *
+     * <p><b>为什么必须迁移而不是"直接按新口径读"：</b>M2.2 把背包从 9 格扩成 27+9 = 36 格，
+     * 槽位语义从"0..8 = 快捷栏"变成"0..26 = 主背包、27..35 = 快捷栏"。
+     * 若不迁移，一个 v1 存档读进来后，原本放在快捷栏第 1 格的手枪会落进<b>主背包第 1 格</b> ——
+     * 物品一件不少、位置全部错位，而且<b>没有任何告警</b>：
+     * 玩家看到的是"枪还在，但按 1 切出来的不是枪"。
+     *
+     * <p>这类"数据没丢但语义错了"的故障是最难诊断的一类 —— 它不会触发任何校验，
+     * 因为从格式上看每个字段都合法。因此迁移规则必须写成<b>具名常量 + 显式分支</b>，
+     * 而不是散在读取代码里的一个 {@code + 27}。
+     */
+    public static final int SAVE_VERSION_INVENTORY_36 = 2;
 
     /** 区块文件魔数：{@code "SKIC"} = SkyIsland Chunk。 */
     public static final byte[] CHUNK_MAGIC = {'S', 'K', 'I', 'C'};

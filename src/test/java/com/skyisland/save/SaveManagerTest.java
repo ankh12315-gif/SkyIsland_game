@@ -188,7 +188,8 @@ class SaveManagerTest {
         int ammo = ItemRegistry.runtimeIdOf(ItemRegistry.PISTOL_AMMO_ID);
         player.inventory().add(pistol, 1);
         player.inventory().add(ammo, ItemRegistry.AMMO_MAX_STACK);
-        player.inventory().setSlot(8, ItemStack.of(TestWorlds.stone(), 5));
+        // M2.2：setSlot(8) 现在是主背包，石头应放进"快捷栏第 9 格"（相对 8 → 绝对 35）
+        player.inventory().setSlot(player.inventory().hotbarIndex(8), ItemStack.of(TestWorlds.stone(), 5));
         player.inventory().selectSlot(1);
 
         assertTrue(manager.save(world, player).success());
@@ -203,18 +204,18 @@ class SaveManagerTest {
                 "干净的 M2 存档不得产生任何告警（M2 前这里会出现"
                         + "「非法的 runtimeId=-1」）：" + loaded.warnings());
 
-        assertEquals(pistol, reloadedPlayer.inventory().slot(0).itemRuntimeId(),
+        assertEquals(pistol, reloadedPlayer.inventory().hotbarSlot(0).itemRuntimeId(),
                 "手枪必须回到第 1 格（必须按物品表还原，不能按方块表 —— 后者会把它变成空气）");
-        assertEquals(1, reloadedPlayer.inventory().slot(0).count());
-        assertEquals(ammo, reloadedPlayer.inventory().slot(1).itemRuntimeId(),
+        assertEquals(1, reloadedPlayer.inventory().hotbarSlot(0).count());
+        assertEquals(ammo, reloadedPlayer.inventory().hotbarSlot(1).itemRuntimeId(),
                 "手枪弹必须回到第 2 格");
-        assertEquals(ItemRegistry.AMMO_MAX_STACK, reloadedPlayer.inventory().slot(1).count(),
+        assertEquals(ItemRegistry.AMMO_MAX_STACK, reloadedPlayer.inventory().hotbarSlot(1).count(),
                 "弹药堆叠上限是 128，读档不得按 64 截断");
 
         // 向后兼容：方块物品的 item id 与 block id 相同，因此老存档读得出来
-        assertEquals(TestWorlds.stone(), reloadedPlayer.inventory().slot(8).blockRuntimeId(),
+        assertEquals(TestWorlds.stone(), reloadedPlayer.inventory().hotbarSlot(8).blockRuntimeId(),
                 "方块物品仍按老格式（方块 ID）往返");
-        assertEquals(5, reloadedPlayer.inventory().slot(8).count());
+        assertEquals(5, reloadedPlayer.inventory().hotbarSlot(8).count());
 
         assertEquals(1, reloadedPlayer.inventory().selectedSlot());
         assertEquals(3, reloadedPlayer.inventory().usedSlotCount(), "中间的空槽不得被填充");
@@ -369,6 +370,64 @@ class SaveManagerTest {
                 "必须留下「走迁移入口」的痕迹，实际=" + loaded.warnings());
     }
 
+    /**
+     * v1（9 格）→ v2（36 格）的<b>槽位迁移</b>。
+     *
+     * <p>这一条补的是一个"迁移分支明明跑了、却什么也没验证"的缺口：
+     * 上面那条用例用 version=0 确实走进了迁移入口，但它写的是<u>空背包</u>，
+     * 于是 {@code migrateHotbarOnly} 这个分支里真正危险的那一半
+     * ——{@code HOTBAR_OFFSET + slot.slot}——
+     * 一次都没有被执行过。把它删掉，上面的用例照样全绿。
+     *
+     * <p>失败的现场极难发现：物品<u>一件不少</u>、每个字段单独看都合法，
+     * 只是 v1 的"快捷栏第 4 格"变成了 v2 的"主背包第 4 格"——
+     * 玩家读档后会看到自己的枪跑到背包左上角，而没有任何一条日志指向这里。
+     * 因此断言必须写死"绝对索引"，而不是"总数量还对不对"。
+     */
+    @Test
+    void v1SaveMigratesHotbarSlotsToTheLastNineSlotsOfThe36SlotInventory(@TempDir Path root)
+            throws IOException {
+        SaveManager manager = manager(root);
+        writeLevelJson(manager, SaveFormat.SAVE_VERSION_INVENTORY_36 - 1, "test:flat");
+        // 手写一份 v1 口径的 player.json：slot 是「快捷栏内索引 0..8」
+        Files.writeString(manager.worldDirectory().resolve(SaveFormat.PLAYER_FILE), """
+                {
+                  "saveVersion": %d,
+                  "x": 0.5, "y": %s, "z": 0.5,
+                  "yaw": 0.0, "pitch": 0.0,
+                  "onGround": true, "deaths": 0,
+                  "lastSafeX": 0.5, "lastSafeY": %s, "lastSafeZ": 0.5,
+                  "selectedSlot": 7,
+                  "inventory": [
+                    { "slot": 3, "item": "skyisland:stone", "count": 3 },
+                    { "slot": 7, "item": "skyisland:dirt", "count": 5 }
+                  ]
+                }
+                """.formatted(SaveFormat.SAVE_VERSION_INVENTORY_36 - 1,
+                TestWorlds.SURFACE_FEET_Y, TestWorlds.SURFACE_FEET_Y), StandardCharsets.UTF_8);
+
+        Player player = freshPlayer();
+        SaveResult loaded = manager.loadInto(freshWorld(), player);
+
+        assertTrue(loaded.success(), loaded.summary());
+        // ① 迁移的<b>定义</b>：v1 的 slot k 必须落在 v2 的 HOTBAR_OFFSET + k，不是落在 k。
+        assertEquals(3, player.inventory().hotbarSlot(3).count(),
+                "v1 的快捷栏第 4 格必须迁移到绝对索引 " + com.skyisland.player.Inventory.HOTBAR_OFFSET
+                        + " + 3 —— 落在主背包第 4 格就是没迁移");
+        assertEquals(TestWorlds.stone(), player.inventory().hotbarSlot(3).blockRuntimeId());
+        assertEquals(5, player.inventory().hotbarSlot(7).count(),
+                "v1 的快捷栏第 8 格必须迁移到绝对索引 "
+                        + com.skyisland.player.Inventory.HOTBAR_OFFSET + " + 7");
+        // ② 反向对照：主背包里那几个下标<b>必须是空的</b>。
+        //    少了这一半，"迁移"和"直接照搬"在断言上就没有区别了。
+        assertEquals(BlockRegistry.AIR_RUNTIME_ID, player.inventory().slot(3).blockRuntimeId(),
+                "绝对索引 3 属主背包，v1 从没往那儿放过东西，读档后必须仍为空");
+        assertEquals(BlockRegistry.AIR_RUNTIME_ID, player.inventory().slot(7).blockRuntimeId(),
+                "绝对索引 7 属主背包，读档后必须仍为空");
+        // ③ 总数守恒：迁移不许丢东西，也不许凭空多出来。
+        assertEquals(8, player.inventory().totalItemCount(), "3 + 5，一格都不许少");
+    }
+
     @Test
     void missingLevelJsonIsReportedAsNoSaveInsteadOfAnException(@TempDir Path root) {
         SaveManager manager = manager(root);
@@ -459,9 +518,11 @@ class SaveManagerTest {
         World world = modifiedWorld();
         Player player = freshPlayer();
         player.inventory().selectSlot(0);
-        // 故意只放进第 4 格与第 8 格 —— 若存档按"数组顺序"记录，读档后会串到第 0/1 格
-        player.inventory().setSlot(3, com.skyisland.player.ItemStack.of(TestWorlds.stone(), 3));
-        player.inventory().setSlot(7, com.skyisland.player.ItemStack.of(TestWorlds.dirt(), 5));
+        // 故意只放进"快捷栏第 4 格与第 8 格"（相对 3/7 → 绝对 30/34）——
+        // 若存档按"数组顺序"记录，读档后会串到第 0/1 格
+        // M2.2：用 hotbarIndex 放到真正的快捷栏格，而不是主背包的绝对 3/7
+        player.inventory().setSlot(player.inventory().hotbarIndex(3), com.skyisland.player.ItemStack.of(TestWorlds.stone(), 3));
+        player.inventory().setSlot(player.inventory().hotbarIndex(7), com.skyisland.player.ItemStack.of(TestWorlds.dirt(), 5));
         player.inventory().selectSlot(7);
 
         assertTrue(manager.save(world, player).success());
@@ -469,14 +530,14 @@ class SaveManagerTest {
         Player reloaded = freshPlayer();
         assertTrue(manager.loadInto(freshWorld(), reloaded).success());
 
-        assertEquals(3, reloaded.inventory().slot(3).count(), "石头必须回到第 4 格");
-        assertEquals(TestWorlds.stone(), reloaded.inventory().slot(3).blockRuntimeId());
-        assertEquals(5, reloaded.inventory().slot(7).count(), "泥土必须回到第 8 格");
-        assertEquals(TestWorlds.dirt(), reloaded.inventory().slot(7).blockRuntimeId());
+        assertEquals(3, reloaded.inventory().hotbarSlot(3).count(), "石头必须回到第 4 格");
+        assertEquals(TestWorlds.stone(), reloaded.inventory().hotbarSlot(3).blockRuntimeId());
+        assertEquals(5, reloaded.inventory().hotbarSlot(7).count(), "泥土必须回到第 8 格");
+        assertEquals(TestWorlds.dirt(), reloaded.inventory().hotbarSlot(7).blockRuntimeId());
         assertEquals(7, reloaded.inventory().selectedSlot());
         assertEquals(2, reloaded.inventory().usedSlotCount(), "中间的空槽不得被填充");
         assertEquals(BlockRegistry.AIR_RUNTIME_ID,
-                reloaded.inventory().slot(0).blockRuntimeId(), "第 1 格必须仍为空");
+                reloaded.inventory().slot(0).blockRuntimeId(), "第 1 格（主背包）必须仍为空");
     }
 
     @Test

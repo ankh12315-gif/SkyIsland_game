@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.skyisland.game.Version;
 import com.skyisland.item.ItemRegistry;
+import com.skyisland.player.Inventory;
 import com.skyisland.player.ItemStack;
 import com.skyisland.player.Player;
 import com.skyisland.util.Log;
@@ -173,9 +174,14 @@ public final class SaveManager {
         //   而 ItemRegistry 给方块物品分配的 stable ID <b>与方块 ID 完全相同</b>
         //   （由 ItemRegistry 的"前缀对齐"不变式保证），因此老存档读得出来。
         //   这正是当初选择"方块物品沿用方块 ID"而不是另起一套命名所换来的收益。
-        var hotbar = player.inventory().snapshot();
-        for (int slot = 0; slot < hotbar.size(); slot++) {
-            ItemStack stack = hotbar.get(slot);
+        // ★ M2.2：这里写的是 <b>36 格的绝对索引</b>（0..26 主背包、27..35 快捷栏）。
+        //   v1 存档写的是"快捷栏内索引 0..8"，同一个数在两代存档里指向不同的格子 ——
+        //   因此写入侧一并写下的 saveVersion（= SaveFormat.SAVE_VERSION）不是装饰，
+        //   它是读取侧决定"这个 3 到底是主背包第 4 格还是快捷栏第 4 格"的<b>唯一</b>依据。
+        //   迁移规则见 applyPlayerState。
+        var slots = player.inventory().snapshot();
+        for (int slot = 0; slot < slots.size(); slot++) {
+            ItemStack stack = slots.get(slot);
             if (stack.isEmpty()) {
                 continue;
             }
@@ -341,21 +347,43 @@ public final class SaveManager {
     }
 
     private void applyPlayerState(Player player, PlayerState state, SaveResult result, World world) {
-        List<ItemStack> hotbar = new ArrayList<>();
+        // ★ M2.2：v1 存档的 slot 是"快捷栏内索引 0..8"，v2 起是"36 格绝对索引"。
+        //   不迁移的后果是物品一件不少、位置全部错位，而且<b>不触发任何校验</b>
+        //   —— 每个字段单独看都合法，只有合起来看才知道读错了代。
+        boolean migrateHotbarOnly = state.saveVersion < SaveFormat.SAVE_VERSION_INVENTORY_36;
+        int migrated = 0;
+
+        List<ItemStack> slots = new ArrayList<>();
         for (PlayerState.Slot slot : state.inventory) {
             // ★ M2：按<b>物品</b>表还原（与写入侧对称，见 toState 的说明）。
             //   stack 上限也必须按物品查（手枪弹 128、其余 64），
             //   写死 ItemStack.MAX_STACK 会把 128 发弹药截成 64 发。
             int runtimeId = ItemRegistry.runtimeIdOf(slot.item);
-            while (hotbar.size() <= slot.slot) {
-                hotbar.add(ItemStack.EMPTY);
+            int index = migrateHotbarOnly ? Inventory.HOTBAR_OFFSET + slot.slot : slot.slot;
+            if (index < 0 || index >= Inventory.SLOT_COUNT) {
+                // 越界的槽位必须说出来：静默丢弃的表现是"读档后少了东西"，
+                // 而没有任何日志会指向这里。
+                result.warn(String.format("存档中的物品槽位 %d（%s）越界，已丢弃该格",
+                        slot.slot, slot.item));
+                continue;
             }
-            hotbar.set(slot.slot, ItemStack.of(runtimeId,
+            if (migrateHotbarOnly) {
+                migrated++;
+            }
+            while (slots.size() <= index) {
+                slots.add(ItemStack.EMPTY);
+            }
+            slots.set(index, ItemStack.of(runtimeId,
                     Math.min(slot.count, ItemRegistry.maxStackOf(runtimeId))));
+        }
+        if (migrated > 0) {
+            Log.info("[存档] 读取到 v%d 存档：%d 格快捷栏物品已迁移到 36 格背包的槽位 %d..%d",
+                    state.saveVersion, migrated,
+                    Inventory.HOTBAR_OFFSET, Inventory.SLOT_COUNT - 1);
         }
         player.applyLoadedState(state.x, state.y, state.z, state.yaw, state.pitch,
                 safeOrSelf(state.lastSafeX, state.lastSafeY, state.lastSafeZ, state.x, state.y, state.z),
-                hotbar, state.selectedSlot, state.deaths);
+                slots, state.selectedSlot, state.deaths);
 
         // §N.7：位置合法性校验必须在"方块已经就位"之后做，因此放在读档的最后一步。
         if (player.sanitizePositionAfterLoad(world)) {
