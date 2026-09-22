@@ -57,13 +57,21 @@ public final class MenuRenderer {
 
         int scale = layout.uiScale();
 
-        // ---- 1) 背景压暗：让游戏画面退到背景，同时保留"这是一个真实场景"的观感 ----
-        batch.rect(0, 0, fbWidth, fbHeight, UiTheme.DIM);
+        // ---- 1) 背景压暗 ----
+        // M2.2：压暗已<b>移出本类</b>，改由 Renderer#renderModalDim 作为独立 pass
+        // 在 HUD 之前绘制（理由见 ModalDimRenderer 的类注释：它跟着面板排在 HUD 之后，
+        // 会把生命条与通知一起压暗 66%，而 vitalsVisible 要求它们保持可读）。
+        // 不要把它搬回来。
 
         // ---- 2) 标题与副标题 ----
-        drawCentered(screen.title(), layout.titleY(), titleScale(layout), scale, UiTheme.TITLE, fbWidth);
+        // 倍数一律取自布局（layout.titleScale / MenuLayout.SUBTITLE_SCALE）：
+        // layout.subtitleY 是按这两个倍数推导出来的，这里若自己写死一个数，
+        // 两边就会再次脱节 —— 那就是副标题被画进标题里的原始成因。
+        drawCentered(screen.title(), layout.titleY(), layout.titleScale(), scale,
+                UiTheme.TITLE, fbWidth);
         if (screen.subtitle() != null && !screen.subtitle().isEmpty()) {
-            drawCentered(screen.subtitle(), layout.subtitleY(), 2, scale, UiTheme.SUBTITLE, fbWidth);
+            drawCentered(screen.subtitle(), layout.subtitleY(), MenuLayout.SUBTITLE_SCALE, scale,
+                    UiTheme.SUBTITLE, fbWidth);
         }
 
         // ---- 3) 菜单列底板 ----
@@ -243,10 +251,6 @@ public final class MenuRenderer {
         float w = BitmapFont.textWidth(text, effective);
         batch.text((fbWidth - w) / 2f, y, text, effective,
                 color);
-    }
-
-    private static int titleScale(MenuLayout layout) {
-        return layout.style() == MenuLayout.Style.COVER ? 5 : 3;
     }
 
     public int menuQuadCount() {

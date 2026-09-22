@@ -27,8 +27,11 @@ public final class UiMetrics {
     public static final int SLOT_GAP = 2;
     /** 面板内边距。 */
     public static final int PANEL_PAD = 8;
-    /** 面板标题条高度。 */
-    public static final int PANEL_TITLE_H = 16;
+    // 这里原有一个 PANEL_TITLE_H = 16（"面板标题条高度"），已于 M2.2 删除。
+    // 它按 ASCII 的 7 行字形估高度，而标题画的是中文（占满 12 行行盒），
+    // 于是少留 8×scale，标题墨迹顶到第一行格子。
+    // 现在标题占位由 InventoryLayout 按 BitmapFont.lineHeight(LABEL_SCALE×scale) 推导 ——
+    // 凡是"文字占多高"都必须由行盒推导，不能再写死一个数。
     /** 提示框内边距。 */
     public static final int TOOLTIP_PAD = 4;
     /** 正文文字缩放（基准 1 = 12×12 点阵原尺寸）。 */

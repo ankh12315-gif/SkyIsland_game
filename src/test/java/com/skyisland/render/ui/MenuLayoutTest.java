@@ -244,6 +244,106 @@ class MenuLayoutTest {
         assertTrue(cover.versionY() > cover.hintY(), "版本行在最底部，不遮挡提示");
     }
 
+    // ============================================================ 标题 / 副标题的纵向几何
+
+    /**
+     * 标题与副标题的<b>实际墨迹</b>在任何式样、任何分辨率下都不得重叠。
+     *
+     * <p><b>为什么原来的断言放过了这个缺陷：</b>它只断言 {@code subtitleY > titleY}。
+     * 实测 720p 主菜单 titleY=144、subtitleY=178 —— 178 > 144 成立，
+     * 而那时标题的墨迹是 159..194，副标题的行盒是 178..202，<b>重叠 16px</b>。
+     * 截图里两个词直接叠成一团，谁都不认识；这条断言却是绿的。
+     * 这正是"断言在失败场景下仍能通过"的假阳性，也是"测试全绿说明不了看得见"的又一例。
+     *
+     * <p><b>为什么判据用"行盒 + ASCII 行内偏移"而不是直接比两个 y：</b>
+     * 标题是 ASCII（7 行字形，居中放在 12 行的行盒里，{@code ASCII_ROW_OFFSET = 3}），
+     * 副标题是中文（占满 12 行行盒）。两者的墨迹起止点并不等于传给 {@code text()} 的那个 y，
+     * 拿 y 相减量到的是"行盒顶"而不是"字"。这里按渲染器真正的口径复原墨迹范围。
+     */
+    @Test
+    void titleAndSubtitleInkNeverOverlapAtAnySupportedResolution() {
+        List<MenuEntry> coverEntries = Menus.mainMenu().entries();
+        List<MenuEntry> panelEntries = settingsEntries();
+
+        for (MenuLayout.Style style : MenuLayout.Style.values()) {
+            List<MenuEntry> entries = style == MenuLayout.Style.COVER ? coverEntries : panelEntries;
+            for (UiMetrics.Resolution res : UiMetrics.Resolution.values()) {
+                MenuLayout layout = MenuLayout.compute(res.width(), res.height(), entries, style);
+                int scale = layout.uiScale();
+                String where = style + " @ " + res.width() + "x" + res.height();
+
+                // 标题墨迹：行盒顶 + ASCII 行内偏移，高度是 7 行
+                int titleInkTop = layout.titleY()
+                        + BitmapFont.ASCII_ROW_OFFSET * layout.titleScale() * scale;
+                int titleInkBottom = titleInkTop
+                        + BitmapFont.textHeight(layout.titleScale() * scale);
+
+                // 副标题墨迹：中文占满行盒，所以行盒即墨迹
+                int subtitleInkBottom = layout.subtitleY()
+                        + BitmapFont.lineHeight(MenuLayout.SUBTITLE_SCALE * scale);
+
+                assertTrue(layout.subtitleY() >= titleInkBottom,
+                        where + "：副标题被画进了标题里 —— 标题墨迹到 " + titleInkBottom
+                                + "，副标题却从 " + layout.subtitleY() + " 开始（重叠 "
+                                + (titleInkBottom - layout.subtitleY()) + "px）");
+                assertTrue(layout.firstRowY() >= subtitleInkBottom,
+                        where + "：副标题压到了第一行菜单项上 —— 副标题墨迹到 "
+                                + subtitleInkBottom + "，第一行从 " + layout.firstRowY() + " 开始");
+            }
+        }
+    }
+
+    /**
+     * 标题的放大倍数必须由布局提供，且渲染器用的就是它。
+     *
+     * <p>这条守的是"两边各写一个倍数"的回归：布局按 {@code titleScale()} 推副标题位置，
+     * 而渲染器若自己写死一个倍数（M2.2 之前的写法），改字号时副标题位置不会跟着动。
+     */
+    @Test
+    void theTitleScaleComesFromTheLayoutAndMatchesTheStyle() {
+        MenuLayout cover = MenuLayout.compute(1280, 720, Menus.mainMenu().entries(),
+                MenuLayout.Style.COVER);
+        MenuLayout panel = MenuLayout.compute(1280, 720, settingsEntries(),
+                MenuLayout.Style.PANEL);
+
+        assertEquals(MenuLayout.COVER_TITLE_SCALE, cover.titleScale());
+        assertEquals(MenuLayout.PANEL_TITLE_SCALE, panel.titleScale());
+        assertTrue(cover.titleScale() > panel.titleScale(),
+                "封面式标题必须比面板式大，否则两个界面的视觉层级会塌平");
+    }
+
+    /**
+     * 任何分辨率下，菜单列都必须在底部提示行之上结束。
+     *
+     * <p>原有用例只跑 720p，而 1080p 恰好是唯一会出问题的分辨率：
+     * {@code uiScale = round(1080 / 720)} 把 1.5 四舍五入成 2，
+     * 于是界面按 1440p 的尺度排版、却只有 1080p 的高度可用 ——
+     * 28 行的设置界面末行落到 y=1028，而提示行在 992，最后一行（'返回'）被盖住。
+     * 玩家看不到'返回'就出不去设置界面 —— 这正是原用例的注释里写的那个失败模式。
+     */
+    @Test
+    void everyMenuEndsAboveTheBottomHintAtAnySupportedResolution() {
+        List<MenuEntry> coverEntries = Menus.mainMenu().entries();
+        List<MenuEntry> panelEntries = settingsEntries();
+
+        for (MenuLayout.Style style : MenuLayout.Style.values()) {
+            List<MenuEntry> entries = style == MenuLayout.Style.COVER ? coverEntries : panelEntries;
+            for (UiMetrics.Resolution res : UiMetrics.Resolution.values()) {
+                MenuLayout layout = MenuLayout.compute(res.width(), res.height(), entries, style);
+                int lastBottom = layout.rowY(layout.rowCount() - 1)
+                        + layout.rowHeight(layout.rowCount() - 1);
+
+                assertTrue(lastBottom < layout.hintY(),
+                        style + " @ " + res.width() + "x" + res.height()
+                                + "：菜单列末行底部 " + lastBottom + " 已经压到（或越过）提示行 "
+                                + layout.hintY() + "，玩家会读不到最后一行");
+                assertTrue(layout.versionY() >= lastBottom,
+                        style + " @ " + res.width() + "x" + res.height()
+                                + "：菜单列末行越过版本行，会与右下角版本号叠字");
+            }
+        }
+    }
+
     @Test
     void anEmptyMenuStillProducesAUsableLayout() {
         MenuLayout layout = MenuLayout.compute(1280, 720, List.of(), MenuLayout.Style.PANEL);

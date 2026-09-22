@@ -25,6 +25,38 @@ class InventoryLayoutTest {
 
     // ============================================================ 面板几何
 
+    /**
+     * 标题预留的高度必须容得下标题<b>真正被画出来的行盒</b>。
+     *
+     * <p>这条守的是一个已经在菜单上发生过、又在背包里重演一次的错误：
+     * 标题占位被写成常量 {@code PANEL_TITLE_H = 16}（≈ ASCII 的 7 行 × LABEL_SCALE 2），
+     * 而标题画的是中文 —— 中文占满 12 行行盒，实际占位是 12 × 2 × scale = 24 × scale。
+     * 少留的那 8 × scale 让标题墨迹正好顶到第一行格子的上沿（实测间隙 0–2px）。
+     *
+     * <p>判据刻意从"渲染器用的那个倍数"出发（{@code UiMetrics.px(LABEL_SCALE, scale)}），
+     * 而不是照抄一个数字：哪天有人把标题改成 3 倍，这条会自动跟着要求更大的预留高度，
+     * 而写死的期望值不会。
+     */
+    @Test
+    void theReservedTitleBandIsTallEnoughForTheLineBoxItActuallyDraws() {
+        for (UiMetrics.Resolution r : UiMetrics.Resolution.values()) {
+            InventoryLayout layout = InventoryLayout.compute(r.width(), r.height());
+            int scale = layout.uiScale();
+            int drawnLineBox = BitmapFont.lineHeight(UiMetrics.px(UiMetrics.LABEL_SCALE, scale));
+            int pad = UiMetrics.px(UiMetrics.PANEL_PAD, scale);
+
+            // 标题墨迹的底 = titleY + 行盒；它到第一个格子上沿之间必须还剩下至少一个内边距。
+            // 判据刻意写成"墨迹 + pad"而不是只要"墨迹不越界"：
+            // 按后者，旧常量 16px 会算出 16 + pad = 24，恰好等于行盒 24 ——
+            // "贴死但不相交"也算通过，而贴死在画面上就是标题挨着格子，非常难看。
+            int gap = layout.slotY(0) - (layout.titleY() + drawnLineBox);
+
+            assertTrue(gap >= pad,
+                    r + "：标题行盒之外只剩 " + gap + "px，不足一个内边距 " + pad
+                            + "px —— 标题会贴到（或压到）第一行格子上");
+        }
+    }
+
     @Test
     void thePanelFitsInsideEveryTargetResolution() {
         for (UiMetrics.Resolution r : UiMetrics.Resolution.values()) {
@@ -205,5 +237,61 @@ class InventoryLayoutTest {
         int at1440 = InventoryLayout.compute(2560, 1440).slotSize();
         assertTrue(at720 > 0 && at1440 > at720,
                 "高分辨率下槽位必须变大，否则 4K 全屏会缩成看不见的细线");
+    }
+
+    // ============================================================ 窗口坐标 → 帧缓冲像素
+
+    /**
+     * 窗口坐标 → 帧缓冲像素的换算，必须在<b>两者不相等</b>时也正确。
+     *
+     * <h2>为什么这条测试只能在"不一致"的参数下写</h2>
+     * 输入层给的鼠标位置是<b>窗口坐标</b>（GLFW 回调原始值），而全部槽位几何都写在
+     * <b>帧缓冲像素</b>里。DPI = 1 的开发机上这两个数恒等 —— 于是这条换算
+     * <b>写反、写错、甚至整段删掉都不会被任何测试或试玩发现</b>。
+     * 它的失效方式是：在缩放屏幕上"点第 3 格，动的是第 12 格"，
+     * 而开发者本机永远复现不了。所以判据必须选在窗口 ≠ 帧缓冲的区间。
+     */
+    @Test
+    void windowToFramebufferScalesByTheRatioOfTheTwoSizes() {
+        // 窗口 1280×720 / 帧缓冲 1920×1080（1.5 倍缩放）
+        double[] p = InventoryLayout.windowToFramebuffer(640, 360, 1920, 1080, 1280, 720);
+        assertEquals(960.0, p[0], 1e-9, "窗口横坐标 640 在 1.5 倍缩放下对应帧缓冲 960");
+        assertEquals(540.0, p[1], 1e-9, "窗口纵坐标 360 在 1.5 倍缩放下对应帧缓冲 540");
+
+        // 反向的一半：窗口 1920×1080 / 帧缓冲 1280×720（0.667 倍，逻辑分辨率大于窗口）
+        double[] q = InventoryLayout.windowToFramebuffer(960, 540, 1280, 720, 1920, 1080);
+        assertEquals(640.0, q[0], 1e-9);
+        assertEquals(360.0, q[1], 1e-9);
+
+        // 长度维度不同（横竖缩放比不一致）时，两轴必须各自换算，不能共用一个比例
+        double[] r = InventoryLayout.windowToFramebuffer(100, 100, 2000, 1000, 1000, 500);
+        assertEquals(200.0, r[0], 1e-9);
+        assertEquals(200.0, r[1], 1e-9);
+    }
+
+    /**
+     * 换算之后必须命中"瞄准的那一格"——这是整条链路的可执行形式。
+     *
+     * <p>用 {@link InventoryLayout#slotCenter} 取格心（帧缓冲口径），换算回窗口坐标，
+     * 再让产品那条正向换算把它变回来、交给 {@code hitTestAny}。
+     * 换算只有"乘错方向"这一种错法，因此这一步只要方向反了就必然落在别的格子上。
+     */
+    @Test
+    void aimingAtASlotCentreThroughWindowCoordinatesStillHitsThatSlot() {
+        int fbW = 2560;
+        int fbH = 1440;
+        int winW = 1280;   // 窗口是帧缓冲的一半：最能暴露"乘/除"方向写反
+        int winH = 720;
+        InventoryLayout layout = InventoryLayout.compute(fbW, fbH);
+
+        for (int slot = 0; slot < Inventory.SLOT_COUNT; slot++) {
+            double[] center = layout.slotCenter(slot);
+            // 正向换算的逆运算（刻意写成另一个表达式，不共用产品的实现）
+            double winX = center[0] * winW / (double) fbW;
+            double winY = center[1] * winH / (double) fbH;
+            double[] back = InventoryLayout.windowToFramebuffer(winX, winY, fbW, fbH, winW, winH);
+            assertEquals(slot, layout.hitTestAny(back[0], back[1]),
+                    "第 " + slot + " 格的中心经窗口坐标往返后应当仍然命中第 " + slot + " 格");
+        }
     }
 }

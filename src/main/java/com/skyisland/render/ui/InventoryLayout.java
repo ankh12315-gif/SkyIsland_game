@@ -76,7 +76,12 @@ public final class InventoryLayout {
         int mainRows = Inventory.MAIN_SIZE / COLUMNS;
         int mainHeight = mainRows * slot + (mainRows - 1) * gap;
 
-        int titleH = UiMetrics.px(UiMetrics.PANEL_TITLE_H, scale);
+        // 标题的占位必须按「行盒」算，不能按字号估：
+        // 中文占满 12 行行盒，而标题是用 LABEL_SCALE(=2) 画的，所以它的实际占位是
+        // 12 × 2 × scale。原先这里写死 PANEL_TITLE_H = 16（≈ ASCII 的 7 行 × 2），
+        // 少留了 8 × scale，标题墨迹正好顶到第一行格子的上沿（实测间隙 0–2px）。
+        // 常量已删除，避免"下次有人照着 16 再写一遍"。
+        int titleH = BitmapFont.lineHeight(UiMetrics.px(UiMetrics.LABEL_SCALE, scale));
         int contentHeight = mainHeight + separator + slot;
 
         int panelWidth = gridWidth + 2 * pad;
@@ -179,6 +184,33 @@ public final class InventoryLayout {
             }
         }
         return -1;
+    }
+
+    /**
+     * 窗口坐标 → 帧缓冲像素。
+     *
+     * <p><b>为什么单独成一个纯函数：</b>本类的全部几何都写在<b>帧缓冲像素</b>里，
+     * 而输入层给的鼠标位置是<b>窗口坐标</b>（GLFW 回调原始值）。两者在 DPI = 1 时
+     * 恰好相等 —— 也就是说开发机上这条换算写错也看不出来，而在
+     * "窗口 1280×720 / 帧缓冲 1920×1080"这类缩放下，
+     * 症状是"点第 3 格命中第 12 格"：命中判定本身没错，错的是喂给它的单位。
+     *
+     * <p>抽成静态纯函数之后，这条换算可以在<b>窗口尺寸 ≠ 帧缓冲尺寸</b>的
+     * 参数下被直接断言 —— 那是它唯一会出错、也唯一没法靠试玩发现的区间。
+     *
+     * @return 长度 2 的数组 {@code {fbX, fbY}}
+     */
+    public static double[] windowToFramebuffer(double windowX, double windowY,
+                                               int fbWidth, int fbHeight,
+                                               int windowWidth, int windowHeight) {
+        double scaleX = fbWidth / (double) Math.max(1, windowWidth);
+        double scaleY = fbHeight / (double) Math.max(1, windowHeight);
+        return new double[]{windowX * scaleX, windowY * scaleY};
+    }
+
+    /** 某绝对槽位中心的帧缓冲像素坐标（自测用它把光标"瞄准"到格子上）。 */
+    public double[] slotCenter(int index) {
+        return new double[]{slotX(index) + slotSize / 2.0, slotY(index) + slotSize / 2.0};
     }
 
     @Override
