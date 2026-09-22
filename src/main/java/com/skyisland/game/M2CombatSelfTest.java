@@ -22,8 +22,15 @@ import com.skyisland.world.World;
 import com.skyisland.world.block.BlockRegistry;
 import com.skyisland.world.gen.TestWorldGenerator;
 
+import java.awt.image.BufferedImage;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Stream;
+import javax.imageio.ImageIO;
 
 /**
  * M2 战斗脚本化自测：端到端举证 PRD §12.3 通过标准 #1「能在体素场景中完成一场基础枪战」。
@@ -181,10 +188,10 @@ public final class M2CombatSelfTest implements CombatController.Listener {
              */
             130,
             /*
-             * SPAWN_AND_APPROACH：只验证"它会追人"，因此让怪物走 1.5 格即可（初始距离 5.0 格）。
+             * SPAWN_AND_APPROACH：只验证"它会追人"，因此让怪物走 1.5 格即可（初始距离 4.0 格）。
              *   · 追击速度 2.0 格/秒 → 1.5 格需要 0.75 s = 45 步。
              *   · 必须<b>在进入攻击距离（1.6 格）之前</b>收尾：否则玩家会被咬，
-             *     后续阶段的玩家生命就不再是已知量。5.0 − 1.5 = 3.5 > 1.6，安全。
+             *     后续阶段的玩家生命就不再是已知量。4.0 − 1.5 = 2.5 > 1.6，安全。
              *   取 45 步（无额外余量是刻意的：多走一步就少一分"没被咬"的保证）。
              */
             45,
@@ -501,6 +508,15 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private double aimObservedCameraFov = -1;
 
     private boolean approachScreenshotTaken;
+
+    /**
+     * M2.1 像素证据：请求 {@code monster-in-view} 截图时的墙钟时刻（毫秒）。
+     *
+     * <p>截图目录是<b>共享</b>的（多次运行会累积同名文件），因此收尾做像素校验时
+     * 不能只挑"最新的 monster-in-view PNG"——必须挑<b>本次运行之后新产生的</b>那一张。
+     * 用请求时刻做下界即可唯一定位。
+     */
+    private long approachScreenshotRequestedAtMs = -1;
 
     private long breakParticlesAfterFirstBreak = -1;
     private boolean breakScreenshotTaken;
@@ -901,10 +917,12 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         // 原因见 checkSpawnAndApproach() —— onStageEnd() 是在 nextIntent() 内部、
         // 最后一步执行<b>之前</b>被调用的，因此"最后一步的观测"永远晚于该阶段的断言。
         if (!approachScreenshotTaken && currentStep == 30) {
-            // 怪物此时约在 4.0 格外（5.0 − 30 tick × 0.0333）、正对镜头，
+            // 怪物此时约在 3.0 格外（4.0 − 30 tick × 0.0333）、正对镜头，
             // HUD 上同时挂着生命条与弹药读数 ——
             // 这正是"画面里同时有怪物、生命条、弹药"这一条截图要求所指的时刻。
             approachScreenshotTaken = true;
+            // 记下请求时刻：收尾的像素校验据此在共享截图目录里唯一定位本轮的 PNG。
+            approachScreenshotRequestedAtMs = System.currentTimeMillis();
             host.requestScreenshot("monster-in-view");
         }
     }
@@ -1333,8 +1351,10 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         //   步数核算（预算 45 步 = 第 0…44 步）：
         //     · 第 0 步摆姿势；第 1 步在 intentFor 内刷怪，该步的 entities.tick 随即跑了一次；
         //     · 本方法在"第 44 步执行之前"被调用 → 实体共 tick 了第 1…43 步 = 43 次。
-        //     · spawnDistance 采于第 1 步结束（已 tick 1 次）= 5.0 − 1×0.03333 = 4.9667 格；
-        //       approachDistance 采于此 = 5.0 − 43×0.03333 = 3.5667 格；
+        //     · spawnDistance 采于第 1 步结束（已 tick 1 次）= 4.0 − 1×0.03333 = 3.9667 格；
+        //       （4.0 是 M2.1 新语义下"最近的合法候选"：候选带从 4.0 起、步长 0.5，见
+        //        SkyIslandGame.debugSpawnMonster —— 不再是从前写死的 5.0）
+        //       approachDistance 采于此 = 4.0 − 43×0.03333 = 2.5667 格；
         //       Δ = 42 个追击步 × 2.0/60 = 1.4000 格（实测 1.400，逐位吻合）。
         //   阈值 1.0 格的依据：它必须严格小于理论位移 1.400（否则理论值本身就会假红），
         //   又必须远大于 0（"完全没动"必然失败）；取 1.0 使两侧余量分别约 0.4 / 1.0 格。
@@ -1352,11 +1372,12 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 monster == null ? "monster=null"
                         : "health=" + monster.health() + "/" + monster.maxHealth());
         // ★ 这里必须比对"刷怪当步的落点"，不能读 monster.position()（阶段末尾它已经在走了）。
-        //   期望值的推导：玩家在 (0.5, 64, 0.5) 视线水平朝 −Z，`debugSpawnMonster` 取
-        //   视线方向 5.0 格 → (0.5, 64, 0.5 − 5.0) = (0.5, 64, −4.5)；
-        //   该点所在列 (0, 63, −5) 是草方块、上方两格是空气，因此是合法落脚点，
-        //   `findNearestStandable` 会原样返回它（不会吸附走）——
-        //   这也正是"落点由准星方向决定"这条产品行为的可观测证据。
+        //   期望值的推导（M2.1 新语义）：玩家在 (0.5, 64, 0.5) 视线水平朝 −Z，
+        //   debugSpawnMonster 取"相机水平前方（yaw，丢弃俯仰）"，沿它从最近的候选 t=4.0 起试：
+        //   第一个候选即 (0.5, 64, 0.5 − 4.0) = (0.5, 64, −3.5)。
+        //   该点所在列 (0, 63, −4) 是草方块、上方两格是空气 → 合法落脚点；
+        //   落差 Δy=0、视锥内、视线无遮挡 → 四条硬条件全过，直接采用（不再试更远的候选）。
+        //   这与旧语义的 5.0 格不同是<b>产品语义变更的结果</b>，不是测试放宽。
         //
         //   容差必须容纳"刷怪那一步怪物就已经走过一格"这件事：
         //   spawn 发生在 currentIntent() 内，而 entities.tick() 在同一个逻辑步里随后执行，
@@ -1364,11 +1385,11 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         //   容差取 1.5 倍该步长 = 0.05 格：足以容纳这一步（实测偏差 0.0333），
         //   又远小于"落点被吸附到相邻格"（那会是整格 = 1.0 格的偏差）—— 即容差能区分这两种情形。
         double spawnTolerance = MeleeMonster.MOVE_SPEED * GameLoop.FIXED_DT * 1.5;   // 0.05
-        record("刷怪落点 = 准星前方 5 格 (0.5, 64.0, −4.5)",
+        record("刷怪落点 = 相机水平前方最近的合法候选 (0.5, 64.0, −3.5)",
                 monster != null
                         && Math.abs(monsterSpawnX - 0.5) < spawnTolerance
                         && Math.abs(monsterSpawnY - 64.0) < spawnTolerance
-                        && Math.abs(monsterSpawnZ - (-4.5)) < spawnTolerance,
+                        && Math.abs(monsterSpawnZ - (-3.5)) < spawnTolerance,
                 monster == null ? "monster=null"
                         : String.format("刷怪当步落点 (%.3f, %.3f, %.3f)，容差 %.4f 格"
                                         + "（= 1.5 × 追击步长 2.0/60）；阶段末尾已移动到 %.3f",
@@ -1378,13 +1399,13 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 "isChasing=" + (monster != null && monster.isChasing())
                         + "，初始水平距离=" + String.format("%.3f", spawnDistance));
         // 预算 45 步里的 42 个"净追击步"：追击速度 2.0 格/秒 × 42/60 s = 1.400 格，
-        // 距离应从 4.967（第 1 步结束的读数）降到 3.567（本断言的读数）。
+        // 距离应从 3.967（第 1 步结束的读数）降到 2.567（本断言的读数）。
         // 阈值 1.0 格：严格小于理论位移 1.400（理论值本身不会假红），又远大于 0。
         record("怪物朝玩家走近（水平距离下降）",
                 approachDistance > 0 && spawnDistance - approachDistance > 1.0,
                 String.format("%.3f → %.3f 格（Δ=%.3f；理论 2.0 格/秒 × 42/60 s = 1.400 格）",
                         spawnDistance, approachDistance, spawnDistance - approachDistance));
-        // 攻击距离 1.6 格：初始 4.967 − 1.433 = 3.53 > 1.6，因此整段预算内玩家都不会被咬，
+        // 攻击距离 1.6 格：初始 3.967 − 1.433 = 2.53 > 1.6，因此整段预算内玩家都不会被咬，
         // 后续阶段（SHOOT_KILL 起）的"玩家生命是已知量"才站得住。
         record("收尾时怪物尚未进入攻击距离（玩家不会被咬，后续阶段生命是已知量）",
                 approachDistance > MeleeMonster.ATTACK_RANGE,
@@ -1895,24 +1916,164 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 muzzle != null && muzzleForwardDot > 0.0,
                 muzzle == null ? "没有留档的枪口闪光样本"
                         : String.format("前向点积 %.4f", muzzleForwardDot));
+
+        /*
+         * M2.1 缺陷（实体世界 Y）：把"怪物确实出现在帧缓冲里"变成一条会变红的断言。
+         *
+         * 为什么不新开一个独立 verify 由 SkyIslandGame 调用：该主类的收尾调用点由另一位
+         * worker 持有（本轮并发修改），因此把像素校验<b>挂在本就接线好的表现层校验之后</b>
+         * ——它和上面的枪口闪光/命中标记同属"视觉是否真的产出"，只是口径不同：
+         * 上面数的是"特效方法被调了几次"，这里数的是"屏幕上有没有像素"。
+         */
+        verifyMonsterFramebuffer();
         Log.info("==========================================================");
     }
 
     /**
-     * M2.1 缺陷 B：F4 刷怪落点必须落在地面上（不能半空）。
+     * M2.1：<b>帧缓冲像素证据</b> —— 数出屏幕上真的出现了怪物像素，而不只是"提交了几何"。
+     *
+     * <h2>它补的是哪一段缺口</h2>
+     * 在它出现之前，"怪物在视野里"的全部证据是顶点数 / 盒体数 / 一张没人看过的截图。
+     * 三者都只回答"提交了多少几何"，而"几何提交了没有"与"屏幕上出现了没有"可以独立失败：
+     * {@code EntityRenderer#buildMonsterVertices} 的 pivotY 曾被写成 {@code 0.0}，
+     * 于是怪被画到地下、<b>屏幕上一个像素都没有</b>，而盒体数、日志提示全部正常。
+     *
+     * <h2>为什么复用截图链路而不是自造一套渲染</h2>
+     * 像素来自产品自己的链路：{@code requestScreenshot("monster-in-view")}
+     * → {@code SkyIslandGame.captureScreenshot} → {@code Screenshot.readPixels}
+     * （真正的 {@code glReadPixels}，在两缓冲交换之前）→ 落盘 PNG（无损）。
+     * 被校验的这一帧，是 {@code SPAWN_AND_APPROACH} 第 30 步：
+     * 玩家被摆到出生点、视线水平朝 −Z，F4 刷出的怪在其正前方约 4 格 ——
+     * 即"怪正对着镜头、居中"的确定性位姿。
+     *
+     * <h2>判据为什么能变红、且能区分背景</h2>
+     * 命中必须落在<b>屏幕中央的有界区域</b>（中央 40% 宽 × 60% 高），并与"整屏命中数"
+     * 分开报告，避免把画面边缘的地形色算进来；主判据只数四个"体色"（偏红，在天空/草地前分得开），
+     * 眼睛色（近纯黄，与准星同色系）只作参考。pre-fix 状态下怪沉在地下、中央区域命中为 0，
+     * 本方法必红；post-fix 下中央区域命中为数千像素。
+     */
+    public void verifyMonsterFramebuffer() {
+        Log.info("================ M2.1 自测：怪物帧缓冲像素证据 ================");
+        Path dir = Path.of(System.getProperty("skyisland.screenshotDir", "screenshots"));
+        Path png = newestMonsterPng(dir);
+        if (png == null) {
+            record("monster-in-view 截图已落盘（否则无像素可读）", false,
+                    "目录 " + dir.toAbsolutePath() + " 下找不到本轮（请求于 epochMs="
+                            + approachScreenshotRequestedAtMs + "）的 monster-in-view PNG");
+            return;
+        }
+
+        BufferedImage image;
+        try {
+            image = ImageIO.read(png.toFile());
+        } catch (IOException e) {
+            record("monster-in-view 截图可读", false, "读取失败：" + e);
+            return;
+        }
+        if (image == null) {
+            record("monster-in-view 截图可读（不是空/损坏文件）", false,
+                    png.getFileName().toString() + " 无法解码为图像");
+            return;
+        }
+        record("monster-in-view 截图已落盘且可解码", true, png.getFileName().toString());
+
+        int w = image.getWidth();
+        int h = image.getHeight();
+        int[] argb = image.getRGB(0, 0, w, h, null, 0, w);
+        // 中央有界区域：宽 40% × 高 60%，居中。
+        double regionW = 0.40;
+        double regionH = 0.60;
+        MonsterPixelEvidence.Result r = MonsterPixelEvidence.analyze(
+                argb, w, h, regionW, regionH, MonsterPixelEvidence.DEFAULT_TOLERANCE);
+        Log.info("[自测] %s", r.describe());
+        Log.info("[自测] 中央区域出现最多的颜色（实测，用于核对 round(分量×255) 口径）：%s",
+                MonsterPixelEvidence.topColors(argb, w, h, regionW, regionH, 8));
+
+        /*
+         * 主判据：中央有界区域内必须存在足够多的"体色"像素。
+         * 阈值 1000 取在"0（pre-fix，怪在地下 → 屏幕上无像素）"与
+         * "数千（post-fix，怪正对镜头）"之间很远处：既有判别力，又对朝向/抖动不敏感。
+         */
+        final int minBodyPixels = 1000;
+        record("中央有界区域内存在怪物体色像素（体色命中 ≥ " + minBodyPixels + "）",
+                r.bodyHitsCenter() >= minBodyPixels,
+                "中央命中=" + r.bodyHitsCenter() + "（占中央 " + r.centerPixelCount() + " 像素）"
+                        + "，整屏命中=" + r.bodyHitsFull()
+                        + "，容差=" + MonsterPixelEvidence.DEFAULT_TOLERANCE);
+        /*
+         * 第二判据：命中集中在中央区域 —— 单独一条，防止"整屏到处都是近似体色"时
+         * 靠背景凑数。post-fix 下中央命中应当占了整屏命中的绝大部分
+         * （怪就在中央，边缘没有别的体色）；pre-fix 下两者都是 0。
+         */
+        record("怪物像素集中在中央区域（中央命中 ≥ 整屏命中的 60%）",
+                r.bodyHitsCenter() > 0 && r.bodyHitsCenter() * 5 >= r.bodyHitsFull() * 3,
+                "中央=" + r.bodyHitsCenter() + " 整屏=" + r.bodyHitsFull());
+        Log.info("==========================================================");
+    }
+
+    /**
+     * 在截图目录里找<b>本轮</b>写出的 {@code monster-in-view} PNG：
+     * 文件名匹配 {@code *monster-in-view*.png}，且修改时间不早于请求时刻（留 5 秒宽限）。
+     * 找不到"本轮的"则回退到最新一张（仅用于给出可读的失败信息）。
+     */
+    private Path newestMonsterPng(Path dir) {
+        if (!Files.isDirectory(dir)) {
+            return null;
+        }
+        long floor = approachScreenshotRequestedAtMs < 0
+                ? Long.MIN_VALUE : approachScreenshotRequestedAtMs - 5_000L;
+        Path best = null;
+        long bestTs = Long.MIN_VALUE;
+        try (Stream<Path> walk = Files.list(dir)) {
+            List<Path> candidates = walk
+                    .filter(p -> p.getFileName().toString().contains("monster-in-view"))
+                    .filter(p -> p.getFileName().toString().endsWith(".png"))
+                    .sorted(Comparator.comparingLong(this::mtimeMs))
+                    .toList();
+            for (Path p : candidates) {
+                long ts = mtimeMs(p);
+                if (ts >= floor && ts >= bestTs) {
+                    best = p;
+                    bestTs = ts;
+                }
+            }
+        } catch (IOException e) {
+            Log.noteWarning("自测", "列举截图目录失败：" + e);
+            return null;
+        }
+        return best;
+    }
+
+    private long mtimeMs(Path p) {
+        try {
+            return Files.getLastModifiedTime(p).toMillis();
+        } catch (IOException e) {
+            return Long.MIN_VALUE;
+        }
+    }
+
+    /**
+     * M2.1：F4 刷怪落点必须落在<b>玩家看得见的地方</b>（不是半空、不是玩家找不到的远处）。
      *
      * <h2>为什么这条断言必须摆位、且必须在收尾跑</h2>
-     * 缺陷 B 只有在"玩家高于地表 3 格以上"时才暴露：旧代码用
-     * {@code Player.findNearestStandable}（同一 y 平面的水平搜索）找落点，玩家站在高塔上时
-     * 该高度找不到地面，怪就被留在半空自由落体到塔底 —— 现场症状是"生成出来的怪物找不到了"。
-     * 因此这里显式把玩家抬到地表上方 8 格以上，再走<b>产品的 F4 刷怪路径</b>
-     * （{@link Host#spawnMonsterInFront()}），直接对"怪是否站在合法落脚点"下断言。
+     * 缺陷 B 有前后两半：前半"怪被放在半空"（渲染层另修）；后半"落点虽接地，却可能在
+     * 视野之外或被方块挡住"。M2.1 把 F4 语义定义成"相机水平前方 4–8 格里第一个同时满足
+     * 地面 / 落差 / 视锥 / 视线的候选"（见 {@code SkyIslandGame.debugSpawnMonster}）。
+     * 本方法直接走<b>产品的 F4 刷怪路径</b>（{@link Host#spawnMonsterInFront()}）对这两半一起下断言。
      *
-     * <h2>为什么要断言"失败分支不生成实体"</h2>
-     * 只断言"通常能落在地上"是不够的 —— 它证明不了"找不到地面时不会生成悬空怪"。
-     * 因此第二条用一整根无地面的柱（虚空坑 x,z ∈ [3,6]）逼出
-     * {@code findSpawnGroundY} 返回 null，断言实体数<u>没有</u>增加：
-     * 这才把"绝不生成悬空怪"从"通常没事"变成一条可证伪的承诺。
+     * <h2>为什么两条用例的摆位与旧版不同（场景问题，不是判据问题）</h2>
+     * 旧版用例 1 把玩家抬到地表上方 10 格、视线朝正上，逼出"射线落空 → 按前向 5 格刷"的
+     * 回退分支。新语义<u>不再有那条回退分支</u>：落点恒取"相机水平前方"，且要求
+     * |Δy| ≤ {@code SPAWN_MAX_VERTICAL_OFFSET}（3 格）—— 玩家高出地表 10 格时，
+     * 正前方任何候选的落差都超限，F4 会（正确地）拒绝生成。因此：
+     * <ul>
+     *   <li><b>用例 1</b> 改成"玩家站在地表、视线水平朝平地"，让四条硬条件全部成立 →
+     *       断言"刷得出来、落在合法落脚点、并且播了生成提示物"；</li>
+     *   <li><b>用例 2</b> 保留"玩家高出地表 10 格"的摆位，但其含义变成
+     *       "落差超限 → 一个候选都不满足 → 不生成" —— 这正是新语义下该摆位应得的答案。</li>
+     * </ul>
+     * <b>这是场景摆位问题，不是判据问题</b>：两条用例的布尔判据（生成了 / 没生成）
+     * 一个字没改，改的只是"在什么姿势下试"。
      */
     public void verifySpawnGrounding() {
         Log.info("================ M2.1 自测：F4 刷怪落点接地校验 ================");
@@ -1920,53 +2081,57 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         World world = host.world();
         EntityManager entities = host.entities();
 
-        // ---- 用例 1：玩家高于地表 ≥8 格时，怪必须落在地面上 ----
-        // 摆位：测试世界地表顶面在 y=63（可站 y=64），抬到 y=74（上方 10 格，满足 ≥8）。
-        // 视线朝正上（pitch 夹到最大 89.5°）→ 准星射线打不到任何东西 → 走
-        // debugSpawnMonster 的"视线方向 5 格"回退分支，也就是缺陷 B 暴露的那条路径。
-        player.teleport(SPAWN_X, 74.0, SPAWN_Z);
-        player.camera().setAngles(0, 89.5);
-        // 走一个<u>真实逻辑步</u>刷新 player.currentTarget：debugSpawnMonster 读的是
-        // 上一步缓存的那条射线。这里要的是"准星朝天空 → 射线落空 → 走回退分支"，
-        // 也就是缺陷 B 暴露的那条路径；不刷新就会读到上一阶段遗留的陈旧射线，测试不可复现。
+        // ---- 用例 1：站在地表、视线水平朝 -Z 刷怪：四条硬条件全过，怪必须落在地面上 ----
+        // 摆位：回到出生点 (0.5, 64, 0.5)（地表可站 y=64）、视线水平（pitch 0，yaw 0 → 朝 -Z）。
+        // 走一个真实逻辑步让相机视图矩阵与权威位置同步 —— setAngles 只重算 basis、不更新视图矩阵，
+        // step 末尾的 refreshCamera 才会，而视锥判据读的正是这份矩阵。
+        player.teleport(SPAWN_X, SPAWN_Y, SPAWN_Z);
+        player.camera().setAngles(0, 0);
         player.step(world, PlayerIntent.NONE, GameLoop.FIXED_DT);
         int aliveBefore = entities.aliveCount();
         int spawnedBefore = entities.totalSpawned();
+        int cuesBefore = host.combatFx().totalSpawnCues();
         MeleeMonster grounded = host.spawnMonsterInFront();
-        record("玩家高于地表 8 格以上刷怪：怪不为 null（已找到地面）",
+        record("地表水平视线刷怪：怪不为 null（四条硬条件全过）",
                 grounded != null,
-                grounded == null ? "返回 null（旧代码会返回一只半空的怪）"
+                grounded == null ? "返回 null（一个候选都没通过硬条件）"
                         : String.format("玩家 y=%.2f，怪 y=%.2f",
                                 player.position().y, grounded.position().y));
         boolean standing = grounded != null && player.isStandingSpotValid(world,
                 grounded.position().x, grounded.position().y, grounded.position().z);
-        record("玩家高于地表 8 格以上刷怪：怪站在合法落脚点上（不是半空）",
+        record("地表水平视线刷怪：怪站在合法落脚点上（不是半空）",
                 standing,
                 grounded == null ? "monster=null"
-                        : String.format("怪 (%.2f, %.2f, %.2f) isStandingSpotValid=%b"
-                                + "（旧代码此处约为 y=70 的半空，判定为 false）",
+                        : String.format("怪 (%.2f, %.2f, %.2f) isStandingSpotValid=%b",
                                 grounded.position().x, grounded.position().y,
                                 grounded.position().z, standing));
-        record("玩家高于地表 8 格以上刷怪：实体计数 +1（确实生成了一只）",
+        record("地表水平视线刷怪：实体计数 +1（确实生成了一只）",
                 entities.aliveCount() - aliveBefore == 1
                         && entities.totalSpawned() - spawnedBefore == 1,
                 "alive " + aliveBefore + "→" + entities.aliveCount()
                         + "，spawned " + spawnedBefore + "→" + entities.totalSpawned());
+        // 生成提示物必须有断言跟着：否则"播没播提示物"没有任何证据，
+        // 而这正是"生成成功却看不见"要补的那一半。
+        int cueDelta = host.combatFx().totalSpawnCues() - cuesBefore;
+        record("刷怪成功时确实播了生成提示物（走 CombatFx 粒子链路）",
+                cueDelta == 1, "生成提示物次数增量=" + cueDelta);
 
-        // ---- 用例 2：下方没有地面时，绝不生成悬空怪 ----
-        // 虚空坑 x,z ∈ [3,6]：整根柱子没有任何方块，向下 32 格也找不到落脚点。
+        // ---- 用例 2：玩家高出地表 10 格时落差超限 → 一个候选都不满足 → 绝不生成 ----
+        // 摆位：虚空坑 x,z ∈ [3,6] 之上 10 格、视线水平朝 -Z。无论正前方是否有地面，
+        // 正前方候选的 |Δy| ≈ 10 > 3，debugSpawnMonster 走"不生成"分支。断言实体数不变。
         player.teleport(4.5, 74.0, 4.5);
-        player.camera().setAngles(0, 89.5);
+        player.camera().setAngles(0, 0);
         player.step(world, PlayerIntent.NONE, GameLoop.FIXED_DT);
         int aliveBefore2 = entities.aliveCount();
         int spawnedBefore2 = entities.totalSpawned();
         MeleeMonster floating = host.spawnMonsterInFront();
-        record("下方无地面时刷怪返回 null（不生成悬空怪）", floating == null,
+        record("落差超限时刷怪返回 null（不生成玩家够不着的怪）", floating == null,
                 floating == null ? "返回 null"
-                        : String.format("竟生成了 (%.2f, %.2f, %.2f) —— 悬空怪",
+                        : String.format("竟生成了 (%.2f, %.2f, %.2f) —— 落差 %.1f 格",
                                 floating.position().x, floating.position().y,
-                                floating.position().z));
-        record("下方无地面时实体数不变（没有偷偷塞一只）",
+                                floating.position().z,
+                                floating.position().y - player.position().y));
+        record("落差超限时实体数不变（没有偷偷塞一只）",
                 entities.aliveCount() == aliveBefore2
                         && entities.totalSpawned() == spawnedBefore2,
                 "alive " + aliveBefore2 + "→" + entities.aliveCount()

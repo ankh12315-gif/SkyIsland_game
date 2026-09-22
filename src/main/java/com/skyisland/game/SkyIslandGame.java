@@ -10,13 +10,16 @@ import com.skyisland.input.InputMapper;
 import com.skyisland.input.InputState;
 import com.skyisland.input.MenuNav;
 import com.skyisland.item.ItemRegistry;
+import com.skyisland.physics.DdaRaycaster;
 import com.skyisland.physics.RaycastHit;
 import com.skyisland.player.Inventory;
 import com.skyisland.player.ItemStack;
 import com.skyisland.player.Player;
 import com.skyisland.player.PlayerIntent;
+import com.skyisland.render.Frustum;
 import com.skyisland.render.GlDiagnostics;
 import com.skyisland.render.Renderer;
+import com.skyisland.render.entity.EntityRenderer;
 import com.skyisland.render.Screenshot;
 import com.skyisland.render.Window;
 import com.skyisland.render.fx.CombatFxModel;
@@ -42,6 +45,7 @@ import com.skyisland.world.World;
 import com.skyisland.world.block.Block;
 import com.skyisland.world.block.BlockRegistry;
 import com.skyisland.world.gen.TestWorldGenerator;
+import org.joml.Vector3d;
 import org.lwjgl.glfw.GLFW;
 import org.lwjgl.glfw.GLFWErrorCallback;
 
@@ -164,6 +168,73 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      * 32 格足够，又不会一路穿到虚空把"找不到地面"这种情况误判成"脚下有地"。
      */
     public static final int SPAWN_GROUND_SEARCH_DEPTH = 32;
+
+    // ------------------------------------------------------------ M2.1：F4 刷怪的候选搜索规格
+
+    /**
+     * M2.1：F4 刷怪候选点到玩家的<b>水平</b>距离下界（格）。
+     *
+     * <p>沿用旧语义的"约 5 格"直觉（超出攻击距离 1.6、远小于追击距离 24），
+     * 但从"写死 5.0"改成"从 4.0 起逐 0.5 格试到 8.0，取第一个合法候选"——
+     * 4.0 作为下界保证"一按就能看到怪走过来"（不会贴脸），
+     * 8.0 作为上界保证"仍在准星视锥的中心区、一眼能看见"。
+     */
+    public static final double SPAWN_CANDIDATE_MIN = 4.0;
+
+    /** M2.1：F4 刷怪候选点到玩家的水平距离上界（格）。见 {@link #SPAWN_CANDIDATE_MIN}。 */
+    public static final double SPAWN_CANDIDATE_MAX = 8.0;
+
+    /**
+     * M2.1：候选距离的步长（格）。0.5 格 = 半个方块，
+     * 9 个候选（4.0 … 8.0 每 0.5 一个）在"够密以避免空档"与"够少以免搜索次数过多"之间平衡。
+     */
+    public static final double SPAWN_CANDIDATE_STEP = 0.5;
+
+    /**
+     * M2.1：落点相对<b>玩家脚底</b>的竖直落差上限（格，判据用绝对值）。
+     *
+     * <p><b>为什么必须有这条：</b>旧实现只检查"候选点脚下能不能站"，完全不看
+     * "这个落点与玩家差了几层"。玩家站在高塔上时，正前方 5 格的地表可能低十层 ——
+     * 即使脚下能找到地面，刷出来的怪也在玩家下方很远，玩家"生成成功了却找不到"。
+     * 本阈值把落点锁在玩家所在层的邻层之内。
+     *
+     * <p><b>为什么取 3：</b>测试世界的地表起伏是"逐级 1 格的台阶"（见
+     * {@code TestWorldGenerator}），一级台阶高 1.0；取 3 足以容忍
+     * "站在台阶上、脚下是上一级/下一级"甚至跨两级的情形，
+     * 又严格小于"玩家与地表之间的任意高处"（测试里把玩家抬到 74，落差 10，必被拒）。
+     * 它同时是"不刷到玩家上一层/下一层"这条产品语义的量化口径。
+     */
+    public static final double SPAWN_MAX_VERTICAL_OFFSET = 3.0;
+
+    /**
+     * 怪（近战怪）碰撞箱中心相对脚底的高度（格）。
+     *
+     * <p>近战怪高 {@code 1.8}（见 {@code MeleeMonster}），中心即 {@code 1.8 / 2 = 0.9}。
+     * 视锥与视线判定都用"怪的身体中心"这个点，而不是脚底（脚底贴地，
+     * 用它做视线起点会被自己的地面方块挡出一个假的"无视线"）。
+     */
+    public static final double SPAWN_MONSTER_CENTER_HEIGHT = 0.9;
+
+    /**
+     * 生成提示物的颜色：高明度的暖黄。
+     *
+     * <p>选暖黄而不是复用怪物红/草地绿/天空蓝：它是画面里饱和度最高、
+     * 与三者都不同相的颜色，第一眼就能把视线从任何背景上拉过去 ——
+     * 这正是"生成提示物"唯一要办的事。
+     */
+    private static final float SPAWN_CUE_R = 1.00f;
+    private static final float SPAWN_CUE_G = 0.92f;
+    private static final float SPAWN_CUE_B = 0.35f;
+
+    /**
+     * M2.1：F3 overlay 最多逐只列出的实体数。
+     *
+     * <p>{@code HudRenderer} 是按行自上而下画的，行数过多会溢出屏幕（挤爆 HUD）。
+     * 实体多时最有价值的是"离我最近的那几只"（它们才是"冲我来的"这个判断的对象），
+     * 因此按到玩家的水平距离取最近的 8 只，其余用一行"存活 N / 显示 M"汇总 ——
+     * 让"被省略了多少"这件事不会被静默吞掉。
+     */
+    private static final int DEBUG_ENTITY_LINES_MAX = 8;
 
     // ============================================================ 运行参数
 
@@ -313,6 +384,22 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     private boolean firstJoinHintShown;
     /** 表现层种子的递增源：让"同一次运行"里的粒子分布可复现。 */
     private long fxSeedCounter;
+
+    /**
+     * 视线（LOS）射线方向的可复用缓冲。
+     *
+     * <p>{@link DdaRaycaster} 需要 {@code Vector3dc}；F3 overlay 每帧可能对多只实体各做一次
+     * LOS，因此复用同一个实例，避免在渲染路径上制造临时分配（core 零热路径分配）。
+     */
+    private final Vector3d losDirection = new Vector3d();
+
+    /**
+     * F3 overlay 排序用的可复用实体列表。
+     *
+     * <p>避免在"F3 打开"的渲染路径上每帧 {@code new} 一个 ArrayList 再排序
+     * （与 {@link #losDirection} 同一取向：渲染路径上不制造临时分配）。
+     */
+    private final List<Entity> debugEntityScratch = new ArrayList<>();
 
     // ---- M2.1：最小音频反馈链 ----
 
@@ -1169,7 +1256,14 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     private void handleFrameEdges() {
         if (frameIntent.toggleDebugPressed()) {
             hud.showDebugOverlay = !hud.showDebugOverlay;
-            Log.info("[HUD] F3 调试 overlay: %s", hud.showDebugOverlay ? "开" : "关");
+            // M2.1：F3 同时开关实体的碰撞箱线框。EntityRenderer.setDebugHitbox 此前是
+            // 一处"死接线"——方法齐备、渲染分支也在，但全项目零调用，于是 F3 永远看不到碰撞箱。
+            // 这里把它接到唯一的调试开关上：F3 开 = overlay + 碰撞箱都开，两者语义同为"给我的眼睛看"。
+            // 注意它是 static 方法，只加调用点，不改 EntityRenderer 本身。
+            EntityRenderer.setDebugHitbox(hud.showDebugOverlay);
+            Log.info("[HUD] F3 调试 overlay: %s（实体碰撞箱线框 %s）",
+                    hud.showDebugOverlay ? "开" : "关",
+                    hud.showDebugOverlay ? "开" : "关");
         }
         if (frameIntent.screenshotPressed()) {
             pendingScreenshotLabel = "manual";
@@ -1201,68 +1295,197 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     }
 
     /**
-     * 在准星前方 5 格处刷一只近战怪（M2 调试快捷键 F4）。
+     * 在<b>相机水平前方</b>的候选带上刷一只近战怪（M2 调试快捷键 F4）。
      *
-     * <p><b>刷在"视线方向 5 格"而不是"玩家脚下"</b>：脚下会立刻贴脸攻击，
-     * 无法观察"追逐 → 攻击"这条链路；5 格刚好超出攻击距离（1.6 格）
-     * 又远小于追逐距离（24 格），因此一按就能看到怪物走过来。
+     * <h2>M2.1 重定义的产品语义（"刷在看得见的地方"）</h2>
+     * 旧实现取的是 {@code camera.forward()} —— 一个<b>含俯仰</b>的三维单位向量。
+     * 于是"前方 5 格"在水平面上的投影会随俯仰角缩短：抬头 / 低头时落点会明显漂移；
+     * 更糟的是它<u>只</u>检查"脚下能不能站"，从不检查落点是否在视野内、有没有被方块挡住。
+     * 结果"生成成功"与"看得见"变成两件互不保证的事 —— 这正是缺陷 B 的另一半。
      *
-     * <p>落点选在射线命中的方块<b>顶面之上</b>，而不是"射线终点"——
-     * 后者会把怪塞进方块里，然后它因为"头两格被占"而无法站立，
-     * 表现为"刷出来的怪立刻掉进虚空"。
+     * <p>新语义把落点定义成一个<b>候选搜索</b>：
+     * <ol>
+     *   <li>取<b>相机水平前方</b>（只用 yaw，丢掉俯仰，归一化到水平单位向量）；</li>
+     *   <li>沿它取候选距离 t ∈ {4.0, 4.5, …, 8.0}（共 9 个，<b>从最近开始</b>）；</li>
+     *   <li>对每个候选做竖直落地搜索（复用 {@link #findSpawnGroundY}）；</li>
+     *   <li>候选必须<b>同时</b>满足四条硬条件，否则试下一个：
+     *     <ul>
+     *       <li><b>(a) 地面</b>：落点下方能找到可站立地面，且落点相对玩家脚底的竖直落差
+     *           |Δy| ≤ {@link #SPAWN_MAX_VERTICAL_OFFSET}；</li>
+     *       <li><b>(b) 头顶净空</b>：由 (a) 的 {@link Player#isStandingSpotValid} 一并保证
+     *           —— 它同时要求"脚底格与头格都是空气、下方是实体"，怪才有 1.8 格空间站立，
+     *           这里<u>不再重复实现</u>；</li>
+     *       <li><b>(c) 视锥</b>：落点怪物中心（脚底 + {@link #SPAWN_MONSTER_CENTER_HEIGHT}）
+     *           必须落在相机视锥内 —— 复用区块剔除用的 {@link Frustum}；</li>
+     *       <li><b>(d) 视线</b>：从玩家眼睛到怪物中心的<b>体素射线</b>不得被实体方块挡住
+     *           —— 复用挖掘用的 {@link DdaRaycaster}。</li>
+     *     </ul>
+     *   </li>
+     *   <li>取第一个满足全部硬条件的候选（最近的，既近又在视野里）；</li>
+     *   <li>一个都不满足 → <b>不生成</b>，提示玩家换个方向再试。</li>
+     * </ol>
      *
-     * @return 生成的近战怪；如果建议落点下方 {@link #SPAWN_GROUND_SEARCH_DEPTH} 格内
-     *         没有可站立的地面，则<b>不生成</b>并返回 {@code null}（缺陷 B：绝不生成悬空怪）。
+     * <p><b>为什么不自己写第二套投影 / 射线数学：</b>视锥与射线在本项目各只有一处权威实现
+     * （{@link Frustum} 供区块剔除、{@link DdaRaycaster} 供瞄准 / 挖掘 / 放置）。
+     * 刷怪的判据若另起一套，就必然出现"区块按 A 口径剔除、刷怪按 B 口径判定"的漂移。
+     *
+     * @return 生成的近战怪；没有任何候选满足硬条件时<b>不生成</b>并返回 {@code null}。
      *         返回它而不是 {@code void}，是为了让 M2 战斗自测
      *         能够"复用同一条刷怪路径"并直接对这只怪断言 ——
      *         自测若另造一套刷怪代码，就不构成"玩家按 F4 时这条路是通的"的证据。
      */
     private MeleeMonster debugSpawnMonster() {
-        RaycastHit hit = player.currentTarget();
-        double x;
-        double y;
-        double z;
-        if (hit != null && hit.hasFace()) {
-            x = hit.blockX() + 0.5;
-            y = hit.blockY() + 1.0;
-            z = hit.blockZ() + 0.5;
-        } else {
-            var forward = player.camera().forward();
-            x = player.position().x + forward.x() * 5.0;
-            y = player.position().y;
-            z = player.position().z + forward.z() * 5.0;
+        var cam = player.camera();
+
+        // 1) 相机水平前方：只取 yaw，丢掉俯仰分量。
+        //    不用 cam.forward()：它含俯仰，水平投影会随抬头 / 低头缩短（旧缺陷的成因）。
+        double yaw = Math.toRadians(cam.yawDeg());
+        double fx = -Math.sin(yaw);
+        double fz = -Math.cos(yaw);
+        double flen = Math.hypot(fx, fz);
+        if (!(flen > 1e-9)) {
+            // 兜底：cos/sin 不会同时为 0，但绝不返回零向量（后面要除以模长）。
+            fx = 0.0;
+            fz = -1.0;
+            flen = 1.0;
         }
-        // M2.1 缺陷 B：把建议落点向下吸附到真正能站立的地面。
-        // 命中方块顶面时 y 已经是 blockY+1（通常可站），但也走同一条吸附逻辑 ——
-        // 两条分支对"脚下是不是真的能站"给出同一个答案，而不是各自假设。
-        // （旧代码在这里调用 findNearestStandable —— 那是<u>同一 y 平面</u>的水平搜索，
-        //  找不到地面就保留原高度，于是玩家站在高塔上时怪被留在半空。）
-        Double groundY = findSpawnGroundY(x, y, z);
-        if (groundY == null) {
-            // 找不到地面就<u>不生成</u>：宁可什么都不发生，也不能生成一只悬空怪 ——
-            // 那正是缺陷 B 的现场（怪落在半空、自由落体到塔底，玩家"找不到了"）。
-            Log.noteWarning("SkyIslandGame", String.format(
-                    "F4 刷怪失败：在 (%.2f, %.2f, %.2f) 下方 %d 格内没有可站立的地面",
-                    x, y, z, SPAWN_GROUND_SEARCH_DEPTH));
-            showEvent("此处下方没有可站立的地面，换个位置再按 F4", 2.5);
+        fx /= flen;
+        fz /= flen;
+
+        double feetX = player.position().x;
+        double feetY = player.position().y;
+        double feetZ = player.position().z;
+        double pitchDeg = cam.pitchDeg();
+
+        // 视锥在判据使用前用"此刻相机"的矩阵刷新一次：保证它反映的是玩家此刻看到的东西，
+        // 而不是上一帧 renderWorld 留下的残留（两者在正常帧里相同，在天旋地转的边界帧里不同）。
+        Frustum frustum = refreshCameraFrustum();
+
+        int candidateCount = (int) Math.round(
+                (SPAWN_CANDIDATE_MAX - SPAWN_CANDIDATE_MIN) / SPAWN_CANDIDATE_STEP) + 1;
+
+        for (int i = 0; i < candidateCount; i++) {
+            double t = SPAWN_CANDIDATE_MIN + i * SPAWN_CANDIDATE_STEP;
+            double cx = feetX + fx * t;
+            double cz = feetZ + fz * t;
+
+            // (a)+(b) 地面与头顶净空：复用缺陷 B 的竖直落地搜索。
+            Double groundY = findSpawnGroundY(cx, feetY, cz);
+            if (groundY == null) {
+                continue;
+            }
+            double dy = groundY - feetY;
+            if (Math.abs(dy) > SPAWN_MAX_VERTICAL_OFFSET) {
+                continue;
+            }
+
+            double centerY = groundY + SPAWN_MONSTER_CENTER_HEIGHT;
+
+            // (c) 视锥：单点测试用一个退化的 AABB（min == max）。
+            // Frustum 的 p-vertex 判定是保守的（可能多判可见），对"别把该看见的刷没"这个方向是对的。
+            if (frustum != null && !frustum.intersectsAABB(
+                    (float) cx, (float) centerY, (float) cz,
+                    (float) cx, (float) centerY, (float) cz)) {
+                continue;
+            }
+
+            // (d) 视线：眼睛 → 怪物中心的体素射线。
+            if (!hasLineOfSight(cx, centerY, cz)) {
+                continue;
+            }
+
+            // 四条硬条件全过 → 采用这个（最近的）候选。
+            MeleeMonster monster = entities.spawnMeleeMonster(cx, groundY, cz);
+            debugSpawnCount++;
+
+            // 生成提示物（任务 B）：在落点播一小簇亮色粒子，把玩家的视线拉过去。
+            // 复用既有的战斗特效粒子链路 —— 容量上限与生命周期都走同一条路径，不新建渲染 pass。
+            combatFx.spawnSpawnCue(cx, centerY, cz,
+                    SPAWN_CUE_R, SPAWN_CUE_G, SPAWN_CUE_B, nextFxSeed());
+
+            // 可发现性：把"相对玩家的水平距离 + 竖直落差"写进提示与日志。
+            double horizontal = Math.hypot(cx - feetX, cz - feetZ);
+            String vertical = dy < 0
+                    ? String.format("下方 %.1f 格", -dy)
+                    : String.format("上方 %.1f 格", dy);
+            showEvent("已生成 " + Localization.displayName(monster.typeId())
+                    + "（第 " + debugSpawnCount + " 只，存活 " + entities.aliveCount()
+                    + "，相对玩家 水平 " + String.format("%.1f", horizontal)
+                    + " 格 / 竖直 " + vertical + "）", 2.0);
+
+            // 自证日志：把四个判据的输入与结果一次写全。特别保留"相机前方向与落点方向的夹角"
+            // —— 它是"明明刷在前面却不在视野里"这类问题唯一能一眼看穿的数字：旧实现下它随俯仰漂移，
+            // 新实现下它等于"从准星中心到怪物中心的真实偏轴角"（受视锥判据约束，必在视野内）。
+            Vector3d eye = player.eyePosition();
+            double angleDeg = angleDegBetween(
+                    cam.forward().x(), cam.forward().y(), cam.forward().z(),
+                    cx - eye.x, centerY - eye.y, cz - eye.z);
+            Log.info("[战斗] F4 刷怪 水平前向=(%.3f, %.3f) 俯仰=%.1f° 选中距离 t=%.1f "
+                            + "落点=(%.2f, %.2f, %.2f) 水平距离=%.2f 竖直落差 Δy=%.2f "
+                            + "视锥=%b 视线=%b 相机前向与落点方向夹角=%.1f°",
+                    fx, fz, pitchDeg, t, cx, groundY, cz, horizontal, dy, true, true, angleDeg);
+            return monster;
+        }
+
+        // 一个候选都不满足 → 绝不生成（宁可什么都不发生，也不刷一只玩家找不到的怪）。
+        Log.noteWarning("SkyIslandGame", String.format(
+                "F4 刷怪失败：水平前方 %.0f–%.0f 格内没有同时满足 地面 / 落差 / 视锥 / 视线 的候选位置",
+                SPAWN_CANDIDATE_MIN, SPAWN_CANDIDATE_MAX));
+        showEvent("前方 4–8 格内没有合适的位置，转个方向再试", 2.5);
+        return null;
+    }
+
+    /**
+     * 用相机当前的投影 / 视图矩阵刷新 {@link Frustum} 并返回它。
+     *
+     * <p>视锥的唯一权威实例挂在 {@code Renderer} 上（区块剔除也用它）。这里在判据使用前
+     * 用"此刻相机"的矩阵再 {@code update} 一次，保证单点测试与屏幕上正在画的东西同源。
+     * 无渲染器（纯逻辑 / 自测早期）时返回 {@code null}，调用方把它当作"全部可见"处理 ——
+     * 剔除失效只会多判可见，不会少判。
+     */
+    private Frustum refreshCameraFrustum() {
+        if (renderer == null) {
             return null;
         }
-        y = groundY;
-        MeleeMonster monster = entities.spawnMeleeMonster(x, y, z);
-        debugSpawnCount++;
-        // 缺陷 B 的"可发现性"：玩家站在高塔上时，怪会落在其下方很远的地方。
-        // 把"相对玩家的竖直落差"写进提示与日志，玩家才知道往哪找 —— 否则
-        // "生成出来了但看不见"与"没生成"在画面上完全一样（这正是"找不到了"的由来）。
-        double dy = y - player.position().y;
-        String vertical = dy < 0
-                ? String.format("下方 %.1f 格", -dy)
-                : String.format("上方 %.1f 格", dy);
-        showEvent("已生成 " + Localization.displayName(monster.typeId())
-                + "（第 " + debugSpawnCount + " 只，存活 " + entities.aliveCount()
-                + "，相对玩家 " + vertical + "）", 2.0);
-        Log.info("[战斗] F4 刷怪于 (%.2f, %.2f, %.2f)（相对玩家 %s），累计 %d 只",
-                x, y, z, vertical, debugSpawnCount);
-        return monster;
+        Frustum frustum = renderer.frustum();
+        frustum.update(player.camera().projectionMatrix(), player.camera().viewMatrix());
+        return frustum;
+    }
+
+    /**
+     * 玩家眼睛到目标世界点之间是否没有实体方块遮挡（体素射线）。
+     *
+     * <p><b>复用挖掘用的 {@link DdaRaycaster}，不另写第二套射线数学。</b>
+     * 命中任意非空气方块即视为"被挡住"。射线终点取两点距离本身当上限：
+     * 目标点在空中，只要中途没有方块，DDA 自然返回 {@code null}。
+     */
+    private boolean hasLineOfSight(double tx, double ty, double tz) {
+        if (world == null) {
+            return true;
+        }
+        Vector3d eye = player.eyePosition();
+        double dx = tx - eye.x;
+        double dy = ty - eye.y;
+        double dz = tz - eye.z;
+        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist < 1e-6) {
+            return true;
+        }
+        losDirection.set(dx, dy, dz);
+        return DdaRaycaster.castSolid(world, eye, losDirection, dist) == null;
+    }
+
+    /** 两个三维向量的夹角（度）；任一为零向量时返回 0。 */
+    private static double angleDegBetween(double ax, double ay, double az,
+                                          double bx, double by, double bz) {
+        double la = Math.sqrt(ax * ax + ay * ay + az * az);
+        double lb = Math.sqrt(bx * bx + by * by + bz * bz);
+        if (!(la > 1e-9) || !(lb > 1e-9)) {
+            return 0.0;
+        }
+        double c = (ax * bx + ay * by + az * bz) / (la * lb);
+        c = Math.max(-1.0, Math.min(1.0, c));
+        return Math.toDegrees(Math.acos(c));
     }
 
     /**
@@ -1962,6 +2185,70 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         }
         hud.extraDebugLines.add("预热网格 " + String.format("%.1f ms", warmupMeshMillis)
                 + "  截图 " + screenshotPaths.size() + " 张");
+
+        // ---- M2.1：F3 overlay 的实体信息（任务 C）----
+        // 只在 overlay 打开时计算：LOS 是体素射线，虽然只有个位数实体、微秒级，
+        // 但没必要在 F3 关着时每帧白跑。
+        if (hud.showDebugOverlay) {
+            appendEntityDebugLines();
+        }
+    }
+
+    /**
+     * M2.1：把世界里的实体逐只写成 F3 overlay 行（任务 C）。
+     *
+     * <p>每行给出：类型 / 坐标 / <b>相对玩家的水平距离</b> / <b>竖直落差 Δy</b> /
+     * 是否在相机视锥内 / 是否有视线 / 部件数（怪 8，其它 1）。
+     *
+     * <p><b>为什么只列最近的 {@link #DEBUG_ENTITY_LINES_MAX} 只并给一行汇总：</b>
+     * 见该常量的注释 —— HUD 按行渲染会溢出，而最近的那几只才是玩家真正关心的。
+     *
+     * <p>视锥与视线判据与 F4 用<b>同一套</b>工具（{@link Frustum} / {@link DdaRaycaster}），
+     * 因此 overlay 上写"视锥 是 / 视线 是"与"F4 会不会在这里刷怪"是同一条口径。
+     */
+    private void appendEntityDebugLines() {
+        debugEntityScratch.clear();
+        for (Entity e : entities.all()) {
+            if (e != null && e.isAlive()) {
+                debugEntityScratch.add(e);
+            }
+        }
+        if (debugEntityScratch.isEmpty()) {
+            hud.extraDebugLines.add("实体 存活 0");
+            return;
+        }
+
+        Vector3d feet = player.position();
+        debugEntityScratch.sort((a, b) -> Double.compare(
+                a.position().distanceSquared(feet), b.position().distanceSquared(feet)));
+        Frustum frustum = refreshCameraFrustum();
+
+        int shown = Math.min(debugEntityScratch.size(), DEBUG_ENTITY_LINES_MAX);
+        for (int i = 0; i < shown; i++) {
+            Entity e = debugEntityScratch.get(i);
+            var box = e.boundingBox();
+            double centerX = (box.minX() + box.maxX()) * 0.5;
+            double centerY = (box.minY() + box.maxY()) * 0.5;
+            double centerZ = (box.minZ() + box.maxZ()) * 0.5;
+
+            double horizontal = Math.hypot(centerX - feet.x, centerZ - feet.z);
+            double dy = e.position().y - feet.y;
+
+            boolean inFrustum = frustum == null || frustum.intersectsAABB(
+                    (float) centerX, (float) centerY, (float) centerZ,
+                    (float) centerX, (float) centerY, (float) centerZ);
+            boolean los = hasLineOfSight(centerX, centerY, centerZ);
+
+            int parts = MeleeMonster.TYPE_ID.equals(e.typeId())
+                    ? com.skyisland.render.entity.MonsterModel.PART_COUNT : 1;
+
+            hud.extraDebugLines.add(String.format(
+                    "实体 #%d %s 坐标(%.1f,%.1f,%.1f) 水平 %.2f Δy %.2f 视锥 %s 视线 %s 部件 %d",
+                    i + 1, Localization.displayName(e.typeId()),
+                    e.position().x, e.position().y, e.position().z,
+                    horizontal, dy, inFrustum ? "是" : "否", los ? "是" : "否", parts));
+        }
+        hud.extraDebugLines.add("实体 存活 " + debugEntityScratch.size() + " / 显示 " + shown);
     }
 
     /**

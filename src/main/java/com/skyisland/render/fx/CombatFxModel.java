@@ -232,6 +232,41 @@ public final class CombatFxModel {
     /** 命中溅射的生成位置散布（格）：±0.15，聚在命中点周围。 */
     public static final double HIT_POSITION_SPREAD = 0.3;
 
+    // ------------------------------------------------------------ M2.1：刷怪生成提示物
+
+    /**
+     * M2.1：刷怪生成提示物的存活时长（秒）。
+     *
+     * <p>1.5 与 HUD 刷怪提示的时长对齐（玩家先看到提示物、再读到文字，两者是同一次事件）。
+     * 它不是"随便一个短时间"：见 {@link #SPAWN_CUE_SPEED_MIN}，整簇粒子在这段时间内
+     * 恰好完成一条"升起 → 落回"的抛物线。
+     */
+    public static final double SPAWN_CUE_LIFE_SECONDS = 1.5;
+
+    /**
+     * M2.1：刷怪生成提示物的初速度区间（格/秒）。
+     *
+     * <p>粒子受共同重力 {@link #GRAVITY}（−16 格/秒²）。从初速 v 升空到落回起点用时
+     * {@code 2v / 16}：取 v ∈ [8, 12] → 回程 1.0–1.5 秒，恰好落进
+     * {@link #SPAWN_CUE_LIFE_SECONDS} 的寿命内 —— 于是这簇亮粒子是"升起 → 到顶 → 落回原点"
+     * 的一条完整抛物线，<b>全程都停在落点附近</b>，把玩家的视线钉在那里。
+     *
+     * <p>为什么不取更小的速度：v 太小（例如 4）回程只有 0.5 秒，
+     * 之后粒子会被重力拖到地面之下、被地形遮挡，提示物就"提前消失"了。
+     */
+    public static final double SPAWN_CUE_SPEED_MIN = 8.0;
+    public static final double SPAWN_CUE_SPEED_MAX = 12.0;
+
+    /** 提示物方向的竖直分量下限：接近竖直向上，形成一道"信标"而不是四散的碎屑。 */
+    public static final double SPAWN_CUE_ELEVATION_MIN_SIN = 0.85;
+
+    /** 提示物粒子尺寸（格）：比破坏碎屑更大，远距离也看得见。 */
+    public static final double SPAWN_CUE_SIZE_MIN = 0.10;
+    public static final double SPAWN_CUE_SIZE_MAX = 0.16;
+
+    /** 提示物的生成位置散布（格）：±0.25，聚在落点周围，不溢出到相邻方块里。 */
+    public static final double SPAWN_CUE_POSITION_SPREAD = 0.5;
+
     /** 拒绝采样的最大尝试次数：32 次全被拒的概率低于 2^-32，兜底返回 +X 保证必然终止。 */
     private static final int MAX_REJECTION_ATTEMPTS = 32;
 
@@ -269,6 +304,8 @@ public final class CombatFxModel {
     private int totalHitMarkers;
     /** M2.1：累计生成过的实体命中粒子簇数（自测证据）。 */
     private int totalEntityHitBursts;
+    /** M2.1：累计触发过的刷怪生成提示物次数（自测证据）。 */
+    private int totalSpawnCues;
 
     // ============================================================ 生成
 
@@ -368,6 +405,59 @@ public final class CombatFxModel {
                                float r, float g, float b, long seed) {
         spawnHitBurst(x, y, z, 0.0, 1.0, 0.0, r, g, b, seed, ENTITY_HIT_PARTICLES);
         totalEntityHitBursts++;
+    }
+
+    /**
+     * M2.1：刷怪生成提示物 —— 在落点播一小簇亮色粒子，把玩家的视线引过去（任务 B）。
+     *
+     * <p><b>为什么走"粒子"而不是新造一种提示物：</b>本项目已有 {@link CombatFxRenderer}
+     * 这一条世界空间叠加层链路（与破坏 / 命中粒子共用 {@link #MAX_PARTICLES} 容量、
+     * 共用同一套 {@link #tick(double)} 生命周期）。提示物只是"同一簇粒子换一个颜色与方向"，
+     * 为它新开一条几何 / 渲染 pass 既没有收益，也会多出一处必须同步维护的容量上限。
+     *
+     * <p>粒子数沿用 PRD §5.2 的 8–12 占位口径（与破坏粒子同一常量），
+     * 方向接近竖直向上（见 {@link #SPAWN_CUE_ELEVATION_MIN_SIN}），
+     * 初速见 {@link #SPAWN_CUE_SPEED_MIN}：整簇粒子在 {@link #SPAWN_CUE_LIFE_SECONDS}
+     * 内完成一条"升起 → 落回"的抛物线，全程停在落点附近。
+     *
+     * @param seed 确定性种子（与其它特效同源，保证同一次运行里可复现）
+     */
+    public void spawnSpawnCue(double x, double y, double z,
+                              float r, float g, float b, long seed) {
+        Mulberry32 rng = new Mulberry32(seed);
+
+        // 与 spawnBlockBreak 相同：数量是第一抽样，与后续抽样顺序无关。
+        int count = BREAK_PARTICLES_MIN
+                + (int) Math.floor(rng.nextDouble() * (BREAK_PARTICLES_MAX - BREAK_PARTICLES_MIN + 1));
+        count = clamp(count, BREAK_PARTICLES_MIN, BREAK_PARTICLES_MAX);
+
+        for (int i = 0; i < count; i++) {
+            double vertical = SPAWN_CUE_ELEVATION_MIN_SIN
+                    + (1.0 - SPAWN_CUE_ELEVATION_MIN_SIN) * rng.nextDouble();
+            sampleUnitCircle(rng);
+            double horizontalRaw = Math.sqrt(Math.max(0.0, 1.0 - vertical * vertical));
+            // 水平分量收窄：提示物是一道竖直的"信标"，不是向四周炸开。
+            double horizontal = horizontalRaw * BREAK_HORIZONTAL_SQUASH;
+
+            double dx = circle[0] * horizontal;
+            double dy = vertical;
+            double dz = circle[1] * horizontal;
+            double norm = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+            double speed = lerp(SPAWN_CUE_SPEED_MIN, SPAWN_CUE_SPEED_MAX, rng.nextDouble());
+            double size = lerp(SPAWN_CUE_SIZE_MIN, SPAWN_CUE_SIZE_MAX, rng.nextDouble());
+
+            double px = x + jitter(rng.nextDouble(), SPAWN_CUE_POSITION_SPREAD);
+            double py = y + jitter(rng.nextDouble(), SPAWN_CUE_POSITION_SPREAD);
+            double pz = z + jitter(rng.nextDouble(), SPAWN_CUE_POSITION_SPREAD);
+
+            addParticle(new Particle(px, py, pz,
+                    dx / norm * speed, dy / norm * speed, dz / norm * speed,
+                    r, g, b, size, SPAWN_CUE_LIFE_SECONDS, SPAWN_CUE_LIFE_SECONDS));
+        }
+
+        totalSpawnCues++;
+        totalSpawnCalls++;
     }
 
     /**
@@ -660,7 +750,7 @@ public final class CombatFxModel {
         return lastBreakParticleCount;
     }
 
-    /** 累计 spawn 调用次数（破坏 + 命中 + 曳光 + 枪口闪光 + 命中标记，自测断言用）。 */
+    /** 累计 spawn 调用次数（破坏 + 命中 + 曳光 + 枪口闪光 + 命中标记 + 刷怪提示物，自测断言用）。 */
     public long totalSpawnCalls() {
         return totalSpawnCalls;
     }
@@ -678,6 +768,11 @@ public final class CombatFxModel {
     /** M2.1：累计生成过的实体命中粒子簇数（自测断言用）。 */
     public int totalEntityHitBursts() {
         return totalEntityHitBursts;
+    }
+
+    /** M2.1：累计触发过的刷怪生成提示物次数（自测断言用）。 */
+    public int totalSpawnCues() {
+        return totalSpawnCues;
     }
 
     // ============================================================ 内部
