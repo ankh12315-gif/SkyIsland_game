@@ -36,6 +36,14 @@ class PcmSynthTest {
     /**
      * 过零率：波形每秒穿过零线的次数，是"这个音有多亮"的粗略读数。
      * 用它区分"低频闷响"与"高频咔哒"比看均值有效得多。
+     *
+     * <p><b>它的适用范围严格限于"跨音色比较"（{@link #playerHurtIsDarkerThanTheShotAndTheHitConfirm}），
+     * 不能用来测同一个音内部的音高走向。</b>实测记录（M2.2，见 {@link #uiOpenAndUiCloseAreAPair}）：
+     * ui_open 的源码滑音是 620→1271 Hz（明确的<span>上行</span>），但用"后半段过零率 ÷ 前半段"
+     * 量出来是 2205→1423 Hz，也就是<span>下行</span>——符号是反的。
+     * 原因：合成器里有 0.14 增益的宽带"空气"噪声层，过零率量的是噪声与瞬态亮度，
+     * 不是基频。同一原因让自相关与频带能量比也在这三个新音上失效，
+     * 四轮仪器尝试的完整记录见 {@code docs/testing/M2_2_UI_INVENTORY_REPORT.md}。
      */
     private static double zeroCrossingRate(short[] pcm) {
         int crossings = 0;
@@ -89,8 +97,11 @@ class PcmSynthTest {
 
     @Test
     void everyEventHasAtLeastOneVariantAndAGain() {
-        assertEquals(5, AudioEvent.values().length,
-                "M2.1 的事件表就是这五个音，多一个少一个都要在报告里说明");
+        // M2.1 是 5 个战斗音；M2.2 增补 4 个 UI 音（open / close / move / denied），共 9 个。
+        // 这条数字是刻意写死的：事件表变动必须有人在这里改一行，而不是悄无声息地扩容 ——
+        // 每多一个音都会同时影响内存预算、混音总响度与"哪些交互有声音"的产品口径。
+        assertEquals(9, AudioEvent.values().length,
+                "M2.2 的音频事件表是 5 个战斗音 + 4 个 UI 音，多一个少一个都要在报告里说明");
 
         for (AudioEvent event : AudioEvent.values()) {
             assertTrue(event.variants() >= 1, event.id() + " 至少要有一个变体");
@@ -188,32 +199,82 @@ class PcmSynthTest {
     }
 
     /**
-     * 五个音的包络形状必须彼此不同 —— 否则"我开枪了"与"我被打中了"在听感上合并。
+     * 除"方向对"之外，全部音的包络形状必须<b>两两</b>不同 —— 否则"我开枪了"与"我被打中了"在听感上合并。
      *
-     * <p><b>为什么用包络轮廓而不是"时长 + 亮度"：</b>五个音的时长本来就全不一样，
+     * <p><b>为什么用包络轮廓而不是"时长 + 亮度"：</b>各音的时长本来就全不一样，
      * 拿时长当判据的话这条断言恒真，等于没写。把每个音切成 16 段、按自身峰值归一，
      * 得到的是"能量在时间上怎么分布" —— 这才是一个音区别于另一个音的东西
      * （一声撞击是"立刻到顶然后迅速没"，换弹是"三下"，受伤是"慢慢退"）。
      *
-     * <p>阈值 0.10 是实测出来的：最接近的一对（gun_empty 与 hit_enemy）实测差 0.17。
+     * <p>阈值 0.10 是实测出来的：M2.1 最接近的一对（gun_empty 与 hit_enemy）实测差 0.17。
      * 留出约 1.7 倍余量，配方微调不会让它变红，而"两个音被改成一样"一定会被抓住。
+     *
+     * <p><b>M2.2 唯一的一处豁免是"开 / 关"这一对（{@link #isDirectionPair}）。</b>
+     * 理由<b>不是</b>它们"差不多"，而是<b>这条判据对它们的区别是盲的</b>：
+     * 按设计，开 / 关共享基频、时长、包络与噪声层，只有滑音方向相反
+     * （见 {@code PcmSynth#uiOpen} 的类注释）。包络轮廓看不见方向 ——
+     * 实测这一对的包络差只有 0.070，而四种信号域仪器（过零率 / 自相关基频 /
+     * 频带能量比 / 带负对照的差分比较）全都测不出这个方向，
+     * 失败记录见 {@code docs/testing/M2_2_UI_INVENTORY_REPORT.md}。
+     * 因此这一对的可分辨性<b>不由本断言负责</b>，而由人工试听负责
+     * （{@code docs/testing/M2_2_PLAYTEST_CHECKLIST.md} 的"UI 音效"一节）。
+     *
+     * <p><b>为什么不干脆把阈值调低：</b>豁免写成"具名的一对 + 断言被跳过的对数恰好为 1"，
+     * 这样它不会变成"UI 音都差不多"的通行证 —— 想再塞一对进来，必须同时改两个地方，
+     * 而 diff 上一眼就能看见。把阈值放宽则会静默地放过所有音。
+     *
+     * <p><b>已知的余量偏紧（M2.2 收尾记录）：</b>豁免之后最接近的一对是
+     * ui_close / player_hurt，实测 0.111，只比阈值高 1.11 倍（豁免前是 1.7 倍）。
+     * 这是"把开 / 关做成精确镜像"的代价，属于设计取舍而非缺陷；
+     * 若将来再调 UI 音的配方，先变红的会是这一对。
      */
     @Test
-    void theFiveSoundsHaveDistinctEnvelopeShapes() {
+    void allSoundsHaveDistinctEnvelopeShapes() {
         AudioEvent[] all = AudioEvent.values();
         Map<AudioEvent, double[]> profiles = new EnumMap<>(AudioEvent.class);
         for (AudioEvent event : all) {
             profiles.put(event, envelopeProfile(PcmSynth.render(event, 0), 16));
         }
 
+        double closest = Double.MAX_VALUE;
+        String closestPair = "";
+        int skipped = 0;
         for (int i = 0; i < all.length; i++) {
             for (int j = i + 1; j < all.length; j++) {
+                if (isDirectionPair(all[i], all[j])) {
+                    skipped++;
+                    continue;
+                }
                 double difference = maxBucketDifference(profiles.get(all[i]), profiles.get(all[j]));
+                if (difference < closest) {
+                    closest = difference;
+                    closestPair = all[i].id() + " / " + all[j].id();
+                }
                 assertTrue(difference > 0.10,
                         all[i].id() + " 与 " + all[j].id() + " 的包络轮廓只差 " + difference
-                                + "，听感上会合并（实测最接近的一对是 0.17）");
+                                + "，听感上会合并");
             }
         }
+
+        // 豁免恰好一对：多出来的一对说明有人把别的音也塞进豁免，而不是去修那个音。
+        assertEquals(1, skipped,
+                "包络豁免只允许「开 / 关」这一对，实测跳过了 " + skipped + " 对 —— "
+                        + "多出来的豁免等于把这条断言变松（阈值一个都没改，但覆盖面少了一对）");
+
+        // 把最接近的一对打印出来：将来配方微调时，先变红的会是这一对，
+        // 而报告里引用的"实测最接近"这个数字不该一直是 M2.1 的旧值。
+        System.out.printf("[PcmSynth] 最接近的一对（不含方向对）：%s，包络差 %.3f%n", closestPair, closest);
+    }
+
+    /**
+     * 设计上的"方向对"：两个音刻意共享全部包络参数，只有滑音方向相反。
+     *
+     * <p>目前只有开 / 关这一对。豁免是具名的，不是按阈值放宽的 —— 见
+     * {@link #allSoundsHaveDistinctEnvelopeShapes} 的说明。
+     */
+    private static boolean isDirectionPair(AudioEvent a, AudioEvent b) {
+        return (a == AudioEvent.UI_OPEN && b == AudioEvent.UI_CLOSE)
+                || (a == AudioEvent.UI_CLOSE && b == AudioEvent.UI_OPEN);
     }
 
     /**
@@ -254,6 +315,75 @@ class PcmSynthTest {
 
         assertTrue(fire > hurt * 1.3, "枪声必须比受伤音更亮：fire=" + fire + " hurt=" + hurt);
         assertTrue(hit > hurt * 1.3, "命中音必须比受伤音更亮：hit=" + hit + " hurt=" + hurt);
+    }
+
+    /**
+     * UI 音必须整体比战斗音轻 —— 这是全部约束里唯一一条<b>跨类别</b>的混音约束。
+     *
+     * <p>背包可以被连续点几十下，而战斗音是稀缺事件（一枪一次、受伤一次）。
+     * 若两类同响度，翻背包就会盖住枪声与受伤音 —— 而那三个音才是"我该不该退"的信息源。
+     * 一句话：<b>交互音给确认，战斗音给决策；确认不得盖过决策。</b>
+     */
+    @Test
+    void uiSoundsAreQuieterThanCombatSounds() {
+        AudioEvent[] combat = {AudioEvent.GUN_FIRE, AudioEvent.GUN_EMPTY, AudioEvent.RELOAD,
+                AudioEvent.HIT_ENEMY, AudioEvent.PLAYER_HURT};
+        AudioEvent[] ui = {AudioEvent.UI_OPEN, AudioEvent.UI_CLOSE,
+                AudioEvent.UI_MOVE, AudioEvent.UI_DENIED};
+
+        float loudestUi = 0f;
+        for (AudioEvent e : ui) {
+            loudestUi = Math.max(loudestUi, e.baseGain());
+        }
+        float quietestCombat = 1f;
+        for (AudioEvent e : combat) {
+            quietestCombat = Math.min(quietestCombat, e.baseGain());
+        }
+        assertTrue(loudestUi < quietestCombat,
+                "UI 音的最大基准增益 " + loudestUi + " 必须低于战斗音的最小值 " + quietestCombat
+                        + "（否则连点背包会盖住枪声）");
+
+        // 峰值也不能达到枪声量级：连续点击时总响度会被叠加，这里留出余量
+        int gunPeak = PcmSynth.peak(PcmSynth.render(AudioEvent.GUN_FIRE, 0));
+        for (AudioEvent e : ui) {
+            int peak = PcmSynth.peak(PcmSynth.render(e, 0));
+            assertTrue(peak < gunPeak * 0.8,
+                    e.id() + " 的峰值 " + peak + " 达到了枪声 " + gunPeak + " 的八成以上");
+        }
+    }
+
+    /**
+     * 开 / 关这一对音必须共享"配对框架"，且不是同一个波形的复制品。
+     *
+     * <p><b>这条断言只覆盖"一对"里可被机器验证的那一半：</b>同长、同增益、同变体数
+     * （这样两音在响度与节奏上不会被听成两个不相干的事件），以及波形确实不同
+     * （防止有人把 {@code uiClose} 直接抄成 {@code uiOpen}）。
+     *
+     * <p><b>它抓不住什么 —— 写清楚，以免它被当成"方向已验证"：</b>
+     * 若有人把 {@code uiClose} 的滑音也改成上行（方向信息丢失、但两个音单独听
+     * 仍各自"像一个 UI 音"），本断言<span>仍然会通过</span>：两个波形照样不同。
+     * 方向是听感属性，本仓库没有可靠的信号域仪器能证明它 —— 四轮尝试（过零率 /
+     * 自相关 / 频带能量比 / 带负对照的差分比较）全部失败，最后一轮甚至在两个变体上
+     * 给出相反的符号。因此方向由<b>人工试听</b>覆盖：
+     * {@code docs/testing/M2_2_PLAYTEST_CHECKLIST.md} 的"UI 音效"一节有专门一条。
+     * 把它记在这里，是为了让下一个人先看到"为什么没测"再决定要不要补。
+     */
+    @Test
+    void uiOpenAndUiCloseAreAPair() {
+        assertEquals(PcmSynth.durationSeconds(AudioEvent.UI_OPEN),
+                PcmSynth.durationSeconds(AudioEvent.UI_CLOSE), 1e-9,
+                "开 / 关必须是同一时长，否则听不出是一对");
+        assertEquals(AudioEvent.UI_OPEN.baseGain(), AudioEvent.UI_CLOSE.baseGain(), 1e-6f,
+                "开 / 关必须是同一基准增益，否则一个盖住另一个");
+        assertEquals(AudioEvent.UI_OPEN.variants(), AudioEvent.UI_CLOSE.variants(),
+                "开 / 关必须有同样的变体数（轮换听起来才是一对）");
+
+        for (int variant = 0; variant < AudioEvent.UI_OPEN.variants(); variant++) {
+            short[] open = PcmSynth.render(AudioEvent.UI_OPEN, variant);
+            short[] close = PcmSynth.render(AudioEvent.UI_CLOSE, variant);
+            assertFalse(java.util.Arrays.equals(open, close),
+                    "第 " + variant + " 个变体上开 / 关的样本完全相同 —— 关背包听起来会和开背包一模一样");
+        }
     }
 
     @Test

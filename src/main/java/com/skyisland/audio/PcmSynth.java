@@ -72,6 +72,10 @@ public final class PcmSynth {
             case RELOAD -> reload(buffer, rng, index);
             case HIT_ENEMY -> hitEnemy(buffer, rng, index);
             case PLAYER_HURT -> playerHurt(buffer, rng, index);
+            case UI_OPEN -> uiOpen(buffer, rng, index);
+            case UI_CLOSE -> uiClose(buffer, rng, index);
+            case UI_MOVE -> uiMove(buffer, rng, index);
+            case UI_DENIED -> uiDenied(buffer, rng, index);
         }
 
         return finalize(event, buffer);
@@ -88,6 +92,14 @@ public final class PcmSynth {
             case RELOAD -> 0.55;
             case HIT_ENEMY -> 0.12;
             case PLAYER_HURT -> 0.40;
+            // UI 音全部落在 (0.07, 0.55) 这个区间内：
+            //   · 必须比空仓那声"咔哒"长 —— 否则 UI 音会被读成"操作失败了"
+            //     （空仓音的语义就是"没生效"）；
+            //   · 必须比换弹（一次完整机械行程）短 —— 交互确认不该占住 0.55 秒。
+            case UI_OPEN -> 0.16;
+            case UI_CLOSE -> 0.16;
+            case UI_MOVE -> 0.11;
+            case UI_DENIED -> 0.22;
         };
     }
 
@@ -259,6 +271,127 @@ public final class PcmSynth {
         mix(out, thud, pain, grime);
     }
 
+    // ============================================================ M2.2 UI 音
+
+    /**
+     * 背包打开：<b>上行</b>双音滑音。
+     *
+     * <p>与 {@link #uiClose} 成对设计：两者共享基频、时长、包络与噪声层，
+     * 唯一的结构性差别是滑音方向 —— 上行 = 展开，下行 = 收起，方向本身就是语义。
+     * 这条"精确镜像"由 {@code PcmSynthTest#uiOpenAndUiCloseAreAPair} 从
+     * 时间域（时长 / 增益 / 变体数 / 包络轮廓）钉住。
+     *
+     * <p><b>方向本身没有机器判据，靠人工试听：</b>本仓库试过四种信号域仪器
+     * （过零率、自相关基频、频带能量比、带负对照的差分比较）都测不出这个方向 ——
+     * 0.14 增益的宽带"空气"噪声层会主导任何高频统计量，最后一轮甚至在两个变体上
+     * 给出相反的符号。四轮失败记录见 {@code docs/testing/M2_2_UI_INVENTORY_REPORT.md}，
+     * 试听条目见 {@code docs/testing/M2_2_PLAYTEST_CHECKLIST.md}。
+     */
+    private static void uiOpen(float[] out, Rng rng, int variant) {
+        int n = out.length;
+        float base = 620f + variant * 40f;
+
+        float[] rise = new float[n];
+        // 起音略慢（6 ms）—— UI 音不该有"爆"的瞬态，那是战斗音的语言。
+        // 滑音铺满整段（0.15 s，音长 0.16 s）：方向感必须贯穿始终，
+        // 而不是"前半段上行、后半段停在一个音高上"（那就只剩一个音，没有走向）。
+        glide(rise, base, base * 2.05f, 0.15, 0.006, 0.055, 0.75f);
+        // 叠一个伴随音，"展开"听起来厚一点而不是单薄的口哨。
+        // 用 1.25 / 2.55 而不是 1.5 / 2.9：伴随音要与主音的行程同比例（都是 ×2.04），
+        // 否则两个音会先后到达终点、方向感被拆成两段。
+        float[] third = new float[n];
+        glide(third, base * 1.25f, base * 2.55f, 0.15, 0.006, 0.055, 0.28f);
+        add(rise, third);
+
+        float[] air = new float[n];
+        white(air, rng);
+        lowpass(air, 0.30f);
+        envelope(air, 0.004, 0.045);
+        scale(air, 0.14f);
+
+        mix(out, rise, air);
+    }
+
+    /**
+     * 背包关闭：{@link #uiOpen} 的<b>精确频率镜像</b>。
+     *
+     * <p>取同一个基频 {@code base}，把主音与伴随音的起止点原样对调 ——
+     * 于是两个音走的是同一组频率、同一段时间、同一个包络，只是顺序相反。
+     * 攻击 / 衰减 / 噪声层的全部参数与 {@link #uiOpen} 逐字相同：
+     * 一旦这几个参数分叉，"一对"就只剩口头声明，听感上会散成两个不相干的提示音。
+     */
+    private static void uiClose(float[] out, Rng rng, int variant) {
+        int n = out.length;
+        float base = 620f + variant * 40f;
+
+        float[] fall = new float[n];
+        glide(fall, base * 2.05f, base, 0.15, 0.006, 0.055, 0.75f);
+        float[] third = new float[n];
+        glide(third, base * 2.55f, base * 1.25f, 0.15, 0.006, 0.055, 0.28f);
+        add(fall, third);
+
+        float[] air = new float[n];
+        white(air, rng);
+        lowpass(air, 0.30f);
+        envelope(air, 0.004, 0.045);
+        scale(air, 0.14f);
+
+        mix(out, fall, air);
+    }
+
+    /**
+     * 物品搬运成功：一记<b>软起音</b>的短促点击。
+     *
+     * <p><b>为什么必须是"软"起音（4 ms）而不是像空仓那样的硬咔哒：</b>
+     * 空仓音的语义是"没打出去"，它是一个<u>否定</u>；
+     * 搬运成功是一个<u>确认</u>。两者若都是硬瞬态，在噪声环境里会被听混 ——
+     * 而背包里可能连续点几十下，听混的代价是玩家以为自己在失败。
+     * 因此这里把起音放慢、把中心频率压到空仓（2.6 kHz）的一半以下。
+     */
+    private static void uiMove(float[] out, Rng rng, int variant) {
+        int n = out.length;
+        float tone = 1180f + variant * 130f;
+
+        float[] body = new float[n];
+        decayingTone(body, tone, 0.0040, 0.022, 0.80f);
+        add(body, decayingTone(new float[n], tone * 1.9f, 0.0025, 0.012, 0.25f));
+
+        float[] soft = new float[n];
+        white(soft, rng);
+        lowpass(soft, 0.35f);
+        envelope(soft, 0.0035, 0.014);
+        scale(soft, 0.22f);
+
+        mix(out, body, soft);
+    }
+
+    /**
+     * 操作被拒绝：低频短促的一声"嗯"。
+     *
+     * <p><b>为什么整个音里几乎没有高频：</b>它是"不允许"的信号。
+     * 高频亮音在听觉上天然是"进 / 成功"的语言（命中确认音就是这么做的），
+     * 拒绝必须落在相反的语义侧。慢衰减（90 ms）也是同一个目的：
+     * 它让这一声显得"沉重"，而不是一个轻快的提示。
+     */
+    private static void uiDenied(float[] out, Rng rng, int variant) {
+        int n = out.length;
+        float low = 196f + variant * 14f;
+
+        float[] buzz = new float[n];
+        decayingTone(buzz, low, 0.0080, 0.090, 0.85f);
+        // 叠一个稍微失谐的二次谐波：单纯正弦会听起来像"电话音"，
+        // 失谐让它带上"被打断"的粗糙感
+        add(buzz, decayingTone(new float[n], low * 2.06f, 0.0060, 0.055, 0.30f));
+
+        float[] body = new float[n];
+        white(body, rng);
+        lowpass(body, 0.10f);
+        envelope(body, 0.005, 0.070);
+        scale(body, 0.30f);
+
+        mix(out, buzz, body);
+    }
+
     // ============================================================ 后处理
 
     /**
@@ -317,6 +450,13 @@ public final class PcmSynth {
             case RELOAD -> 0.80f;
             case HIT_ENEMY -> 0.85f;
             case PLAYER_HURT -> 0.90f;
+            // UI 音的目标峰值整体压低：它们的目标不是"被听见"，而是"被注意到但不打断"。
+            // 与 baseGain 低是两件事：baseGain 管"这一类相对另一类有多响"，
+            // targetPeak 管"这一个音自己波形里的动态余量"。
+            case UI_OPEN -> 0.55f;
+            case UI_CLOSE -> 0.55f;
+            case UI_MOVE -> 0.45f;
+            case UI_DENIED -> 0.60f;
         };
     }
 

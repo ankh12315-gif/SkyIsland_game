@@ -39,6 +39,42 @@ package com.skyisland.audio;
  *       <td>低频闷响层 + 下行滑音层</td></tr>
  * </table>
  *
+ * <h2>M2.2 增补：UI 音（四条）</h2>
+ * <table border="1">
+ *   <caption>M2.2 UI 音频事件清单</caption>
+ *   <tr><th>事件</th><th>触发条件</th><th>优先级</th><th>变体</th><th>分层</th></tr>
+ *   <tr><td>{@link #UI_OPEN}</td>
+ *       <td>背包打开成功（{@code UiStateMachine#openInventory}）</td>
+ *       <td>低（信息性）</td>
+ *       <td>2 轮轮换</td>
+ *       <td>上行双音滑音</td></tr>
+ *   <tr><td>{@link #UI_CLOSE}</td>
+ *       <td>背包关闭（{@code closeInventoryScreen}）</td>
+ *       <td>低</td>
+ *       <td>2 轮轮换</td>
+ *       <td>下行双音滑音（与 OPEN 成对）</td></tr>
+ *   <tr><td>{@link #UI_MOVE}</td>
+ *       <td>一次<u>成功</u>的物品搬运（取 / 放 / 合并 / 交换 / Shift 搬运）</td>
+ *       <td>低</td>
+ *       <td>3 轮轮换（背包里会连续点很多下，2 个变体会听出重复）</td>
+ *       <td>软起音短促点击</td></tr>
+ *   <tr><td>{@link #UI_DENIED}</td>
+ *       <td>操作被拒绝：无空位可搬、关屏时塞不下而丢弃</td>
+ *       <td>中（这是唯一说明"你的操作没生效"的信号）</td>
+ *       <td>2 轮轮换</td>
+ *       <td>低频短促"嗯"（不含高频，刻意与 MOVE 拉开）</td></tr>
+ * </table>
+ *
+ * <p><b>为什么 UI 音的 baseGain 全部压在 0.50 以下：</b>这是唯一一条跨类别的混音约束。
+ * 背包可能被连续点几十下，而战斗音是稀缺事件（一枪一次）。若两者同响度，
+ * 翻背包会盖住枪声与受伤音 —— 而那三个音才是"我该不该退"的信息源。
+ * 汇总成一句：<b>交互音给确认，战斗音给决策，确认不得盖过决策。</b>
+ *
+ * <p><b>为什么不做菜单导航音：</b>M2.2 的菜单是键盘驱动的，每移动一格都有视觉高亮；
+ * 而设置界面的滑杆按住方向键会连着走几十格。给它配音在缺少节流设计的情况下
+ * 会变成"按住方向键持续蜂鸣"，比静音更糟。导航音属 M3 的 UI polish（需先定节流口径），
+ * 这里显式登记而不是漏掉。
+ *
  * <h2>为什么 RELOAD 是"一次统合音"而不是 start / end 两个音</h2>
  * 换弹全程 1.2 秒（PRD 5.4.3），而人的预期是"按下 R 的那一刻就有反应"。
  * 把唯一的机械声放在开始这一侧，按顺序优于把确定性推到 1.2 秒之后 ——
@@ -57,7 +93,16 @@ public enum AudioEvent {
     /** 命中实体的即时确认音。 */
     HIT_ENEMY("hit_enemy", 0.65f, 2),
     /** 玩家受伤。 */
-    PLAYER_HURT("player_hurt", 0.85f, 2);
+    PLAYER_HURT("player_hurt", 0.85f, 2),
+
+    /** 面板打开（背包）。 */
+    UI_OPEN("ui_open", 0.45f, 2),
+    /** 面板关闭（背包）。 */
+    UI_CLOSE("ui_close", 0.45f, 2),
+    /** 一次成功的物品搬运。 */
+    UI_MOVE("ui_move", 0.40f, 3),
+    /** 操作被拒绝（无空位可搬 / 关屏塞不下）。 */
+    UI_DENIED("ui_denied", 0.50f, 2);
 
     private final String id;
     private final float baseGain;
