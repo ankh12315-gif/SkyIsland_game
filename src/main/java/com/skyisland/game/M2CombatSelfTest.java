@@ -10,6 +10,7 @@ import com.skyisland.entity.Entity;
 import com.skyisland.entity.EntityManager;
 import com.skyisland.entity.MeleeMonster;
 import com.skyisland.item.ItemRegistry;
+import com.skyisland.player.Inventory;
 import com.skyisland.player.ItemStack;
 import com.skyisland.player.Player;
 import com.skyisland.player.PlayerIntent;
@@ -1262,8 +1263,10 @@ public final class M2CombatSelfTest implements CombatController.Listener {
 
     private void checkGear() {
         Player player = host.player();
-        ItemStack slot0 = player.inventory().slot(0);
-        ItemStack slot1 = player.inventory().slot(1);
+        // M2.2：开局装备（手枪 + 弹药）经 add() 落在快捷栏绝对索引 27..35，即相对槽 0/1。
+        // 必须用 hotbarSlot 读，不能读 slot(0)/slot(1) —— 后者现在是主背包，会读空。
+        ItemStack slot0 = player.inventory().hotbarSlot(0);
+        ItemStack slot1 = player.inventory().hotbarSlot(1);
         int expectedAmmo = 2 * ItemRegistry.pistol().gun().magazineSize();
 
         // 按 item id 比对而不是只比数量：M1 时"物品 id 就是方块 id"，M2 起手枪与弹药

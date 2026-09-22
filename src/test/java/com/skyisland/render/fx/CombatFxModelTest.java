@@ -13,6 +13,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -486,6 +487,141 @@ class CombatFxModelTest {
     private static void assertFinite(double value, String name) {
         assertFalse(Double.isNaN(value), name + " 是 NaN");
         assertFalse(Double.isInfinite(value), name + " 是无穷大");
+    }
+
+    // ============================================================ 8. M2.1：枪口闪光
+
+    /**
+     * 枪口闪光的存活窗口（M2.1）。
+     *
+     * <p><b>为什么必须在这里被单测钉住：</b>M2.1 交付过一版"四个方法全部只定义、从不被调用"
+     * 的死接线（编译过、单测全绿、门禁全绿）。闪光只活 3 帧，"它到底生没生成、
+     * 活了多久"在带窗口的自测里几乎不可观测 —— 纯状态机这一层才是它唯一能被举证的地方。
+     */
+    @Test
+    @DisplayName("枪口闪光存活 0.05 秒（60 Hz 下 3 帧），且带尺寸与累计读数")
+    void muzzleFlashLivesThreeFramesAndIsCounted() {
+        CombatFxModel model = new CombatFxModel();
+        assertEquals(0, model.flashCount());
+        assertEquals(0.0, model.hitMarker01(), 0.0);
+
+        model.spawnMuzzleFlash(1.5, 65.0, -2.5, 1.0, 65.0, -2.0, 0.0, 0.0, -1.0);
+
+        assertEquals(1, model.flashCount(), "一发实弹必须生成一个枪口闪光");
+        assertEquals(1, model.totalMuzzleFlashes(), "累计读数必须同步推进（自测靠它举证）");
+        CombatFxModel.Flash flash = model.flashes().get(0);
+        assertEquals(CombatFxModel.MUZZLE_FLASH_SECONDS, flash.life(), EPS,
+                "初始寿命必须等于 MUZZLE_FLASH_SECONDS");
+        assertEquals(CombatFxModel.MUZZLE_FLASH_SIZE, flash.size(), EPS,
+                "尺寸必须来自常量，渲染层不得自带尺寸");
+        // 缺陷 A：闪光必须真的离开眼睛（否则关闭背面剔除后会被相机吞进盒子内部糊成白屏）
+        CombatFxModel.MuzzleFlashSample sample = model.lastMuzzleFlashSample();
+        assertNotNull(sample, "必须留档枪口与眼睛的相对关系，否则这条断言在收尾时无从读取");
+        assertTrue(sample.distanceFromEye() > 0.1,
+                "枪口必须离开眼睛：distanceFromEye=" + sample.distanceFromEye());
+        assertTrue(sample.forwardDot() > 0.0,
+                "枪口必须在眼睛<u>前方</u>（沿视线的投影为正），实测 " + sample.forwardDot());
+
+        model.tick(0.049);
+        assertEquals(1, model.flashCount(), "0.049 秒还没到 0.05 秒，闪光不该消失");
+        model.tick(0.002);
+        assertEquals(0, model.flashCount(), "累计 0.051 秒后闪光必须被移除");
+        // 累计读数不受 clear() 影响：它是"整个会话生成过多少"的证据
+        assertEquals(1, model.totalMuzzleFlashes());
+    }
+
+    @Test
+    @DisplayName("枪口闪光容量上限生效，且淘汰的是最旧的")
+    void muzzleFlashCapacityEvictsOldest() {
+        CombatFxModel model = new CombatFxModel();
+        for (int i = 0; i < CombatFxModel.MAX_FLASHES + 5; i++) {
+            model.spawnMuzzleFlash(i, 0, 0, i, 0, 1, 0, 0, 1);
+        }
+        assertEquals(CombatFxModel.MAX_FLASHES, model.flashCount(),
+                "持续生成后应稳定停在上限");
+        assertEquals(5.0, model.flashes().get(0).x(), EPS,
+                "最旧的 5 条应已被淘汰（保留最近 MAX_FLASHES 条）");
+    }
+
+    // ============================================================ 9. M2.1：命中标记
+
+    /**
+     * 命中标记的生命周期（M2.1）。
+     *
+     * <p>这是"准星瞬时变化"这件<u>看起来只能靠眼睛判别</u>的事的唯一举证点：
+     * 强度是一个随时间线性衰减到 0 的纯函数，因此"命中时 = 1、0.18 秒后 = 0"
+     * 可以在没有窗口的机器上逐帧断言。HUD 只镜像这个数值，自己不计时。
+     */
+    @Test
+    @DisplayName("命中标记：命中瞬间 = 1，线性衰减，0.18 秒后归零且不再为负")
+    void hitMarkerDecaysFromOneToZero() {
+        CombatFxModel model = new CombatFxModel();
+        model.spawnHitMarker();
+        assertEquals(1.0, model.hitMarker01(), EPS, "刚命中时强度为 1");
+        assertEquals(1, model.totalHitMarkers());
+
+        model.tick(CombatFxModel.HIT_MARKER_SECONDS / 2);
+        double half = model.hitMarker01();
+        assertTrue(half > 0.0 && half < 1.0, "半程应当是中间强度，实测 " + half);
+
+        model.tick(CombatFxModel.HIT_MARKER_SECONDS);
+        assertEquals(0.0, model.hitMarker01(), 0.0,
+                "越过 HIT_MARKER_SECONDS 后必须恰好归零（UI 用不到负值）");
+        // 再推进也不能变负：负值会让 HUD 的斜臂算出负长度
+        model.tick(1.0);
+        assertEquals(0.0, model.hitMarker01(), 0.0);
+    }
+
+    @Test
+    @DisplayName("连续命中是\"刷新\"而不是\"叠加\"（强度恒被夹在 1）")
+    void repeatedHitsRefreshRatherThanStack() {
+        CombatFxModel model = new CombatFxModel();
+        model.spawnHitMarker();
+        model.tick(CombatFxModel.HIT_MARKER_SECONDS / 2);
+        model.spawnHitMarker();
+        assertEquals(1.0, model.hitMarker01(), EPS,
+                "连打两发后强度必须回到 1，而不是 1.5 —— 渲染层只能按 0..1 解释");
+        assertEquals(2, model.totalHitMarkers(), "累计次数仍要如实记录每一次命中");
+    }
+
+    @Test
+    @DisplayName("命中实体生成一簇粒子，且与命中方块共用同一份确定性实现")
+    void entityHitSpawnsBurstWithTheSameDeterminism() {
+        CombatFxModel model = new CombatFxModel();
+        model.spawnEntityHit(3.0, 64.5, -1.0, 0.6f, 0.1f, 0.12f, SEED);
+        assertEquals(CombatFxModel.ENTITY_HIT_PARTICLES, model.particleCount(),
+                "实体命中的粒子数由 ENTITY_HIT_PARTICLES 给出");
+        assertEquals(1, model.totalEntityHitBursts());
+
+        // 同 seed 必须与"打中方块"的前 N 个粒子逐位相同 —— 这就是"与 block break 粒子一致"的证据
+        CombatFxModel block = new CombatFxModel();
+        block.spawnBlockHit(3.0, 64.5, -1.0, 0.0, 1.0, 0.0, 0.6f, 0.1f, 0.12f, SEED);
+        List<Particle> a = model.particles();
+        List<Particle> b = block.particles();
+        int shared = Math.min(a.size(), b.size());
+        assertTrue(shared >= CombatFxModel.HIT_PARTICLES,
+                "两套溅射至少要有 HIT_PARTICLES 个粒子可比，实际 " + shared);
+        for (int i = 0; i < shared; i++) {
+            assertSameBits(a.get(i).vx(), b.get(i).vx(), "第 " + i + " 个粒子的 vx");
+            assertSameBits(a.get(i).vy(), b.get(i).vy(), "第 " + i + " 个粒子的 vy");
+            assertSameBits(a.get(i).vz(), b.get(i).vz(), "第 " + i + " 个粒子的 vz");
+        }
+    }
+
+    @Test
+    @DisplayName("clear() 清空闪光与命中标记，但保留累计读数")
+    void clearEmptiesMuzzleFlashesAndHitMarker() {
+        CombatFxModel model = new CombatFxModel();
+        model.spawnMuzzleFlash(0, 0, 0, 0, 0, 1, 0, 0, 1);
+        model.spawnHitMarker();
+        assertTrue(model.hitMarker01() > 0);
+
+        model.clear();
+
+        assertEquals(0, model.flashCount(), "clear() 后不该还有闪光");
+        assertEquals(0.0, model.hitMarker01(), 0.0, "clear() 后不该还在显示命中标记");
+        assertEquals(1, model.totalMuzzleFlashes(), "累计读数是会话级证据，clear() 不抹掉它");
+        assertEquals(1, model.totalHitMarkers());
     }
 
     /** 保留一个反例断言，确保 PRD 的常数没被误改（改了就该有人来解释）。 */

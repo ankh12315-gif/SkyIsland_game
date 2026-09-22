@@ -12,6 +12,7 @@ import com.skyisland.input.MenuNav;
 import com.skyisland.item.ItemRegistry;
 import com.skyisland.physics.DdaRaycaster;
 import com.skyisland.physics.RaycastHit;
+import com.skyisland.player.Camera;
 import com.skyisland.player.Inventory;
 import com.skyisland.player.ItemStack;
 import com.skyisland.player.Player;
@@ -39,6 +40,10 @@ import com.skyisland.ui.Menus;
 import com.skyisland.ui.SettingsMenuController;
 import com.skyisland.ui.UiState;
 import com.skyisland.ui.UiStateMachine;
+import com.skyisland.player.InventoryInteraction;
+import com.skyisland.render.ui.InventoryLayout;
+import com.skyisland.render.ui.InventoryRenderModel;
+import com.skyisland.settings.Action;
 import com.skyisland.util.Coords;
 import com.skyisland.util.Log;
 import com.skyisland.world.World;
@@ -347,6 +352,17 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
 
     /** M2.1：第一人称手持物数据汇集（渲染层只读它的字段）。 */
     private final ViewmodelModel viewmodel = new ViewmodelModel();
+
+    /**
+     * M2.2：背包界面数据汇集。
+     *
+     * <p><b>为什么它持有 {@code Inventory} 的引用而不是 36 个 int 的快照：</b>
+     * 背包界面与 HUD 快捷栏必须是<b>同一份模型</b>。若这里存快照，
+     * 就必然存在"什么时候把 Inventory 拷进来"这一时刻 —— 拷漏了界面不更新，
+     * 拷早了界面显示旧数据。M2 已经为"网格重建队列没人消费"付过一次学费，
+     * 那次的症状正是"方块挖掉了但画面没变"，与本类若做快照会出的症状同构。
+     */
+    private final InventoryRenderModel inventoryModel = new InventoryRenderModel();
 
     // ---- M1.5：设置与界面 ----
     private GameSettings settings;
@@ -876,15 +892,16 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         if (saveManager.worldExists()) {
             initialLoadResult = saveManager.loadInto(world, player);
             if (initialLoadResult.success()) {
-                showEvent("Loaded save " + config.worldName() + " ("
-                        + initialLoadResult.chunksLoaded() + " chunks / "
-                        + initialLoadResult.blocksApplied() + " block edits)", 4.0);
+                showEvent(Localization.text(Localization.MSG_WORLD_LOADED,
+                        config.worldName(), initialLoadResult.chunksLoaded(),
+                        initialLoadResult.blocksApplied()), 4.0);
             } else {
-                showEvent("Load failed, continuing as new world: "
-                        + initialLoadResult.summary(), 6.0);
+                showEvent(Localization.text(Localization.MSG_WORLD_LOAD_FAILED,
+                        initialLoadResult.summary()), 6.0);
             }
         } else {
-            showEvent("New world: " + config.worldName() + "  seed=" + config.seed(), 4.0);
+            showEvent(Localization.text(Localization.MSG_WORLD_STARTED,
+                    config.worldName(), config.seed()), 4.0);
             Log.info("[存档] 未找到 %s，按新世界启动", saveManager.worldDirectory());
         }
 
@@ -1027,12 +1044,26 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     private void buildUiLayer() {
         UiState initial = resolveInitialUiState();
         ui = new UiStateMachine(initial);
-        mainMenuScreen = Menus.mainMenu();
+        mainMenuScreen = Menus.mainMenu(saveManager.worldExists());
         pauseMenuScreen = Menus.pauseMenu();
         settingsMenu = new SettingsMenuController(settings);
         Log.info("[界面] 菜单层已就绪：主菜单 %d 项 / 暂停 %d 项 / 设置 %d 项（键位 %d 个）",
                 mainMenuScreen.size(), pauseMenuScreen.size(),
                 settingsMenu.screen().size(), com.skyisland.settings.Action.values().length);
+    }
+
+    /**
+     * 重建主菜单屏。
+     *
+     * <p><b>为什么需要它：</b>「继续游戏」是否可选取决于<u>此刻</u>磁盘上有没有存档，
+     * 而这个事实会变 —— 玩家在暂停菜单里按「保存并返回主菜单」之后存档才存在。
+     * 若菜单只在装配期建一次，刚存过档的玩家回到主菜单会看到"尚无存档"，
+     * 而磁盘上明明有；反过来第一次启动时若菜单默认写着"继续游戏"，
+     * 玩家点下去只会在日志里得到一句 WARN —— 一个可点但毫无反应的按钮，
+     * 正是本里程碑明令禁止的形态。
+     */
+    private void refreshMainMenu() {
+        mainMenuScreen.rebuild(Menus.mainMenu(saveManager.worldExists()).entries());
     }
 
     /**
@@ -1261,6 +1292,20 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             frameIntent = polled.withLook(0, 0).withScroll(0)
                     .withUsePressed(false).withReloadPressed(false).withHotbarSlot(-1);
             handleFrameEdges();
+            // M2.2：开背包是一个"帧级边沿"动作 —— 与 F2/F3/F5 同类，
+            //   不能走"逐逻辑步复用的 frameIntent"（那样在 60 Hz 逻辑下
+            //   约九成的按键会被丢，症状与 M2 修过的"右键放置按了没反应"完全同源）。
+            if (inventoryTogglePressed()) {
+                openInventoryScreen();
+            }
+        } else if (ui.state() == UiState.INVENTORY) {
+            // ★ 背包打开时：世界继续跑（INVENTORY.simulationRunning() == true），
+            //   但玩家不再操作世界 —— 移动 / 挖掘 / 放置 / 开火 / 换弹全部吞掉。
+            //   这是"单机生存"的手感：怪物照常走过来，你不能一边翻包一边打。
+            frameIntent = PlayerIntent.NONE;
+            input.consumeFrameDelta();
+            frameQuantities.discard();
+            handleInventoryInput();
         } else {
             frameIntent = PlayerIntent.NONE;
             // 菜单期间鼠标是"可见指针"而不是"锁定视角"：必须丢弃累积位移，
@@ -1652,6 +1697,95 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         }
     }
 
+    // ============================================================ M2.2：背包界面
+
+    /**
+     * 背包键（{@link Action#INVENTORY}）本帧是否被按下。
+     *
+     * <p><b>为什么走可重绑的动作表而不是直接读 {@code GLFW_KEY_E}：</b>
+     * {@code Action.INVENTORY} 从 M1.5 起就"有默认键位、可重绑、可落盘，但没有消费方"
+     * —— 那一行标注（"界面消费方在 M3"）正是为了避免"能改键"被误读成"能用"。
+     * M2.2 给了它真实消费方，因此<b>必须同时更新那行标注</b>，否则界面会继续
+     * 告诉玩家"这个键没用"，而它已经有用。标注的更新见 {@code Action#INVENTORY}。
+     */
+    private boolean inventoryTogglePressed() {
+        return InputMapper.actionPressed(input, settings.keyBindings(), Action.INVENTORY);
+    }
+
+    private void openInventoryScreen() {
+        if (ui.openInventory()) {
+            Log.info("[界面] 打开背包");
+        }
+    }
+
+    /**
+     * 关闭背包，并处理"手上还拿着东西"这一情况。
+     *
+     * <p><b>为什么必须先归位再切状态：</b>若先切回 PLAYING，
+     * 那么"手上那堆去哪了"就变成了一个无人负责的问题 ——
+     * 玩家会看到物品凭空消失，而日志里什么都没有。
+     * {@link InventoryInteraction#closeScreen} 的语义是"塞得下就塞回，塞不下才丢弃并如实说"，
+     * 丢弃是有意为之（M2 没有掉落物实体，物品不得凭空复制），但它<b>必须可见</b>。
+     */
+    private void closeInventoryScreen() {
+        int held = player.inventory().cursorStack().count();
+        InventoryInteraction.Outcome outcome = InventoryInteraction.closeScreen(player.inventory());
+        if (outcome.result() == InventoryInteraction.Result.SHIFT_BLOCKED) {
+            showEvent(Localization.text(Localization.MSG_INV_DROPPED_ON_CLOSE, held), 3.0);
+        }
+        if (ui.closeInventory()) {
+            inventoryModel.visible = false;
+            inventoryModel.hoverSlot = -1;
+            Log.info("[界面] 关闭背包");
+        }
+    }
+
+    /**
+     * 背包打开时的鼠标交互。
+     *
+     * <p><b>坐标换算是这里最关键的一行。</b>{@code window.cursorPosition()} 给的是
+     * <b>窗口坐标</b>（GLFW 回调原始值），而 {@link InventoryLayout} 的命中判定用的是
+     * <b>帧缓冲像素</b>。DPI = 1 时两者恰好相等，问题不会暴露；一旦
+     * 窗口尺寸 ≠ 帧缓冲尺寸，"点第 3 格却命中第 12 格"就是真 bug。
+     * 现存代码里 {@code pollMenuNav} 也有同一处隐患（菜单命中用的是帧缓冲口径），
+     * 但那是 M1.5 的路径、本次不改；背包从一开始就必须走对。
+     */
+    private void handleInventoryInput() {
+        if (inventoryTogglePressed()
+                || InputMapper.globalBackPressed(input, settings.keyBindings())) {
+            closeInventoryScreen();
+            return;
+        }
+
+        int fbWidth = window.framebufferWidth();
+        int fbHeight = window.framebufferHeight();
+        double[] cursor = window.cursorPosition();
+        double scaleX = fbWidth / (double) Math.max(1, window.windowWidth());
+        double scaleY = fbHeight / (double) Math.max(1, window.windowHeight());
+        inventoryModel.mouseX = cursor[0] * scaleX;
+        inventoryModel.mouseY = cursor[1] * scaleY;
+
+        InventoryLayout layout = renderer.inventoryRenderer().ensureLayout(fbWidth, fbHeight);
+        int hovered = layout.hitTestAny(inventoryModel.mouseX, inventoryModel.mouseY);
+        inventoryModel.hoverSlot = hovered;
+
+        if (hovered < 0 || !input.wasMouseButtonPressed(GLFW.GLFW_MOUSE_BUTTON_1)) {
+            return;
+        }
+        boolean shift = input.isKeyDown(GLFW.GLFW_KEY_LEFT_SHIFT)
+                || input.isKeyDown(GLFW.GLFW_KEY_RIGHT_SHIFT);
+        InventoryInteraction.Outcome outcome = shift
+                ? InventoryInteraction.shiftClick(player.inventory(), hovered)
+                : InventoryInteraction.leftClick(player.inventory(), hovered);
+
+        if (outcome.result() == InventoryInteraction.Result.SHIFT_BLOCKED) {
+            // 搬运失败必须说出来：原子性保证了原格不变，
+            // 于是"点了没反应"和"背包满了"在画面上长得一模一样。
+            showEventDeduped("inv_move_blocked",
+                    Localization.text(Localization.MSG_INV_MOVE_BLOCKED), 2.0);
+        }
+    }
+
     /** 当前界面下的菜单屏；游玩中没有菜单。 */
     private MenuScreen activeMenu() {
         return switch (ui.state()) {
@@ -1690,15 +1824,93 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     }
 
     /** 按当前界面状态执行一次菜单项激活。<b>鼠标点击与回车走的是同一个入口。</b> */
+    /**
+     * 主菜单「新建世界」：把当前会话重置成一局全新开局。
+     *
+     * <p><b>它做什么（顺序不可换）：</b>
+     * <ol>
+     *   <li>释放全部区块网格，再用同一个 seed 与确定性地形函数重建 {@link World}
+     *       —— 玩家挖掉 / 放下的方块全部复位，拿到的是<u>未被改动过</u>的原始地形；</li>
+     *   <li>玩家回到出生点：位置、速度、视角、保险位置、背包 36 格、快捷栏选中、死亡计数一起清零；</li>
+     *   <li>清空实体与枪械运行时状态（上一局刷出来的怪、打空的弹匣都不该跟过来）；</li>
+     *   <li>重发开局装备，并<u>立刻写盘</u>。</li>
+     * </ol>
+     *
+     * <p><b>为什么换 World 之前必须先 {@code disposeAll()}：</b>
+     * {@code ChunkRenderer} 用 {@code IdentityHashMap<Chunk, ChunkMesh>} —— 网格是按
+     * <b>Chunk 对象的身份</b>索引的，不是按区块坐标。直接 {@code new World(...)}，
+     * 新区块与原对象引用不同，旧网格既不会被覆盖也不会被回收：
+     * {@code meshCount()} 会从 16 涨到 32，16 份 GL buffer 永久泄漏，
+     * 而画面上看起来完全正常。这类缺陷只在长会话里发作，所以在这里一次性堵掉，
+     * 而不是等它变成"玩久了会掉帧"再查。
+     *
+     * <p><b>为什么必须重建 World，而不是"清一清玩家状态"：</b>
+     * 方块改动是写在 World 里的（读档的 {@code applySavedBlock} 也往它里面写）。
+     * 只重置玩家，玩家会站在自己上一局挖出来的坑里，而菜单上写着"新建世界"——
+     * 界面在说假话，且没有任何断言会因此变红。
+     *
+     * <p><b>为什么必须立刻写盘：</b>不写的话这一次"新建世界"只活在内存里，
+     * 玩家退出再进，磁盘上的旧进度会原封不动回来 ——
+     * 那是"按了新建世界、重启后旧世界复活"的静默矛盾。
+     *
+     * <p><b>它刻意不做的事：</b>不生成新地形（地形生成属 M2.2 禁止范围）。
+     * 因此 seed 与地形布局保持不变，改变的是"这一局的进度"。
+     * 这条边界写进了 {@link Localization#MSG_WORLD_RESET} 的玩家可见文案里，
+     * 不需要读代码就能知道。
+     */
+    private void startNewWorld() {
+        // ① 先释放旧网格。理由见上：IdentityHashMap 按对象身份索引，换 World 等于换键。
+        renderer.chunkRenderer().disposeAll();
+
+        // ② 全新世界 + 把全部开局区块的网格建回来
+        world = new World(config.seed(), new TestWorldGenerator());
+        world.ensureAreaLoaded(TestWorldGenerator.MIN_CHUNK, TestWorldGenerator.MIN_CHUNK,
+                TestWorldGenerator.MAX_CHUNK, TestWorldGenerator.MAX_CHUNK);
+        warmUpMeshes();
+
+        // ③ 玩家复位。刻意不 new 一个 Player：别处（音频轮询、反馈链、自测宿主）
+        //    都持有这个实例的引用，换实例会让它们悄悄指向一个"上一局的玩家"。
+        //    yaw/pitch 取 0/0 不是随手写的 —— 那正是 Camera 的默认朝向，
+        //    与 new Player(...) 的初始朝向逐位一致，因此"新建世界"看到的画面
+        //    与进程首次启动时完全相同。
+        player.applyLoadedState(TestWorldGenerator.spawnX(), TestWorldGenerator.spawnY(),
+                TestWorldGenerator.spawnZ(), 0.0, 0.0, null, List.of(), 0, 0);
+        player.healFull();
+        player.camera().clearRecoil();
+
+        // ④ 实体与枪械运行时状态
+        entities.clear();
+        combat.resetGuns();
+
+        // ⑤ 开局装备 + 立刻落盘
+        initialLoadResult = null;
+        grantStartingGear("新建世界开局装备");
+        SaveResult result = performSave("新建世界");
+        if (result != null && !result.success()) {
+            Log.noteWarning("存档", "新建世界后的初始写盘失败：" + result.summary()
+                    + "（世界仍在内存中，退出时还会再存一次）");
+        }
+        showEvent(Localization.text(Localization.MSG_WORLD_RESET), 5.0);
+    }
+
     private void activateEntry(String entryId) {
         if (entryId == null) {
             return;
         }
         switch (ui.state()) {
             case MAIN_MENU -> {
-                if (Menus.ID_START_GAME.equals(entryId)) {
+                if (Menus.ID_CONTINUE.equals(entryId) || Menus.ID_START_GAME.equals(entryId)) {
+                    // ID_START_GAME 是 M1 的旧 id，自动化脚本仍在用它驱动前段闭环，
+                    // 因此保留为别名而不是删掉 —— 删掉只会让脚本静默走进 default 分支打一句 WARN。
                     if (ui.startGame()) {
-                        Log.info("[界面] 开始游戏");
+                        Log.info("[界面] 继续游戏（进入已在内存中的会话：%s）",
+                                initialLoadResult != null && initialLoadResult.success()
+                                        ? "读档成功" : "新世界");
+                    }
+                } else if (Menus.ID_NEW_WORLD.equals(entryId)) {
+                    startNewWorld();
+                    if (ui.startGame()) {
+                        Log.info("[界面] 新建世界（地形复位 + 进度清空）");
                     }
                 } else if (Menus.ID_OPEN_SETTINGS.equals(entryId)) {
                     if (ui.openSettings()) {
@@ -2056,6 +2268,12 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         updateHud();
         renderer.renderHud(hud);
 
+        // ---- M2.2：背包 pass —— 在 HUD 之后、菜单之前 ----
+        // 顺序理由见 Renderer#renderInventory：背包是模态层，必须盖住 HUD
+        // （否则准星会浮在面板上，而那一刻鼠标在点格子、不是在瞄准）。
+        // inventoryModel.visible 为假时该方法直接返回，不碰 GL 状态。
+        renderer.renderInventory(inventoryModel);
+
         // ---- 菜单 pass：永远在 HUD 之后，因此菜单不会被读数盖住 ----
         if (ui.state().menuVisible()) {
             MenuScreen screen = activeMenu();
@@ -2227,9 +2445,18 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
 
         // ---- M1.5：可见性由界面状态与设置决定 ----
         hud.showGameplayHud = ui.state().gameplayHudVisible();
+        // M2.2：生命层与"操作层"分离 —— 背包打开时准星消失、生命保留（见 HudModel#showVitals）。
+        hud.showVitals = ui.state().vitalsVisible();
         hud.showFps = settings.showFps();
         hud.uiStateLabel = ui.state().label();
         hud.uiTimeSeconds = elapsedSeconds;
+
+        // ---- M2.2：背包界面的输入模型 ----
+        // 这里只填"来自游戏状态"的部分；鼠标位置与悬停格由 handleInventoryInput 填，
+        // 因为它们属于界面态而不是游戏态（而且必须在同一帧里与命中判定使用同一份布局）。
+        inventoryModel.visible = ui.state() == UiState.INVENTORY;
+        inventoryModel.inventory = player.inventory();
+        inventoryModel.selectedHotbarSlot = player.inventory().selectedSlot();
 
         hud.extraDebugLines.clear();
         String mode = selfTest != null ? "M1 脚本化自测"
@@ -2484,7 +2711,10 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             Log.noteWarning("界面", "返回主菜单前的存档失败，仍继续返回（世界仍在内存中，可再次保存）");
         }
         if (ui.backToMainMenu()) {
-            Log.info("[界面] 已返回主菜单（世界保留在内存中，可再次开始游戏继续游玩）");
+            // 存档刚刚（可能）被创建：「继续游戏」这一行的可选性取决于磁盘上此刻有没有存档，
+            // 因此必须重建主菜单屏，而不是沿用装配期那一份。
+            refreshMainMenu();
+            Log.info("[界面] 已返回主菜单（世界保留在内存中，可「继续游戏」接着玩，或「新建世界」重开一局）");
         }
     }
 

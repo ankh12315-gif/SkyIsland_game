@@ -280,20 +280,24 @@ public final class M1ScriptedSelfTest {
      * 硬编码槽号，是因为开局装备的格子布局与数量都可能变 —— 硬编码的失效方式
      * 是"挖掘阶段失败"，而真正的原因在别处。
      */
+    // M2.2：背包扩成 27+9，"快捷栏"是绝对索引 27..35 的 9 格。这两个辅助函数扫描快捷栏、
+    // 返回<b>快捷栏相对槽位（0..8）</b> —— 因为它们的结果直接喂给 selectSlot（只认 0..8 相对索引）。
+    // 在 M1 时整包就是快捷栏、绝对==相对，所以扫 size() 没问题；现在必须显式扫快捷栏区，
+    // 否则会扫到主背包并把绝对索引当相对索引传给 selectSlot（等于没切槽，挖掘/放置断言会假绿或真红）。
     private int firstNonGunSlot(Player player) {
-        for (int i = 0; i < player.inventory().size(); i++) {
-            if (!player.inventory().slot(i).item().isGun()) {
-                return i;
+        for (int h = 0; h < Inventory.HOTBAR_SIZE; h++) {
+            if (!player.inventory().hotbarSlot(h).item().isGun()) {
+                return h;
             }
         }
         return 0;   // 9 格全是枪：不可能，但返回 0 比返回 -1 更不容易把调用方带进坑
     }
 
-    /** 快捷栏里第一个"方块物品"的槽位；没有则返回 −1（放置阶段用，见那边的说明）。 */
+    /** 快捷栏里第一个"方块物品"的槽位（相对索引）；没有则返回 −1（放置阶段用，见那边的说明）。 */
     private int firstBlockSlot(Player player) {
-        for (int i = 0; i < player.inventory().size(); i++) {
-            if (player.inventory().slot(i).isBlockItem()) {
-                return i;
+        for (int h = 0; h < Inventory.HOTBAR_SIZE; h++) {
+            if (player.inventory().hotbarSlot(h).isBlockItem()) {
+                return h;
             }
         }
         return -1;

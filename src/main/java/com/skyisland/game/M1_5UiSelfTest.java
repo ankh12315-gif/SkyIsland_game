@@ -3,6 +3,7 @@ package com.skyisland.game;
 import com.skyisland.input.InputMapper;
 import com.skyisland.physics.RaycastHit;
 import com.skyisland.player.Camera;
+import com.skyisland.player.Inventory;
 import com.skyisland.player.ItemStack;
 import com.skyisland.player.Player;
 import com.skyisland.save.SaveFormat;
@@ -1274,10 +1275,11 @@ public final class M1_5UiSelfTest {
      * 开局装备的格子布局与数量都可能变，而写死槽号的失效方式是"挖掘阶段超时"，
      * 真正的原因却在另一个文件里。
      */
+    // M2.2：扫描快捷栏、返回相对槽位（0..8），与 M1ScriptedSelfTest#firstNonGunSlot 同一条规则。
     private int firstNonGunSlot() {
-        for (int i = 0; i < host.player().inventory().size(); i++) {
-            if (!host.player().inventory().slot(i).item().isGun()) {
-                return i;
+        for (int h = 0; h < Inventory.HOTBAR_SIZE; h++) {
+            if (!host.player().inventory().hotbarSlot(h).item().isGun()) {
+                return h;
             }
         }
         return 0;   // 9 格全是枪：不可能，但返回 0 比返回 −1 更不容易把调用方带进坑
