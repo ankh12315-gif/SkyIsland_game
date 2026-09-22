@@ -1,5 +1,6 @@
 package com.skyisland.player;
 
+import com.skyisland.item.ItemRegistry;
 import com.skyisland.testutil.TestWorlds;
 import org.junit.jupiter.api.Test;
 
@@ -29,8 +30,8 @@ class InventoryTest {
     void newInventoryIsNineEmptySlotsWithFirstSelected() {
         Inventory inventory = new Inventory();
 
-        assertEquals(9, inventory.size());
-        assertEquals(Inventory.HOTBAR_SIZE, inventory.size());
+        assertEquals(36, inventory.size());
+        assertEquals(Inventory.SLOT_COUNT, inventory.size());
         assertEquals(0, inventory.selectedSlot());
         assertEquals(0, inventory.totalItemCount());
         assertEquals(0, inventory.usedSlotCount());
@@ -45,11 +46,11 @@ class InventoryTest {
         Inventory inventory = new Inventory();
 
         assertEquals(0, inventory.add(GRASS, 10), "全部放入时返回 0 余量");
-        assertEquals(10, inventory.slot(0).count());
+        assertEquals(10, inventory.hotbarSlot(0).count());
         assertEquals(1, inventory.usedSlotCount());
 
         assertEquals(0, inventory.add(GRASS, 5));
-        assertEquals(15, inventory.slot(0).count(), "同种方块必须并入已有槽而不是占用新槽");
+        assertEquals(15, inventory.hotbarSlot(0).count(), "同种方块必须并入已有槽而不是占用新槽");
         assertEquals(1, inventory.usedSlotCount());
     }
 
@@ -59,8 +60,8 @@ class InventoryTest {
 
         assertEquals(0, inventory.add(GRASS, ItemStack.MAX_STACK + 20));
 
-        assertEquals(ItemStack.MAX_STACK, inventory.slot(0).count());
-        assertEquals(20, inventory.slot(1).count());
+        assertEquals(ItemStack.MAX_STACK, inventory.hotbarSlot(0).count());
+        assertEquals(20, inventory.hotbarSlot(1).count());
         assertEquals(2, inventory.usedSlotCount());
         assertEquals(ItemStack.MAX_STACK + 20, inventory.totalItemCount());
     }
@@ -68,7 +69,7 @@ class InventoryTest {
     @Test
     void addReturnsLeftoverWhenInventoryIsFull() {
         Inventory inventory = new Inventory();
-        int capacity = Inventory.HOTBAR_SIZE * ItemStack.MAX_STACK;
+        int capacity = Inventory.SLOT_COUNT * ItemStack.MAX_STACK;
 
         assertEquals(0, inventory.add(STONE, capacity));
         assertEquals(capacity, inventory.totalItemCount());
@@ -96,8 +97,8 @@ class InventoryTest {
         inventory.add(GRASS, 1);
         inventory.add(DIRT, 1);
 
-        assertEquals(GRASS, inventory.slot(0).blockRuntimeId());
-        assertEquals(DIRT, inventory.slot(1).blockRuntimeId());
+        assertEquals(GRASS, inventory.hotbarSlot(0).blockRuntimeId());
+        assertEquals(DIRT, inventory.hotbarSlot(1).blockRuntimeId());
         assertEquals(2, inventory.usedSlotCount());
     }
 
@@ -141,8 +142,8 @@ class InventoryTest {
 
         inventory.selectSlot(1);
         assertTrue(inventory.consumeSelected(4));
-        assertEquals(6, inventory.slot(1).count());
-        assertEquals(10, inventory.slot(0).count(), "不得动到未选中的槽");
+        assertEquals(6, inventory.hotbarSlot(1).count());
+        assertEquals(10, inventory.hotbarSlot(0).count(), "不得动到未选中的槽");
 
         assertTrue(inventory.consumeSelected(6));
         assertTrue(inventory.slot(1).isEmpty(), "消耗到 0 应变为空槽");
@@ -164,7 +165,7 @@ class InventoryTest {
         Inventory inventory = new Inventory();
         inventory.add(GRASS, 3);
         assertTrue(inventory.consumeSelected(0));
-        assertEquals(3, inventory.slot(0).count());
+        assertEquals(3, inventory.hotbarSlot(0).count());
     }
 
     @Test
@@ -189,8 +190,8 @@ class InventoryTest {
         Inventory restored = new Inventory();
         restored.restore(snapshot, source.selectedSlot());
 
-        assertEquals(12, restored.slot(0).count());
-        assertEquals(7, restored.slot(1).count());
+        assertEquals(12, restored.hotbarSlot(0).count());
+        assertEquals(7, restored.hotbarSlot(1).count());
         assertEquals(1, restored.selectedSlot());
         assertEquals(source.totalItemCount(), restored.totalItemCount());
     }
@@ -242,8 +243,77 @@ class InventoryTest {
         inventory.selectSlot(3);
 
         String text = inventory.toString();
-        assertTrue(text.startsWith("HOTBAR["));
+        assertTrue(text.startsWith("INV["));
         assertTrue(text.contains(">"), "必须标出当前选中的槽：" + text);
         assertTrue(text.contains("x2"), text);
+    }
+
+    // ============================================================ M2.2：27+9 契约
+
+    @Test
+    void slotCountAndHotbarIndexContractAreFixed() {
+        Inventory inventory = new Inventory();
+        assertEquals(36, Inventory.SLOT_COUNT);
+        assertEquals(27, Inventory.MAIN_SIZE);
+        assertEquals(9, Inventory.HOTBAR_SIZE);
+        assertEquals(27, Inventory.HOTBAR_OFFSET);
+
+        // 快捷栏相对 0..8 → 绝对 27..35（写死的契约，别人都依赖它）
+        assertEquals(27, inventory.hotbarIndex(0));
+        assertEquals(35, inventory.hotbarIndex(8));
+        // 越界返回 -1（明确契约，不在外部自行 +27 否则会变成写主背包）
+        assertEquals(-1, inventory.hotbarIndex(-1));
+        assertEquals(-1, inventory.hotbarIndex(9));
+        assertTrue(inventory.hotbarSlot(0).isEmpty());
+        assertTrue(inventory.hotbarSlot(9).isEmpty(), "越界读取必须安全返回空");
+    }
+
+    /**
+     * M2.2 最关键的不变量：{@code add()} 先填快捷栏 27..35，再填主背包 0..26。
+     * 这条一旦写反，M1/M2 既有断言（"挖到的方块应出现在快捷栏"）与玩家手感一起崩。
+     */
+    @Test
+    void addPrefersHotbarThenMain() {
+        Inventory inventory = new Inventory();
+        assertEquals(0, inventory.add(STONE, 70), "全部放入");
+
+        // 70 个石头：快捷栏第 1 格满 64，第 2 格 6，主背包全空
+        assertEquals(64, inventory.hotbarSlot(0).count());
+        assertEquals(6, inventory.hotbarSlot(1).count());
+        assertEquals(2, inventory.usedSlotCount());
+        for (int i = 0; i < Inventory.MAIN_SIZE; i++) {
+            assertTrue(inventory.slot(i).isEmpty(), "主背包在快捷栏未满前不得被占用，槽 " + i + " 不应有东西");
+        }
+    }
+
+    /** 快捷栏（9 格）填满后，下一批才落到主背包 0..26。 */
+    @Test
+    void addFillsMainOnlyAfterHotbarIsFull() {
+        Inventory inventory = new Inventory();
+        // 先把快捷栏 9 格全部填满（每格 64）
+        assertEquals(0, inventory.add(STONE, Inventory.HOTBAR_SIZE * ItemStack.MAX_STACK));
+        for (int h = 0; h < Inventory.HOTBAR_SIZE; h++) {
+            assertEquals(ItemStack.MAX_STACK, inventory.hotbarSlot(h).count(), "快捷栏第 " + h + " 格必须满");
+        }
+
+        // 再加 10 个 → 只能进主背包第 1 格（绝对索引 0）
+        assertEquals(0, inventory.add(STONE, 10));
+        assertEquals(10, inventory.slot(0).count(), "快捷栏满后必须落进主背包第 1 格");
+        assertEquals(64, inventory.hotbarSlot(8).count(), "快捷栏不被本次 add 改变");
+    }
+
+    /** 枪（maxStack = 1）不得堆叠：两次 add 各占一格。堆叠上限来自物品本身，不是写死的 64。 */
+    @Test
+    void gunDoesNotStackAcrossSlots() {
+        Inventory inventory = new Inventory();
+        int pistol = ItemRegistry.runtimeIdOf(ItemRegistry.PISTOL_ID);
+
+        assertEquals(0, inventory.add(pistol, 1));
+        assertEquals(0, inventory.add(pistol, 1), "第二把枪也必须能放入（占新格），而不是被拒");
+
+        assertEquals(2, inventory.countOf(pistol), "持有两把枪");
+        assertEquals(2, inventory.usedSlotCount(), "两把枪占两个格");
+        assertEquals(1, inventory.hotbarSlot(0).count(), "每格只有 1 把");
+        assertEquals(1, inventory.hotbarSlot(1).count());
     }
 }

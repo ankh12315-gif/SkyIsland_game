@@ -446,7 +446,8 @@ class PlayerPhysicsTest {
         // PRD 5.1 的「掉落物」列：草方块掉泥土 ×1。
         // M1 这里断言的是"掉草方块自身"—— 那正是审计缺口 G13（方块掉落表完全未实现）
         // 在测试里被固化的形态：错误的行为一旦有了断言，就不再显得像错误。
-        assertEquals(TestWorlds.dirt(), player.inventory().slot(0).blockRuntimeId(),
+        // 挖到的方块经 add() 落在快捷栏第 1 格（绝对 27）；必须用 hotbarSlot 读，不能读 slot(0)
+        assertEquals(TestWorlds.dirt(), player.inventory().hotbarSlot(0).blockRuntimeId(),
                 "PRD 5.1：草方块的掉落物是泥土，不是草方块自身（G13 修复点）");
     }
 
@@ -543,7 +544,8 @@ class PlayerPhysicsTest {
         settle(player, world);
 
         // 手上有方块才可能放置（M1 没有创造模式物品栏）
-        player.inventory().setSlot(0, ItemStack.of(TestWorlds.planks(), 5));
+        // M2.2：setSlot(0) 现在是主背包，必须放到"选中槽对应的快捷栏格"（相对 0 → 绝对 27）
+        player.inventory().setSlot(player.inventory().hotbarIndex(0), ItemStack.of(TestWorlds.planks(), 5));
         player.inventory().selectSlot(0);
 
         // 与脚本化自测同一套初始条件：退出到 (0.5,64,-5.5) 并低头 60°，
@@ -559,7 +561,7 @@ class PlayerPhysicsTest {
         RaycastHitHint hint = placedCell(player);
         assertEquals(TestWorlds.planks(), world.blockIdAt(hint.x, hint.y, hint.z),
                 "放置位置的方块 ID 必须与手持一致，实际位置 (" + hint.x + "," + hint.y + "," + hint.z + ")");
-        assertEquals(4, player.inventory().slot(0).count(), "放置必须消耗 1 个");
+        assertEquals(4, player.inventory().hotbarSlot(0).count(), "放置必须消耗 1 个");
     }
 
     /** 小工具：从玩家最后的目标推算"刚刚放置到哪一格"。 */
@@ -595,7 +597,7 @@ class PlayerPhysicsTest {
         Player player = playerAt(0.5, GROUND_Y, 0.5);
         settle(player, world);
 
-        player.inventory().setSlot(0, ItemStack.of(TestWorlds.planks(), 5));
+        player.inventory().setSlot(player.inventory().hotbarIndex(0), ItemStack.of(TestWorlds.planks(), 5));
         player.camera().setAngles(0, 89.5);   // 抬头看天
 
         player.step(world, PlayerIntent.of(0f, 0f, false, 0, 0, false, true), DT);
@@ -613,7 +615,7 @@ class PlayerPhysicsTest {
         Player player = playerAt(0.5, GROUND_Y, 0.5);
         settle(player, world);
 
-        player.inventory().setSlot(0, ItemStack.of(TestWorlds.planks(), 5));
+        player.inventory().setSlot(player.inventory().hotbarIndex(0), ItemStack.of(TestWorlds.planks(), 5));
         // 低头 60° 但站在格子正上方 → 命中点离自己不到一格，邻格与自己的碰撞箱重叠
         player.camera().setAngles(0, -89.5);
 
@@ -834,7 +836,28 @@ class PlayerPhysicsTest {
         Player player = playerAt(0.5, GROUND_Y, 0.5);
         String text = player.toString();
         assertTrue(text.startsWith("Player("), text);
-        assertTrue(text.contains("HOTBAR["), text);
+
+        // M2.2：背包从 9 格扩到 36 格后，标签必须一起改。
+        // 36 格里只有 9 格是快捷栏，再叫 HOTBAR[...] 就是一句假话 ——
+        // 而假话不会让任何东西变红，只会在有人对着日志排障时把他引错方向。
+        assertTrue(text.contains("Player(") && text.contains("INV["), text);
+
+        // 光断言标签不够：必须真的列出 36 格，并且在<b>绝对索引</b>上标出选中的那一格。
+        String inv = text.substring(text.indexOf("INV[") + 4, text.length() - 1);
+        String[] tokens = inv.split(" ");
+        assertEquals(Inventory.SLOT_COUNT, tokens.length,
+                "背包字符串必须逐格列出 36 格（7 个空槽拼在一起是最常见的实现错法）: " + inv);
+
+        Inventory inventory = player.inventory();
+        int marked = -1;
+        for (int i = 0; i < tokens.length; i++) {
+            if (tokens[i].startsWith(">")) {
+                assertEquals(-1, marked, "选中标记只能出现一次: " + inv);
+                marked = i;
+            }
+        }
+        assertEquals(inventory.hotbarIndex(inventory.selectedSlot()), marked,
+                "选中标记必须落在「快捷栏相对索引 → 绝对索引」换算后的那一格上: " + inv);
     }
 
     @Test
