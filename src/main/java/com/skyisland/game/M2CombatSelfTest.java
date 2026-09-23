@@ -785,10 +785,23 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 stageIndex + 1, Stage.values().length, stage.label, STAGE_BUDGET[stageIndex]);
     }
 
-    /** 快捷栏里第一个"不是枪"的槽位（挖掘阶段必须先声明自己手里是什么）。 */
+    /**
+     * 快捷栏里第一个"不是枪"的<b>相对</b>槽位（0..8）。挖掘阶段必须先声明自己手里是什么。
+     *
+     * <p><b>★ 返回的是快捷栏相对索引，不是绝对索引。</b>它的唯一消费方是
+     * {@link PlayerIntent#selectSlot(int)} → {@code Inventory#selectSlot(int)}，
+     * 而后者收的就是 0..8。M2.2 把 {@code Inventory.size()} 从 9 改成 36 之后，
+     * 这里一度是"扫整个 36 格数组、返回绝对索引"，于是主背包的空格（绝对 0）
+     * 被判成"第一个不是枪的槽位"，{@code selectSlot(0)} 实际选中了快捷栏第 1 格
+     * —— 也就是那把手枪。症状是挖掘阶段整段失败（持枪左键 = 开火，不是挖掘），
+     * 而失败现场指向"挖掘没生效"，真正的错在槽位口径上。
+     *
+     * <p>因此本方法与 {@link #firstBlockSlot} 都只扫快捷栏（{@code hotbarSlot(i)}），
+     * 并返回 0..8。这是"下标自带单位"这件事必须被写下来的地方。
+     */
     private int firstNonGunSlot(Player player) {
-        for (int i = 0; i < player.inventory().size(); i++) {
-            if (!player.inventory().slot(i).item().isGun()) {
+        for (int i = 0; i < Inventory.HOTBAR_SIZE; i++) {
+            if (!player.inventory().hotbarSlot(i).item().isGun()) {
                 return i;
             }
         }
@@ -796,14 +809,17 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     }
 
     /**
-     * 快捷栏里第一个方块物品的槽位；没有则返回 −1。
+     * 快捷栏里第一个方块物品的<b>相对</b>槽位（0..8）；没有则返回 −1。
      *
      * <p>写成"扫描内容"而不是硬编码槽号：开局装备的格子布局与后续挖到的物品都会变，
      * 硬编码的失效方式是"挖掘阶段失败"，而真正的原因在别处。
+     *
+     * <p>返回相对索引的理由同 {@link #firstNonGunSlot}。注意第 1670 行的
+     * {@code firstBlockSlot(player) >= 0} 只把它当"有没有"用，与口径无关。
      */
     private int firstBlockSlot(Player player) {
-        for (int i = 0; i < player.inventory().size(); i++) {
-            if (player.inventory().slot(i).isBlockItem()) {
+        for (int i = 0; i < Inventory.HOTBAR_SIZE; i++) {
+            if (player.inventory().hotbarSlot(i).isBlockItem()) {
                 return i;
             }
         }
@@ -1656,6 +1672,23 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         Player player = host.player();
         World world = host.world();
         long breaksDelta = player.blocksBroken() - stageStartBreaks;
+
+        // ★ 前置条件自证：本阶段下面每一条结论都建立在"手里不是枪"之上。
+        //
+        //   为什么这条必须存在：M2.2 把 Inventory.size() 从 9 变成 36 时，
+        //   扫描槽位的辅助方法一度返回**绝对索引**，而 selectSlot 只认 0..8。
+        //   于是"切到第一个非枪物品"实际选中了快捷栏第 1 格的枪，接下来 7 条挖掘断言
+        //   一起以"挖掘没生效"的样子失败 —— 失败现场指向玩法，真因在槽位口径上。
+        //
+        //   把"手里确实不是枪"写成断言之后，同类错误会以"槽位口径"的措辞直接指出自己。
+        //   这与本项目那条审计判据是同一条：**测量仪器必须先被验证**。
+        ItemStack heldForMining = player.inventory().selectedStack();
+        record("挖掘阶段手上持有的不是枪（槽位口径自证）", !heldForMining.item().isGun(),
+                "selectedSlot=" + player.inventory().selectedSlot()
+                        + " → 绝对索引 "
+                        + player.inventory().hotbarIndex(player.inventory().selectedSlot())
+                        + "，item=" + heldForMining.item().id()
+                        + "（若这里是手枪，说明槽位口径错了：扫描结果必须是 0..8 相对索引）");
 
         record("第一次挖掘成功（手持非枪物品即可挖掘）", breaksDelta >= 1,
                 "blocksBroken 增量=" + breaksDelta);

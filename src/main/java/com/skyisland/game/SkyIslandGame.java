@@ -1,5 +1,6 @@
 package com.skyisland.game;
 
+import com.skyisland.audio.AudioEvent;
 import com.skyisland.audio.AudioFeedback;
 import com.skyisland.audio.AudioManager;
 import com.skyisland.combat.CombatController;
@@ -74,8 +75,16 @@ import java.util.List;
  * 挖掘 / 拾取 / 放置 / 快捷栏 / 跨区块边界 / 虚空死亡与重生 / 存档与读档 /
  * debug HUD / 截图。
  *
- * <p><b>M2 及以后</b>：枪械 / 怪物 / 昼夜 / 生命值与饥饿 / 掉落物实体 /
- * 完整背包界面 / 音频。
+ * <p><b>M2.1 起已交付</b>：枪械（无限后备弹药）/ 近战怪物 / 命中与后坐等战斗手感 /
+ * 音频（OpenAL + 程序化合成，五个战斗音）。
+ *
+ * <p><b>M2.2 起已交付</b>：界面中文化（CJK 点阵字模）/ 主菜单"继续 / 新建世界" /
+ * 设置分控制·显示·音频三类 / <b>27+9 格背包界面</b>（取放、Shift 搬运、光标持有堆、
+ * tooltip、存档持久化与 v1→v2 槽位迁移）/ HUD 分层（F3 调试浮层与玩法层分离）/
+ * 背包与 HUD 快捷栏共用同一份模型与同一个槽位渲染器。
+ *
+ * <p><b>尚未交付（M3 及以后）</b>：昼夜与天数 HUD / 饥饿 / 掉落物实体（死亡不掉落）/
+ * 合成的配方系统 / 背包右键分堆 / 第二种怪物与武器 / 岛屿地形生成 / 蹲下。
  *
  * <h2>这个类在 M1.5 里的职责仍然是"接线"</h2>
  * 所有算法都在各自的包里。本类只做五件事：
@@ -1078,12 +1087,20 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      * 看起来像产品的前台启动流程坏了，实际是<u>测试脚手架自己把前提改掉了</u>。
      * 这类"测试前提被脚手架破坏"的失败最费时间，因此在这里显式分开。
      *
-     * <p>可用 {@code -Dskyisland.startState=menu|playing} 覆盖以上全部判断。
+     * <p>可用 {@code -Dskyisland.startState=menu|playing|inventory} 覆盖以上全部判断。
+     *
+     * <p><b>为什么要 {@code inventory} 这一档（M2.2）：</b>背包界面是新增的一条渲染路径。
+     * 要测它的帧开销，唯一的确定性办法是<b>让测量窗全程处于背包态</b>。
+     * 若改成"跑一会儿再按 E 打开"，开关动作本身会落在测量窗内 ——
+     * 首轮性能跑正是这样撞到一次 134 ms 尖峰的：那一格恰好混进了人手操作，
+     * 于是"尖峰来自背包渲染"和"尖峰来自外部交互"无法区分。
+     * 从背包态启动把首次开销完全压进预热窗，测量窗里就只剩稳态渲染成本。
      */
     private UiState resolveInitialUiState() {
         String explicit = config.startState();
         if (!explicit.isBlank()) {
-            UiState requested = "playing".equalsIgnoreCase(explicit) ? UiState.PLAYING : UiState.MAIN_MENU;
+            UiState requested = "playing".equalsIgnoreCase(explicit) ? UiState.PLAYING
+                    : ("inventory".equalsIgnoreCase(explicit) ? UiState.INVENTORY : UiState.MAIN_MENU);
             Log.info("[界面] 初始状态由 -Dskyisland.startState=%s 指定 → %s", explicit, requested);
             return requested;
         }
@@ -1703,10 +1720,12 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      * 背包键（{@link Action#INVENTORY}）本帧是否被按下。
      *
      * <p><b>为什么走可重绑的动作表而不是直接读 {@code GLFW_KEY_E}：</b>
-     * {@code Action.INVENTORY} 从 M1.5 起就"有默认键位、可重绑、可落盘，但没有消费方"
-     * —— 那一行标注（"界面消费方在 M3"）正是为了避免"能改键"被误读成"能用"。
-     * M2.2 给了它真实消费方，因此<b>必须同时更新那行标注</b>，否则界面会继续
-     * 告诉玩家"这个键没用"，而它已经有用。标注的更新见 {@code Action#INVENTORY}。
+     * 默认键是 {@code E}，但玩家可以改 —— 直接读键码会让"重绑生效"变成"要改逻辑代码"。
+     *
+     * <p><b>它在 M1.5 时的标注是"界面消费方在 M3"</b>（那行标注的存在正是为了避免
+     * "能改键"被误读成"能用"）。M2.2 给了它真实消费方，因此那行标注<b>已同时摘掉</b>
+     * （见 {@link Action#INVENTORY} 的注释）—— 否则设置界面会显示 {@code "Inventory [M3]"}，
+     * 等于告诉玩家"这个键要等下个版本"，而它现在就有用。
      */
     private boolean inventoryTogglePressed() {
         return InputMapper.actionPressed(input, settings.keyBindings(), Action.INVENTORY);
@@ -1714,6 +1733,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
 
     private void openInventoryScreen() {
         if (ui.openInventory()) {
+            audio.play(AudioEvent.UI_OPEN);
             Log.info("[界面] 打开背包");
         }
     }
@@ -1731,9 +1751,12 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         int held = player.inventory().cursorStack().count();
         InventoryInteraction.Outcome outcome = InventoryInteraction.closeScreen(player.inventory());
         if (outcome.result() == InventoryInteraction.Result.SHIFT_BLOCKED) {
+            // 丢弃是唯一"物品真的少了"的情形，因此它必须同时有视觉与听觉两条通道。
+            audio.play(AudioEvent.UI_DENIED);
             showEvent(Localization.text(Localization.MSG_INV_DROPPED_ON_CLOSE, held), 3.0);
         }
         if (ui.closeInventory()) {
+            audio.play(AudioEvent.UI_CLOSE);
             inventoryModel.visible = false;
             inventoryModel.hoverSlot = -1;
             Log.info("[界面] 关闭背包");
@@ -1743,12 +1766,22 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     /**
      * 背包打开时的鼠标交互。
      *
-     * <p><b>坐标换算是这里最关键的一行。</b>{@code window.cursorPosition()} 给的是
-     * <b>窗口坐标</b>（GLFW 回调原始值），而 {@link InventoryLayout} 的命中判定用的是
-     * <b>帧缓冲像素</b>。DPI = 1 时两者恰好相等，问题不会暴露；一旦
-     * 窗口尺寸 ≠ 帧缓冲尺寸，"点第 3 格却命中第 12 格"就是真 bug。
-     * 现存代码里 {@code pollMenuNav} 也有同一处隐患（菜单命中用的是帧缓冲口径），
-     * 但那是 M1.5 的路径、本次不改；背包从一开始就必须走对。
+     * <p><b>坐标换算是这里最关键的一行。</b>输入层与 {@link InventoryLayout} 的口径不同：
+     * 前者是<b>窗口坐标</b>（GLFW 回调原始值），后者按<b>帧缓冲像素</b>命中。
+     * DPI = 1 时两者恰好相等，问题不会暴露；一旦窗口尺寸 ≠ 帧缓冲尺寸，
+     * "点第 3 格却命中第 12 格"就是真 bug —— 而它在开发机上永远复现不了。
+     *
+     * <p><b>为什么读 {@code input.cursorPosition()} 而不是 {@code window.cursorPosition()}：</b>
+     * 这两个来源在正常使用时数值相同，但性质不同 —— 后者每次都向 GLFW 现问一次，
+     * 前者是<b>已跟踪的输入状态</b>（菜单命中判定用的就是它），并在光标模式切换时由
+     * {@code applyUiMode} 用 GLFW 的值重新播种。用同一个来源的收益是：
+     * <ul>
+     *   <li>菜单与背包的"光标在哪"不会再出现两个真相（一个来自 GLFW、一个来自输入层）；</li>
+     *   <li>它可以被<b>进程内脚本化注入</b>（{@code InputState#seedCursor}）——
+     *       于是"点某一格"这件事能在自测里被真实地走一遍，
+     *       而不是把坐标换算这段胶水留在无人验证的角落（TR7 的同一条原则：
+     *       本机合成键鼠送不到窗口，凡是能脚本化的状态都应当能从进程内播种）。</li>
+     * </ul>
      */
     private void handleInventoryInput() {
         if (inventoryTogglePressed()
@@ -1759,11 +1792,11 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
 
         int fbWidth = window.framebufferWidth();
         int fbHeight = window.framebufferHeight();
-        double[] cursor = window.cursorPosition();
-        double scaleX = fbWidth / (double) Math.max(1, window.windowWidth());
-        double scaleY = fbHeight / (double) Math.max(1, window.windowHeight());
-        inventoryModel.mouseX = cursor[0] * scaleX;
-        inventoryModel.mouseY = cursor[1] * scaleY;
+        double[] cursor = input.cursorPosition();
+        double[] fb = InventoryLayout.windowToFramebuffer(cursor[0], cursor[1],
+                fbWidth, fbHeight, window.windowWidth(), window.windowHeight());
+        inventoryModel.mouseX = fb[0];
+        inventoryModel.mouseY = fb[1];
 
         InventoryLayout layout = renderer.inventoryRenderer().ensureLayout(fbWidth, fbHeight);
         int hovered = layout.hitTestAny(inventoryModel.mouseX, inventoryModel.mouseY);
@@ -1778,11 +1811,23 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                 ? InventoryInteraction.shiftClick(player.inventory(), hovered)
                 : InventoryInteraction.leftClick(player.inventory(), hovered);
 
-        if (outcome.result() == InventoryInteraction.Result.SHIFT_BLOCKED) {
-            // 搬运失败必须说出来：原子性保证了原格不变，
-            // 于是"点了没反应"和"背包满了"在画面上长得一模一样。
-            showEventDeduped("inv_move_blocked",
-                    Localization.text(Localization.MSG_INV_MOVE_BLOCKED), 2.0);
+        // ★ 声音必须按「结果」分派，而不是按「点了」分派。
+        //   若把 UI_MOVE 挂在"鼠标左键按下"上，对着空格点一下也会响 ——
+        //   玩家据此会以为东西被搬动了。失败与成功在画面上的差别有时只有一个高亮的明暗，
+        //   听觉通道承担的就是"立刻知道自己做了什么"这件事。
+        switch (outcome.result()) {
+            case PICKUP_ALL, PLACE_ALL, MERGE_PARTIAL, MERGE_FULL, SWAP, SHIFT_MOVED ->
+                    audio.play(AudioEvent.UI_MOVE);
+            case SHIFT_BLOCKED -> {
+                // 搬运失败必须说出来：原子性保证了原格不变，
+                // 于是"点了没反应"和"背包满了"在画面上长得一模一样。
+                showEventDeduped("inv_move_blocked",
+                        Localization.text(Localization.MSG_INV_MOVE_BLOCKED), 2.0);
+                audio.play(AudioEvent.UI_DENIED);
+            }
+            case NONE, REJECTED -> {
+                // 空格上点一下、或越过面板边界点击：既没搬动也没出错，不该有任何声音。
+            }
         }
     }
 
@@ -2266,6 +2311,15 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         renderer.renderViewmodel(viewmodel);
 
         updateHud();
+        // ---- M2.2：模态压暗 pass —— 在 HUD 之前 ----
+        // 压暗只该压世界。它此前是"面板渲染的第一步"，而面板排在 HUD 之后，
+        // 于是它顺手把生命条与通知压暗了 66%（像素证据：满心 229,51,61 → 81,23,29，
+        // 恰为 1 − DIM.alpha）。这与 vitalsVisible 的产品决定冲突 ——
+        // "开背包时生命条仍要显示，玩家不能因为开了背包就看不见自己在挨打"。
+        // 所以它必须在这里，由本方法显式安排顺序，而不是藏在某个面板里。
+        if (ui.state().menuVisible()) {
+            renderer.renderModalDim();
+        }
         renderer.renderHud(hud);
 
         // ---- M2.2：背包 pass —— 在 HUD 之后、菜单之前 ----
@@ -2305,12 +2359,25 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         }
     }
 
-    /** 各界面下的底部操作提示（ASCII）。 */
+    /**
+     * 各界面下的底部操作提示。
+     *
+     * <p><b>M2.2 之前这里是四条英文 ASCII 字面量。</b>菜单文案中文化之后，
+     * "中文标题 + 中文菜单项 + 英文底部提示"会同时出现在同一屏上 —— 而
+     * {@code Localization} 里那四个 {@code HINT_*} key 当时<b>已经登记、却没有任何消费方</b>
+     * （{@code HINT_INVENTORY} 由背包面板自己画，{@code HINT_SETTINGS} 被当成了设置屏的副标题，
+     * 另两个纯粹是死的）。登记了不接线的东西会伪装成"已完成"：{@code LocalizationTest}
+     * 只检查"每个 key 都有文案"，不检查"有人用它"。
+     *
+     * <p><b>唯一来源是 Localization</b>（PRD §6.7）。PLAYING / INVENTORY 返回空串是产品决定：
+     * 游玩中不该有操作提示挡着画面；背包面板内部已经自己画了一行提示，
+     * 再在底部画第二行就会重复。
+     */
     private String footerHint() {
         return switch (ui.state()) {
-            case MAIN_MENU -> "Up/Down = move    Enter / Click = select";
-            case PAUSED -> "Up/Down = move    Enter / Click = select    Esc = resume";
-            case SETTINGS -> "Enter = toggle / rebind    Left/Right = adjust    Esc = back";
+            case MAIN_MENU -> Localization.text(Localization.HINT_MAIN);
+            case PAUSED -> Localization.text(Localization.HINT_PAUSE);
+            case SETTINGS -> Localization.text(Localization.HINT_SETTINGS);
             case PLAYING -> "";
             case INVENTORY -> "";
         };
@@ -2947,6 +3014,50 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         @Override
         public void injectCursorDelta(double dx, double dy) {
             input.injectCursorDelta(dx, dy);
+        }
+
+        @Override
+        public void seedCursorPosition(double x, double y) {
+            // 直接把光标状态播种到绝对位置，不产生位移。
+            // 与 injectCursorDelta 的分工：那个表达"玩家把鼠标挪了一段"（用于视角），
+            // 这个表达"光标现在停在这一格上"（用于命中判定）。
+            // 绕开的只有 OS → GLFW 这一段，与 TR7 的应对方案同一条原则。
+            input.seedCursor(x, y);
+        }
+
+        @Override
+        public int inventoryHoverSlot() {
+            return inventoryModel.hoverSlot;
+        }
+
+        @Override
+        public boolean hudGameplayVisible() {
+            return hud.showGameplayHud;
+        }
+
+        @Override
+        public boolean hudVitalsVisible() {
+            return hud.showVitals;
+        }
+
+        @Override
+        public double[] inventorySlotCenterWindow(int slot) {
+            // ★ 这里**故意**不调用 InventoryLayout.windowToFramebuffer 的包装，
+            //   而是把逆换算写成"乘以窗口/帧缓冲之比"：
+            //   产品的正向换算是"乘以 fb/win"。若哪天有人把正向改成"乘以 win/fb"
+            //   （DPI 换算写反，这是这个函数唯一可能的错法），
+            //   两者不再互为逆运算 —— 自测瞄准的像素会落到别的格子上，
+            //   于是"点第 3 格却命中了别的格"会在自测里当场暴露，
+            //   而不是等玩家在缩放屏幕上点到错的格子。
+            int fbW = window.framebufferWidth();
+            int fbH = window.framebufferHeight();
+            int winW = window.windowWidth();
+            int winH = window.windowHeight();
+            double[] center = renderer.inventoryRenderer()
+                    .ensureLayout(fbW, fbH).slotCenter(slot);
+            double backX = center[0] * (winW / (double) Math.max(1, fbW));
+            double backY = center[1] * (winH / (double) Math.max(1, fbH));
+            return new double[]{backX, backY};
         }
 
         @Override

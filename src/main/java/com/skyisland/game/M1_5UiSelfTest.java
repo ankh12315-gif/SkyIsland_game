@@ -161,6 +161,17 @@ public final class M1_5UiSelfTest {
      */
     private static final double MINE_LATE_SCREENSHOT_PROGRESS = 0.85;
 
+    /**
+     * 开背包后至少要再推进的逻辑步数（M2.2）。
+     *
+     * <p>这是"开背包不暂停世界"这条产品语义<b>唯一能变成数字</b>的地方：
+     * 10 步 ≈ 1/6 秒，足以与"一个逻辑步都没跑"区分开，又不至于把自测拖长。
+     * {@code INVENTORY.simulationRunning() == true} 本身由
+     * {@code UiStateMachineTest} 单测钉住，这里钉的是<b>接线</b>：
+     * 状态说"世界在跑"，运行时就必须真的在跑。
+     */
+    private static final int INVENTORY_RUNNING_STEPS = 10;
+
     /** 宿主：自测需要访问游戏的真实对象，但不该自己造一套。 */
     public interface Host {
 
@@ -228,6 +239,42 @@ public final class M1_5UiSelfTest {
         void injectCursorDelta(double dx, double dy);
 
         /**
+         * 把光标<b>绝对位置</b>播种到输入层（不产生位移）。
+         *
+         * <p><b>为什么背包阶段需要它：</b>背包的命中判定读的是输入层跟踪的光标位置，
+         * 而自测里没有任何办法把真实鼠标搬到"第 3 格的中心"上（本机合成键鼠送不到窗口）。
+         * 没有这个方法，"光标像素 → DPI 换算 → 命中哪一格"这段胶水就只能靠人眼试玩。
+         * 绕开的只有 {@code OS → GLFW} 这一段：播种之后，判定链路
+         * （输入层 → 帧缓冲换算 → {@code InventoryLayout#hitTestAny} → 交互语义）全部是真的。
+         *
+         * @param x 窗口坐标（与 GLFW 回调同一口径，不是帧缓冲像素）
+         */
+        void seedCursorPosition(double x, double y);
+
+        /** 上一帧背包界面命中的绝对槽位（{@code -1} = 没命中任何格子）。 */
+        int inventoryHoverSlot();
+
+        /**
+         * 渲染模型上的"游玩 HUD 层"开关（{@code hud.showGameplayHud}）。
+         *
+         * <p>读模型而不是读 {@code UiState.gameplayHudVisible()}：后者只是枚举上的一个
+         * 派生属性，已经在单测里覆盖；真正会静默失效的是"状态 → HUD 模型"这一步接线。
+         */
+        boolean hudGameplayVisible();
+
+        /** 渲染模型上的"生命与通知层"开关（{@code hud.showVitals}）。 */
+        boolean hudVitalsVisible();
+
+        /**
+         * 某绝对槽位的<b>中心</b>，换算回窗口坐标（可直接交给
+         * {@link #seedCursorPosition(double, double)}）。
+         *
+         * <p>返回窗口坐标而不是帧缓冲像素，是为了让"瞄准某一格"这件事与玩家的实际操作
+         * 同口径；窗口→帧缓冲的换算仍然由产品代码负责 —— 那正是被测的那一段。
+         */
+        double[] inventorySlotCenterWindow(int slot);
+
+        /**
          * 输入层<u>累计接收</u>的鼠标横移（像素，含自测注入）。
          *
          * <p>注入与真实回调往同一个累加器里加数，因此只有"读差值"才能算出
@@ -276,6 +323,9 @@ public final class M1_5UiSelfTest {
         PAUSE("ESC → 暂停菜单"),
         PAUSED_FREEZE("暂停期间物理/世界时间/交互全部冻结"),
         RESUME("ESC → 继续游戏"),
+        INVENTORY_OPEN("E → 打开背包：世界继续推进、光标可见、准星隐藏"),
+        INVENTORY_INTERACT("背包内点击取放：命中链路（光标像素 → DPI 换算 → 槽位）真的走通"),
+        INVENTORY_CLOSE("E → 关闭背包：回到游玩中且手上不留东西"),
         SAVE_TO_MAIN("暂停菜单 → 保存并返回主菜单"),
         SETTINGS_PERSISTENCE("设置落盘后可被重新读回且一致"),
         CORRUPT_FALLBACK("损坏设置文件 → 备份 + 回默认 + 不崩溃"),
@@ -312,6 +362,23 @@ public final class M1_5UiSelfTest {
     private int deathsBefore;
     private long worldBreakBefore;
     private long worldPlaceBefore;
+
+    // ---- 背包子检查（M2.2）----
+    /** 开背包前的模拟步数：用来证明"开背包不暂停世界"。 */
+    private long invStepsBefore = -1;
+    /** 第一步点击取走的物品与数量（第二步要放回去的是同一份东西）。 */
+    private int invTakenRuntimeId = -1;
+    private int invTakenCount = -1;
+    private int invPickSlot = -1;
+    private int invPlaceSlot = -1;
+    /** 点击前那一格里的数量（用来证明"整堆被取走"而不是只取走一部分）。 */
+    private int invPickCountBefore = -1;
+    /** 点下去那一帧界面认为光标停在哪个槽位（坐标换算是否正确的直接证据）。 */
+    private int invHoverAtPick = -2;
+    /** 取放前后的槽位物品总数：用来钉住"不丢失、不复制"。 */
+    private int invTotalBefore = -1;
+    private boolean invCursorChecked;
+    private boolean invPlaced;
 
     // ---- 视角/灵敏度子检查（0 = 1.5 倍，1 = 0.5 倍，2 = 反转 Y）----
     private int lookCheckIndex;
@@ -497,6 +564,21 @@ public final class M1_5UiSelfTest {
             case PAUSE -> {
                 simStepsBefore = host.simulationSteps();
                 gameTimeBefore = host.gameTimeSeconds();
+            }
+            case INVENTORY_OPEN -> {
+                // 世界必须继续跑（这是 INVENTORY 与 PAUSED 的根本区别）
+                invStepsBefore = host.simulationSteps();
+            }
+            case INVENTORY_INTERACT -> {
+                invTakenRuntimeId = -1;
+                invTakenCount = -1;
+                invPickSlot = -1;
+                invPlaceSlot = -1;
+                invPickCountBefore = -1;
+                invHoverAtPick = -2;
+                invCursorChecked = false;
+                invPlaced = false;
+                invTotalBefore = host.player().inventory().totalItemCount();
             }
             case PAUSED_FREEZE -> {
                 simStepsBefore = host.simulationSteps();
@@ -887,6 +969,63 @@ public final class M1_5UiSelfTest {
                     host.injectMouseButton(GLFW.GLFW_MOUSE_BUTTON_LEFT, false);
                 }
             }
+            case INVENTORY_OPEN -> {
+                if (framesInStage == 1) {
+                    host.injectKey(GLFW.GLFW_KEY_E, true);
+                    host.injectKey(GLFW.GLFW_KEY_E, false);
+                }
+                // 两个条件缺一不可：界面进了背包，<b>而且</b>世界还在推进。
+                // 只断言前者的话，"背包一开世界就停了"（把它做成了 PAUSED 的孪生兄弟）
+                // 会照样通过 —— 而那正是本状态存在的意义。
+                conditionMet = host.ui().state() == UiState.INVENTORY
+                        && host.simulationSteps() > invStepsBefore + INVENTORY_RUNNING_STEPS;
+            }
+            case INVENTORY_INTERACT -> {
+                // ★ 这一阶段要证明的是"光标像素 → DPI 换算 → 命中哪一格 → 交互语义"
+                //   这条链真的通。第一次点击取走、第二次点击放下，两次都走真实输入路径
+                //   （播种光标 + 注入鼠标左键），因此任何一环错位都会让"物品没被搬动"
+                //   或"搬到了别的格子"当场暴露。
+                if (framesInStage == 1) {
+                    invPickSlot = firstNonEmptySlot();
+                    if (invPickSlot < 0) {
+                        failFast(stage, "背包里没有任何物品，无法验证取放："
+                                + "本阶段需要至少一个非空槽位");
+                        return;
+                    }
+                    invPickCountBefore = host.player().inventory().slot(invPickSlot).count();
+                    aimAndClick(invPickSlot);
+                    return;
+                }
+                if (!invCursorChecked) {
+                    // 第一次点击的结果：东西应当到了"手上"
+                    ItemStack held = host.player().inventory().cursorStack();
+                    invTakenRuntimeId = held.isEmpty() ? -1 : held.itemRuntimeId();
+                    invTakenCount = held.count();
+                    invHoverAtPick = host.inventoryHoverSlot();
+                    invCursorChecked = true;
+                    if (held.isEmpty()) {
+                        failFast(stage, "点击第 " + invPickSlot + " 格后光标上仍然是空的 —— "
+                                + "命中链路没走通（悬停槽位=" + host.inventoryHoverSlot() + "）");
+                        return;
+                    }
+                    invPlaceSlot = firstEmptySlot();
+                    if (invPlaceSlot < 0) {
+                        failFast(stage, "背包里没有空槽位，无法验证放下");
+                        return;
+                    }
+                    aimAndClick(invPlaceSlot);
+                    invPlaced = true;
+                    return;
+                }
+                conditionMet = invPlaced;
+            }
+            case INVENTORY_CLOSE -> {
+                if (framesInStage == 1) {
+                    host.injectKey(GLFW.GLFW_KEY_E, true);
+                    host.injectKey(GLFW.GLFW_KEY_E, false);
+                }
+                conditionMet = host.ui().state() == UiState.PLAYING;
+            }
             case SAVE_TO_MAIN -> {
                 if (framesInStage == 1) {
                     host.injectKey(GLFW.GLFW_KEY_ESCAPE, true);
@@ -1120,6 +1259,64 @@ public final class M1_5UiSelfTest {
                         host.simulationSteps() > simStepsBefore, "simulation_steps="
                                 + simStepsBefore + " → " + host.simulationSteps());
             }
+            case INVENTORY_OPEN -> {
+                ok &= record("E 使界面进入背包",
+                        host.ui().state() == UiState.INVENTORY, "实际=" + host.ui().state());
+                ok &= record("开背包期间世界仍在推进（背包 ≠ 暂停）",
+                        host.simulationSteps() > invStepsBefore + INVENTORY_RUNNING_STEPS,
+                        "simulation_steps=" + invStepsBefore + " → " + host.simulationSteps()
+                                + "（要求至少 +" + INVENTORY_RUNNING_STEPS + "）");
+                ok &= record("开背包后光标可见（要用它点格子）",
+                        !host.mouseCaptured(), "mouseCaptured=" + host.mouseCaptured());
+                // 这两条读的是<b>渲染模型</b>上的开关，而不是 UiState 的派生属性 ——
+                // 派生属性已由 UiStateMachineTest 单测覆盖，这里要钉的是"状态 → 模型"的接线。
+                ok &= record("开背包后准星/挖掘条/快捷栏不再绘制"
+                                + "（快捷栏改由背包面板自己画，不能画两份）",
+                        !host.hudGameplayVisible(), "hud.showGameplayHud=" + host.hudGameplayVisible());
+                ok &= record("开背包后生命与通知仍然显示（否则开了背包就看不见自己在挨打）",
+                        host.hudVitalsVisible(), "hud.showVitals=" + host.hudVitalsVisible());
+            }
+            case INVENTORY_INTERACT -> {
+                // ① 坐标链路：界面认为光标停在"我瞄准的那一格"上。
+                //    这一条是 DPI/坐标换算写错时唯一会先红的地方 ——
+                //    换算反了的话，点下去命中的会是另一格，而"物品确实被搬动了"
+                //    这种弱断言照样会绿。
+                ok &= record("光标瞄准第 " + invPickSlot + " 格时，界面命中的就是这一格",
+                        invHoverAtPick == invPickSlot,
+                        "hover_slot=" + invHoverAtPick + "，aim=" + invPickSlot);
+                // ② 整堆取走：数量与格子原值一致（部分丢失会在这里红）
+                ok &= record("点击后整堆到了光标上（数量与原格一致）",
+                        invTakenCount == invPickCountBefore && invTakenCount > 0,
+                        "取走 " + invTakenCount + "，原格 " + invPickCountBefore);
+                ok &= record("被取走的格子已空",
+                        host.player().inventory().slot(invPickSlot).isEmpty(),
+                        "slot(" + invPickSlot + ")=" + host.player().inventory().slot(invPickSlot));
+                // ③ 放到空格：同一份东西落在第 invPlaceSlot 格
+                ItemStack placed = host.player().inventory().slot(invPlaceSlot);
+                ok &= record("再次点击空格后，物品落在第 " + invPlaceSlot + " 格",
+                        !placed.isEmpty() && placed.itemRuntimeId() == invTakenRuntimeId
+                                && placed.count() == invTakenCount,
+                        "slot(" + invPlaceSlot + ")=" + placed);
+                ok &= record("光标上的东西已清空（放下就是放下）",
+                        host.player().inventory().cursorStack().isEmpty(),
+                        "cursor=" + host.player().inventory().cursorStack());
+                // ④ 守恒：两次点击合计不能凭空多也不能少
+                ok &= record("取放两轮后槽位物品总数不变（不复制、不丢失）",
+                        host.player().inventory().totalItemCount() == invTotalBefore,
+                        invTotalBefore + " → " + host.player().inventory().totalItemCount());
+            }
+            case INVENTORY_CLOSE -> {
+                ok &= record("E 使界面回到游玩中",
+                        host.ui().state() == UiState.PLAYING, "实际=" + host.ui().state());
+                ok &= record("关闭背包后光标重新锁定（视角控制交还鼠标）",
+                        host.mouseCaptured(), "mouseCaptured=" + host.mouseCaptured());
+                ok &= record("关闭背包后手上不留东西",
+                        host.player().inventory().cursorStack().isEmpty(),
+                        "cursor=" + host.player().inventory().cursorStack());
+                ok &= record("关闭背包后槽位物品总数仍与取放前一致",
+                        host.player().inventory().totalItemCount() == invTotalBefore,
+                        invTotalBefore + " → " + host.player().inventory().totalItemCount());
+            }
             case SAVE_TO_MAIN -> {
                 ok &= record("暂停菜单返回主菜单成功",
                         host.ui().state() == UiState.MAIN_MENU, "实际=" + host.ui().state());
@@ -1283,6 +1480,45 @@ public final class M1_5UiSelfTest {
             }
         }
         return 0;   // 9 格全是枪：不可能，但返回 0 比返回 −1 更不容易把调用方带进坑
+    }
+
+    /**
+     * 把光标瞄准某个绝对槽位的中心，并点一次左键。
+     *
+     * <p><b>为什么"瞄准"这一步是真的：</b>种子写进输入层之后，
+     * 剩下的链路全是产品代码 —— 帧缓冲换算、{@code InventoryLayout#hitTestAny}、
+     * {@code InventoryInteraction}。自测只替换了"玩家的手在哪里"，
+     * 没有替换"游戏怎么判断点到哪一格"。这与 M1 的 TR7 应对方案是同一条原则。
+     *
+     * <p>注意右键分堆属 M3，因此这里只点左键。
+     */
+    private void aimAndClick(int slot) {
+        double[] center = host.inventorySlotCenterWindow(slot);
+        host.seedCursorPosition(center[0], center[1]);
+        host.injectMouseButton(GLFW.GLFW_MOUSE_BUTTON_LEFT, true);
+        host.injectMouseButton(GLFW.GLFW_MOUSE_BUTTON_LEFT, false);
+    }
+
+    /** 背包里第一个非空槽位（按绝对索引扫 36 格）；没有则 −1。 */
+    private int firstNonEmptySlot() {
+        Inventory inv = host.player().inventory();
+        for (int i = 0; i < Inventory.SLOT_COUNT; i++) {
+            if (!inv.slot(i).isEmpty()) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** 背包里第一个空槽位（按绝对索引扫 36 格）；没有则 −1。 */
+    private int firstEmptySlot() {
+        Inventory inv = host.player().inventory();
+        for (int i = 0; i < Inventory.SLOT_COUNT; i++) {
+            if (inv.slot(i).isEmpty()) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /**
