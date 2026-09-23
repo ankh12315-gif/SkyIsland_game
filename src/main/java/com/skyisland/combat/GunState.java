@@ -18,10 +18,15 @@ import com.skyisland.player.Inventory;
  *
  * <p><b>"完成前不转移"这条不是优化，是正确性的前提。</b>
  * 直觉写法是"按 R 立刻把弹药从背包搬进弹匣，然后放个 1.2 秒的动画"。
- * 那样一旦换弹被打断，弹药已经搬完了，只能靠额外保存"换弹开始前的快照"来回滚 ——
+ * 那样"换弹中途弹药还没到位"这件事就只能靠额外保存"换弹开始前的快照"来还原 ——
  * 而快照一旦漏掉某个字段就会静默丢子弹。
- * 先不搬、完成时一次搬，则"打断"自动等价于"什么都没发生"，
- * 不需要任何回滚代码。{@link #cancelReload()} 因此只是清一个标志位。
+ * 先不搬、完成时一次搬，则"换弹进行到一半"读到的永远是"弹匣没变、背包没变"，
+ * 不存在任何需要在半途回滚的中间态。
+ *
+ * <p><b>M2.2 修订：换弹不再被移动打断。</b>v0.3.2 原本规定"移动打断换弹 = 取消换弹"，
+ * 现已<b>废止</b>（PRD 5.4.3 该行改写为"移动不打断换弹"）：按 R 之后照常行走，
+ * 1.2 秒走满即完成上膛。因此本类<b>没有</b>取消换弹的方法，也没有"被打断计数" ——
+ * 一次换弹只有一个终点：{@link #completeReload(Inventory)}。
  *
  * <p><b>满弹匣换弹已被 v0.3.2 废止</b>（PRD 5.4.3 明文："v0.3.1 的「满弹匣换弹允许、
  * 弹出剩余弹药不损失（回背包）」口径作废"）。用户裁决 A3 采纳了这条。
@@ -30,7 +35,8 @@ import com.skyisland.player.Inventory;
  * <h2>M2.1：后备弹药改为「无限」（Combat Prototype 口径）</h2>
  * <p><b>决定（M2.1-A）：默认口径是无限后备</b> —— 见 {@link #INFINITE_RESERVE_DEFAULT}。
  * 这条改动只放宽"弹药从哪来"，<b>不动"必须由玩家按 R 上膛"这条节奏</b>：
- * 弹匣仍是 12 发，打空仍要按 R，换弹仍是 1.2 秒且仍可被移动打断。
+ * 弹匣仍是 12 发，打空仍要按 R，换弹仍是 1.2 秒。
+ * （M2.2 起这句不再附加"可被移动打断" —— 见上文修订段：边走边换是允许的。）
  * 战斗原型阶段要观测的是"枪战的手感与可读性"，而不是"资源管理的压力测试"；
  * 让玩家在 24 发之后只能站着挨咬，会让每一次批量试玩都在第 25 发戛然而止。
  *
@@ -38,7 +44,7 @@ import com.skyisland.player.Inventory;
  * <ol>
  *   <li><b>"补回来"在语义上说谎。</b>后备既然是无限的，就不该有一次临时的扣减：
  *       那会在两条失败路径上变成真的丢子弹 —— {@code consumeItem} 返回 false（库存不足）
- *       或补给过程被异常打断时，"先扣"已经发生而"补回"没跑到；</li>
+ *       或补给过程中途失败时，"先扣"已经发生而"补回"没跑到；</li>
  *   <li><b>它凭空造出一个中间非法态。</b>存档里 {@code Slot.count <= 0} 会被
  *       {@code PlayerState.validate()} 判为非法（见 {@code save/PlayerState}）。
  *       每帧多一点 I/O 我不在乎，我在乎的是"存在某一瞬间存档是非法的"这件事：
@@ -94,7 +100,7 @@ public final class GunState {
         NO_AMMO,
         /** 射速节流中（0.25 秒一发）。 */
         COOLDOWN,
-        /** 换弹期间不得开枪（PRD 5.4.3「换弹打断」行）。 */
+        /** 换弹期间不得开枪（PRD 5.4.3：换弹期间不得开枪）。 */
         RELOADING
     }
 
@@ -117,7 +123,6 @@ public final class GunState {
     private int shotsFired;
     private int dryFires;
     private int reloadsCompleted;
-    private int reloadsCancelled;
 
     /**
      * 按 {@link #INFINITE_RESERVE_DEFAULT} 建一个枪械状态（正常流程走这里）。
@@ -206,6 +211,7 @@ public final class GunState {
         return reloading;
     }
 
+
     /** 换弹进度 0..1（HUD 进度条用）。 */
     public double reloadProgress01() {
         if (!reloading) {
@@ -265,33 +271,20 @@ public final class GunState {
     }
 
     /**
-     * 取消换弹。
-     *
-     * <p>因为弹药从未提前转移，"恢复原状"不需要任何回滚动作 —— 只需清标志。
-     * 这正是规则④（完成前不得提前转移弹药）带来的简化。
-     */
-    public void cancelReload() {
-        if (reloading) {
-            reloading = false;
-            reloadRemaining = 0;
-            reloadsCancelled++;
-        }
-    }
-
-    /**
      * 推进时间。
      *
-     * @param moving 玩家本步是否在移动；移动即取消换弹（PRD 5.4.3「换弹打断」）
+     * <p><b>没有 {@code moving} 参数，也不接受任何"I/O 之外的中断信号"。</b>
+     * M2.2 废止"移动打断换弹"后，换弹进度只由时间推进决定：
+     * 每步扣掉 {@code dt}，扣到 0 就完成上膛。玩家在换弹期间行走、跳跃、切视角，
+     * 都不会改变这条时间线 —— 这正是"边走边换"的实现方式。
+     *
+     * @param inventory 换弹完成时用来取后备弹药（无限口径下只读不写）
      */
-    public void tick(double dt, boolean moving, Inventory inventory) {
+    public void tick(double dt, Inventory inventory) {
         if (fireCooldown > 0) {
             fireCooldown = Math.max(0, fireCooldown - dt);
         }
         if (!reloading) {
-            return;
-        }
-        if (moving) {
-            cancelReload();
             return;
         }
         reloadRemaining -= dt;
@@ -351,10 +344,6 @@ public final class GunState {
 
     public int reloadsCompleted() {
         return reloadsCompleted;
-    }
-
-    public int reloadsCancelled() {
-        return reloadsCancelled;
     }
 
     @Override

@@ -103,12 +103,6 @@ public final class AudioFeedback implements CombatController.Listener {
             }
 
             @Override
-            public void onReloadCancelled() {
-                self.onReloadCancelled();
-                next.onReloadCancelled();
-            }
-
-            @Override
             public void onMessage(String textKey, Object... args) {
                 self.onMessage(textKey, args);
                 next.onMessage(textKey, args);
@@ -155,12 +149,6 @@ public final class AudioFeedback implements CombatController.Listener {
     @Override
     public void onReloadCompleted(int magazineAmmo, int magazineSize) {
         // 见 onReloadRequest：统合音已经在开始时刻播过，这里刻意不再补第二声。
-    }
-
-    @Override
-    public void onReloadCancelled() {
-        // 同上：不给"失败"配音。移动打断换弹的反馈是"声是播了一半就停了"，
-        // 这本身就是最准确的表达 —— 再补一个失败音反而会把"取消"说成"出错"。
     }
 
     @Override

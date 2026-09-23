@@ -302,6 +302,10 @@
 > 全部未实现。其中 **20 条**能引到登记出处（枪械/弹药/换弹在 M1 §6.4 与 M1.5 §6.4 均被点名），
 > **6 条**属"表现层反馈"且**无人登记**（E1 §2.3 已点名，本报告沿用并补全），
 > **3 条**因 PRD 内部冲突未裁决判 `CONFLICT`，**1 条**键位已预置判 `COVERED_WITH_TODO`。
+>
+> **M2.2 局部更新（2026-09-23）**：`MVP-COMBAT-020` 一行已按 PRD v0.3.2-r1 改写为
+> 「移动**不**打断换弹」并判 `COVERED`。**本节其余行的"未实现"是 M1.5 时点的快照，未随 M2 重算** ——
+> 本节不是当前实现状态的来源，只用于核对"当初每条需求有没有登记出处"。
 
 | Requirement ID | PRD 原文/章节 | 系统 | 要求 | 原计划阶段 | 当前实现状态 | 自动测试 | 人工证据 | Technical Debt | 最晚关闭阶段 | 判定 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -324,7 +328,7 @@
 | MVP-COMBAT-017 | §5.4.3 / L519 | COMBAT | 手枪换弹耗时 1.2 秒 | M2 | NOT_IMPLEMENTED | 无 | 无 | R2「换弹」+ R11（M2 通过标准第 3 条） | M2 | DEFERRED_WITH_RECORD |
 | MVP-COMBAT-018 | §5.4.3 / L520 | COMBAT | 弹匣未满且有弹药才可换弹 | M2 | NOT_IMPLEMENTED | 无 | 无 | 同 017 | M2 | DEFERRED_WITH_RECORD |
 | MVP-COMBAT-019 | §5.4.3 / L520 | COMBAT | 换弹过程中不能开枪 | M2 | NOT_IMPLEMENTED | 无 | 无 | 同 017 | M2 | DEFERRED_WITH_RECORD |
-| MVP-COMBAT-020 | §5.4.3 / L520 | COMBAT | 移动可打断换弹 | M2 | NOT_IMPLEMENTED | 无 | 无 | 同 017 | M2 | DEFERRED_WITH_RECORD |
+| MVP-COMBAT-020 | §5.4.3 / L520 → **v0.3.2-r1 行 525** | COMBAT | **移动不打断换弹**（原「移动可打断换弹」，M2.2 修订） | M2 → M2.2 | IMPLEMENTED（M2.2） | `CombatControllerTest.walkingDoesNotInterruptReload`、`CombatCoreTest.reloadRunsToCompletionOnAFixedStepClock` | M2 自测阶段 6/15 `RELOAD_WHILE_WALKING`：边走边换步数 ≥ 70、位移 ≥ 3 格、完成事件恰 1 次 | **语义按 v0.3.2-r1 读**：PRD 5.4.3 已把「移动打断换弹 = 取消换弹」废止；本行原写的"移动可打断换弹"是 v0.3.2 旧口径，不得再据此判缺口 | — | COVERED |
 | MVP-COMBAT-021 | §5.4.3 / L521 | COMBAT | 满弹匣换弹允许且余弹回背包 | M2 | NOT_IMPLEMENTED | 无 | 无 | **DRIFT-A-06：弹药不足时"完全拒绝" vs "部分填充" PRD 未定义，TECH §M.5 单方取"完全拒绝"** | 待裁决 | **CONFLICT** |
 | MVP-COMBAT-022 | §5.4.3 / L522 | COMBAT | 32 格内伤害 100% | M2 | NOT_IMPLEMENTED | 无 | 无 | R2 枪械 + R11（M2 通过标准第 5 条） | M2 | DEFERRED_WITH_RECORD |
 | MVP-COMBAT-023 | §5.4.3 / L522 | COMBAT | 超程每格 ×0.9，下限 20% | M2 | NOT_IMPLEMENTED | 无 | 无 | 同 022 | M2 | DEFERRED_WITH_RECORD |

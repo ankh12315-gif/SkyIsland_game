@@ -5,11 +5,11 @@
 | 里程碑 | **M2.2 UI/UX & Inventory Foundation** |
 | 版本号 | `0.3.2-M2_2-UI-INVENTORY` |
 | 提交 tip | `b3b5086`（本报告自身的提交见 §12；报告落笔时工作区**干净**） |
-| 冻结 jar | `tmp/selftest-jar/skyisland-frozen.jar`（**5 736 020 B**）；源 = `target/skyisland-0.3.2-M2_2-UI-INVENTORY.jar` |
-| 门禁 | `clean package` **924 / 0**；gate-m1 **27 / 0**；gate-ui **75 / 0**；gate-m2 **160 / 0**（`m2_combat_closure=true`、`ui_selftest_failures=0`） |
-| 运行根目录 | `tmp/gate-runs/20260923-103419`（三门禁各自从**空**存档目录冷启动） |
+| 冻结 jar | `tmp/selftest-jar/skyisland-frozen.jar`（**5 736 020 B**，M2.2 主验收）→ 换弹口径修订后重烤为 **5 735 737 B**；源 = `target/skyisland-0.3.2-M2_2-UI-INVENTORY.jar` |
+| 门禁 | `clean package` **924 / 0**；gate-m1 **27 / 0**；gate-ui **75 / 0**；gate-m2 **160 / 0**（`m2_combat_closure=true`、`ui_selftest_failures=0`）。换弹口径修订后（§12.1）**原数字全部复现** |
+| 运行根目录 | M2.2 主验收 `tmp/gate-runs/20260923-103419`；换弹口径修订后复跑 **`tmp/gate-runs/20260923-111426`**（三门禁各自从**空**存档目录冷启动） |
 | 性能 | 1920×1080 / VSync off / **背包全程开启**：p95 **0.606 ms**、`>50 ms = 0`、`perf_gate_met = true`（终版冻结 jar，`tmp/m2_m22_perf_invD.stdout.txt`） |
-| 结论 | **代码与自动门禁 PASS**；**真人 Gate（试玩清单 A–J）待执行** |
+| 结论 | **代码与自动门禁 PASS**；**真人 Gate（试玩清单 A–K，共 81 条）待执行** |
 
 ---
 
@@ -230,7 +230,7 @@ inventory        = INV[ - ... - >skyisland:pistolx1 skyisland:pistol_ammo x24  -
 
 ---
 
-## 9. 真人 Gate（A–J）—— **待执行**
+## 9. 真人 Gate（A–K）—— **待执行**
 
 **这是本轮唯一未关闭的验收项。** 前置：从冻结 jar 启动（长任务一律用冻结产物）、**鼠标静止**时跑自测、**每次开新存档目录**。
 
@@ -248,6 +248,10 @@ inventory        = INV[ - ... - >skyisland:pistolx1 skyisland:pistol_ammo x24  -
 | H | 性能（开背包 60s 不比不开更差 / 反复开关 20 次不泄漏） | 5 |
 | I | M2.1 遗留真人项（**HUD 与菜单改过，必须重跑**） | 8 |
 | J | UI 音效（**J1–J3 只能靠耳朵**，见 §7） | 6 |
+| K | 换弹与移动（**M2.2 修订口径**：边走边换走满 1.2 s；反向对照"换弹期间仍不能开枪"） | 5 |
+
+> **§K 是主验收之后追加的**（换弹口径修订，见 §12.1）。它的 K1 就是旧 A5 的反面：
+> 旧 A5 期望"移动中按 R 会被打断"，K1 期望"一路走照样换完" —— **失败长相正好互换**。
 
 **特别注意两类"假通过"**（清单原文）：
 
@@ -260,7 +264,7 @@ inventory        = INV[ - ... - >skyisland:pistolx1 skyisland:pistol_ammo x24  -
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| **真人 Gate A–J** | **未执行** | 本轮唯一还差的一步（§9） |
+| **真人 Gate A–K** | **未执行** | 本轮唯一还差的一步（§9） |
 | 音高方向（open/close 上行/下行） | **无机器判据** | 四种仪器全失败（§7），只能靠真人听；若本机无声卡，记"未验证"而非"通过" |
 | 背包**右键分堆** | **未做，属 M3** | 明确不做：写了不接线就是死代码，本项目禁止 |
 | 合成 / 配方 / 第二种怪物与武器 / 岛屿生成 / 昼夜循环 / 蹲下 | **未动，仍归 M3** | 未静默缩小 |
@@ -283,7 +287,7 @@ inventory        = INV[ - ... - >skyisland:pistolx1 skyisland:pistol_ammo x24  -
 | 6 | **HUD 改造** | 完成分层：F3 调试浮层与玩法层分离；五种物品图标可区分；**压暗单点化**（不再压暗生命条） |
 | 7 | **Save/Load** | 完成：36 格持久化 + **v1→v2 槽位迁移**；实证 `saveVersion: 2`、手枪绝对槽 0、弹药绝对槽 28、泥土绝对槽 29 |
 | 8 | **Test Count** | 单元 **924 / 0**；gate-m1 **27 / 0**；gate-ui **75 / 0**；gate-m2 **160 / 0**（`m2_combat_closure=true`） |
-| 9 | **Human Playtest** | **未执行** —— 见 §9，清单 A–J 共 76 条 |
+| 9 | **Human Playtest** | **未执行** —— 见 §9，清单 A–K 共 81 条（§K 为换弹口径修订后新增的 5 条，见 §12.1） |
 | 10 | **Bug / Technical Debt** | 见 §10：6 条历史死 key（有登记）、`pollMenuNav` 坐标口径旧债、右键分堆归 M3、音高方向无机器判据 |
 | 11 | **M3 Readiness** | **就绪**：UI 状态机（MAIN_MENU / SETTINGS / PLAYING / PAUSED / INVENTORY）与渲染分层已稳定，背包模型与槽位渲染器可被 M3 合成界面复用；未越界实现任何 M3 内容 |
 
@@ -322,6 +326,105 @@ c31e4ff  feat(ui): M2.2 菜单中文化 + 三屏重构（继续/新建世界、�
 | gate-m1 | 27 | 0 |
 | gate-ui | 75 | 0 |
 | gate-m2 | 160 | 0（`m2_combat_closure=true`） |
+
+---
+
+## 12.1 收尾后追加（2026-09-23）：换弹不再被移动打断（PRD v0.3.2-r1）
+
+> 本节记的是一次**在 M2.2 主验收之后**发生的口径修订。它**不重开 M2.2 的范围**（不新增玩法、不新增需求），
+> 但因为它改的是 PRD【MVP 必须】行，必须有正式记录，且必须重跑门禁。
+
+### 12.1.1 改了什么
+
+| 项 | 内容 |
+|---|---|
+| **用户裁决** | 「换弹我想要在行走中也要能换弹」→ 采纳口径「**彻底边走边换**」：删掉整套"换弹被打断"机制，不留死代码 |
+| **PRD** | `PRD_v0.3.2.md` 5.4.3 原「换弹打断（v0.3.2 新增）：移动打断换弹 = **取消换弹**」**作废** → 「换弹与移动：**移动不打断换弹**」（v0.3.2-r1 行 525）；新增 §1.1 修订记录行；表后补 4 条说明块 |
+| **为什么废止** | 玩家无法从界面区分"被移动取消了换弹"与"换弹还没走完"（UI 上都是"没换完"），该规则**不可读**；且它把换弹从一条时间线变成带隐藏失败态的流程。规则④（完成前不转移弹药）原是为"取消零回滚成本"而设，取消口废止后它退化为更简单的不变量 |
+| **未受影响** | 规则①②③、换弹时长 1.2 s、「换弹期间不得开枪」、满弹匣换弹废止 |
+
+### 12.1.2 删掉的死代码（本项目禁止"读起来合理、永远不执行"的代码）
+
+| 删除项 | 位置 |
+|---|---|
+| `cancelReload()`、`reloadsCancelled` 字段 + getter | `GunState.java` |
+| `tick(double, boolean moving, Inventory)` 的 `moving` 参数与取消分支 | `GunState.java`（签名收敛为 `tick(double, Inventory)`） |
+| `moving` / `cancelledBefore` 与取消回调分支 | `CombatController.step` |
+| `Listener.onReloadCancelled()` + 全部 5 处实现 | `CombatController`、`AudioFeedback`、`SkyIslandGame`、`M2CombatSelfTest`、两处匿名类 |
+| `Localization.MSG_RELOAD_INTERRUPTED`（含文案"换弹被打断"） | `Localization.java` —— 由死 key 守门人 `DeadLocalizationKeyTest` 保证必须整体删除而非加白名单 |
+| 自测阶段 `RELOAD_INTERRUPTED` → **`RELOAD_WHILE_WALKING`** | `M2CombatSelfTest.java`（阶段数仍 15、编号仍 6/15，**刺激序列不变、期望相反**） |
+| 文档口径同步 | `PRD_v0.3.2_CHANGELOG.md` §R1、`TECH_DESIGN_v0.1.1.md` §X′ + E-21、`README.md`、`MVP_REQUIREMENTS_TRACEABILITY.md`（`MVP-COMBAT-020` → `COVERED`）、`M2_1_PLAYTEST_CHECKLIST.md` A5 作废、`M2_2_PLAYTEST_CHECKLIST.md` 新增 §K |
+
+### 12.1.3 断言：三段证据链
+
+| 层级 | 断言 | 位置 |
+|---|---|---|
+| 内核（无移动概念） | `reloadRunsToCompletionOnAFixedStepClock` —— 按固定步长走 72 步必完成、弹药只在完成时转移 | `CombatCoreTest`（替代原 `movingCancelsReloadAndLosesNothing`） |
+| 接线（有移动意图） | `walkingDoesNotInterruptReload` —— 全程喂"按住 W"意图，换弹仍完成 | `CombatControllerTest`（替代原 `movingCancelsReloadAndChangesNothing`） |
+| 端到端（真窗口） | 自测阶段 6/15 `RELOAD_WHILE_WALKING`，9 条 | `M2CombatSelfTest` |
+
+**为什么必须分三层**：移动是 `PlayerIntent` 的概念，`GunState` 根本收不到它 —— "收不到"没法用行为断言表达，只能靠"参数表里没有它"这个结构事实。所以内核层守"换弹是一条纯时间线"，接线层守"移动意图喂进来也不改变这条时间线"，端到端层守"真窗口里走了 5 格还照样换完"。
+
+### 12.1.4 端到端实测读数（gate-m2，`tmp/gate-runs/20260923-111426`）
+
+```
+阶段 6/15 边走边换弹（移动不打断·弹药不提前转移）  预算 360 步
+PASS · 连续开火把弹匣打空                              magazineAmmo=0
+PASS · 按 R 之后立刻进入换弹态                          第 167 步按下 R，同一逻辑步内观测
+PASS · 换弹期间全程按住 W 且未被取消（≥ 70 步）          边走边换步数=72（= 1.2 s / (1/60) 满值）
+PASS · 换弹期间确实产生了水平位移（≥ 3.0 格）            位移=4.975 格（理论 ≈ 4.94，扣加速段）
+PASS · 边走边换：换弹走完全程（收到一次 onReloadCompleted） 完成事件数=1
+PASS · 换弹完成那一刻弹匣已补满 = 12                     magazineAmmo=12
+PASS · 换弹走完后弹匣 = 12（完成这一刻才转移）            magazineAmmo=12
+PASS · 换弹走完后换弹态已退出                            isReloading=false
+PASS · 打空 + 边走边换全程后备弹药未被扣减（仍为 24）      打空后=24 换弹后=24
+```
+
+**旁证**：`reload` 音频事件 = **2**（`RELOAD_FULL` 与 `RELOAD_WHILE_WALKING` 各按一次 R 且被受理），
+断言已由 `reload ≥ 1` 收紧为 `reload ≥ 2`。
+
+### 12.1.5 反向验证（两轮，都做了"注入 → 确认精确变红 → 恢复"）
+
+| # | 注入 | 结果 |
+|---|---|---|
+| A | 把取消分支加回 `CombatController.step`（`intent.hasMovement()` → `cancelReload`） | ① `walkingDoesNotInterruptReload` 在半程断言处**红**（`expected: <true> but was: <false>`）；② 同轮 M2 自测实测 `边走边换步数=1`、`完成事件数=0`、`magazineAmmo=0` → 阶段 6 红，并连锁让 SHOOT_KILL / WALL / FALLOFF / 命中音效共 25 条红（**因为这正是旧口径的真实后果**）；③ `CombatCoreTest` 28/0 **保持绿** —— 印证三层证据链各自独立 |
+| B | 把完成判据改早（`reloadRemaining <= 0` → `<= 0.02`） | `reloadRunsToCompletionOnAFixedStepClock` 在「71 步仍在换弹」处**红**；`pistolReloadTakesExactlyOnePointTwoSeconds` 同时红 |
+
+两轮注入标记（`TEMP_REVERSE_VERIFY`）已全部删除；`UiAudioWiringTest.noReverseVerificationMarkerIsLeftBehindInMainSources` 扫 `src/main/java` 复核**零残留**。
+
+### 12.1.6 修订后门禁（最终代码，冷启动空存档目录）
+
+| 检查 | 结果 |
+|---|---|
+| `clean package`（surefire 全量） | **924 / 0**，BUILD SUCCESS |
+| gate-m1 | **27 / 0** |
+| gate-ui | **75 / 0** |
+| gate-m2 | **160 / 0**，`m2_selftest_passed=true`、`m2_combat_closure=true` |
+| CJK 字模 | `CjkFontTest` **12 / 0** —— 本轮新增的中文**全部落在既有字模内**，未触发重烤 |
+| 运行根目录 | `tmp/gate-runs/20260923-111426` |
+| 冻结 jar | `tmp/selftest-jar/skyisland-frozen.jar`（5 735 737 B） |
+
+> **数字与 M2.2 主验收完全一致（924 / 27 / 75 / 160）。** 换弹口径修订**没有**改变断言总数：
+> 阶段 6 仍是 9 条（4 条被替换 + 1 条新增移位数），Listener 从 8 个方法减到 7 个，
+> 对应的 `tee` 完整性测试与 `AudioFeedback.andThen` 顺序测试同步把"8 个事件 × 2 = 16 条"收紧为"7 × 2 = 14 条"。
+
+### 12.1.7 提交状态
+
+本次修订涉及 **18 个文件**（11 源码 + 7 文档），见 §12.1.2。**截至本报告更新时，它们尚未提交**
+（工作区改动 = 这 18 个文件）—— 提交分组建议：
+
+```
+1) fix(combat): 换弹不再被移动打断（删 cancelReload / reloadsCancelled / onReloadCancelled / MSG_RELOAD_INTERRUPTED）
+   GunState.java, CombatController.java, AudioFeedback.java, AudioEvent.java, Localization.java, SkyIslandGame.java
+2) test(m2.2): 三段证据链 —— reloadRunsToCompletionOnAFixedStepClock / walkingDoesNotInterruptReload /
+   自测阶段 RELOAD_WHILE_WALKING（含 tee 与音频顺序测试的 8→7 收紧）
+   CombatCoreTest.java, CombatControllerTest.java, M2CombatSelfTest.java, M2CombatSelfTestTeeTest.java,
+   AudioFeedbackWiringTest.java
+3) docs(prd): v0.3.2-r1 —— 5.4.3「移动不打断换弹」+ 变更日志 §R1 + TECH §X′/E-21 + 溯源矩阵 + 试玩清单 §K
+   PRD_v0.3.2.md, PRD_v0.3.2_CHANGELOG.md, TECH_DESIGN_v0.1.1.md, README.md,
+   MVP_REQUIREMENTS_TRACEABILITY.md, M2_1_PLAYTEST_CHECKLIST.md, M2_2_PLAYTEST_CHECKLIST.md,
+   M2_2_UI_INVENTORY_REPORT.md
+```
 
 ---
 

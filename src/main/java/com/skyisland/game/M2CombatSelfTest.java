@@ -160,7 +160,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         MINE_BLOCKED_WHILE_HOLDING_GUN("持枪时左键是开火不是挖掘"),
         DRY_FIRE("空弹匣空枪"),
         RELOAD_FULL("完整换弹（1.2 秒）"),
-        RELOAD_INTERRUPTED("移动打断换弹（弹药不提前转移）"),
+        RELOAD_WHILE_WALKING("边走边换弹（移动不打断·弹药不提前转移）"),
         AIM("瞄准（FOV 45/70、移动速度 60%）"),
         SPAWN_AND_APPROACH("刷怪与追击"),
         SHOOT_KILL("逐发击中并致死（20→12→4→0）"),
@@ -200,15 +200,13 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             // 同时保证"完成事件"一定在阶段内被观测到（否则断言读到的永远是"未完成"）。
             90,
             /*
-             * RELOAD_INTERRUPTED：预算 = 打空 + 按键 + 移动 + 按键 + 走完一次换弹。
+             * RELOAD_WHILE_WALKING：预算 = 打空 + 按键 + 全程按住 W 走满一次换弹。
              *   · 打空 12 发：射速 4 发/秒 → 发间隔 0.25 s = 15 步；12 发跨越 11 个间隔 = 165 步。
              *     浮点累减会让某个间隔退化为 16 步 → 上界 11×16 = 176 步（首发于第 0 步）。
              *   · 按 R：1 步。
-             *   · 移动打断：产品在"移动的那一步"就取消换弹（gun.tick 先判 moving），
-             *     1 步即够；取 20 步是为了让位移本身也可观测（约 1.3 格）。
-             *   · 再次按 R：1 步。
-             *   · 走完换弹：1.2 s = 72 步，浮点上界 73 步。
-             *   合计上界 = 176 + 1 + 20 + 1 + 73 = 271 步；取 360 步（余 89 步）。
+             *   · 换弹全程按住 W：1.2 s = 72 步，浮点上界 73 步；再加 1 步把"完成事件"观测到。
+             *     ★ 这 73 步必须真的走起来：位移就是"边走边换"这条规格的物证（见 checkReloadWhileWalking）。
+             *   合计上界 = 176 + 1 + 74 = 251 步；取 360 步（余 109 步，留足位移与观测窗口）。
              */
             360,
             /*
@@ -273,8 +271,25 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private static final double SPAWN_Y = TestWorldGenerator.spawnY();
     private static final double SPAWN_Z = TestWorldGenerator.spawnZ();
 
-    /** 换弹打断阶段：移动多少步（预算算式见 STAGE_BUDGET）。 */
-    private static final int INTERRUPT_MOVE_STEPS = 20;
+    /**
+     * 边走边换阶段：换弹期间至少要走多少步，才足以证明"全程都在走"。
+     *
+     * <p>换弹 1.2 s = 72 步（浮点上界 73）。本阶段在按 R 之后<b>每一步</b>都按 W，
+     * 因此实测值应落在 72–73。取 70 而不是 72 作阈值，是为了容忍
+     * "完成事件要到下一步才被观测到"这一确定性的时序差（见 {@code intentFor} 内注释）；
+     * 而任何"只走了一两步换弹就被取消"的回归会立刻掉到阈值以下，因此它仍然有鉴别力。
+     */
+    private static final int MIN_WALK_STEPS_WHILE_RELOADING = 70;
+
+    /**
+     * 边走边换阶段：换弹期间至少要走出多少格，才足以证明"人是真在动"。
+     *
+     * <p>移速 4.317 格/秒（PRD 5.4.2 基础移速），1.2 s 理论 ≈ 5.2 格；
+     * 扣掉加速段（v(t) = target·(1−e^(−18t))，前 0.2 s 才爬到目标速度）的亏欠，
+     * 实测约 4.9 格。阈值取 3.0 格：它要能区分"真的走起来了"与
+     * "intent 写了 W 但人被挡在原地"，又不至于被加速段的那零点几格判红。
+     */
+    private static final double MIN_WALK_DISTANCE_WHILE_RELOADING = 3.0;
 
     /** 石墙（跨 x ∈ [−2,2]、高 2 格）所在的 z 层。 */
     private static final int WALL_Z = -3;
@@ -331,7 +346,6 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private int eventEntityHits;
     private int eventDryFires;
     private int eventReloadCompletions;
-    private int eventReloadCancellations;
 
     /** 最近一次 {@code onBlockHit} 的方块 runtimeId（用于断言"打在石头上"）。 */
     private int lastBlockHitRuntimeId = -1;
@@ -404,11 +418,6 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     }
 
     @Override
-    public void onReloadCancelled() {
-        eventReloadCancellations++;
-    }
-
-    @Override
     public void onMessage(String textKey, Object... args) {
         // 提示文案由 Localization 负责，自测不重复断言 UI 文案（那不是 PRD 12.3 #1 的内容）。
     }
@@ -423,7 +432,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      * 因为产品的反馈里没有任何会改变状态的动作（它只碰表现层），
      * 而自测记录里可能写断言 —— 先做完产品该做的事，记录才描述的是同一时刻的状态。
      *
-     * <p>做成静态工厂而不是让 {@code SkyIslandGame} 自己写一个 8 方法的转发类：
+     * <p>做成静态工厂而不是让 {@code SkyIslandGame} 自己写一个把接口方法逐个转发的类：
      * 监听器接口每加一个事件，转发类就要跟着改，漏掉一个方法会静默丢掉那类事件，
      * 而"自测没看见事件"与"事件没发生"在日志上是一样的。
      */
@@ -469,12 +478,6 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             }
 
             @Override
-            public void onReloadCancelled() {
-                first.onReloadCancelled();
-                second.onReloadCancelled();
-            }
-
-            @Override
             public void onMessage(String textKey, Object... args) {
                 first.onMessage(textKey, args);
                 second.onMessage(textKey, args);
@@ -506,7 +509,6 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private int stageStartEventEntityHits;
     private int stageStartEventDryFires;
     private int stageStartEventReloadCompletions;
-    private int stageStartEventReloadCancellations;
     private long stageStartBreakParticles;
     private int stageStartEntitySize;
     private int stageStartEntityAlive;
@@ -523,12 +525,26 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private double monsterSpawnY;
     private double monsterSpawnZ;
 
-    private int interruptPhase;
-    private int interruptMoveSteps;
+    /**
+     * 边走边换阶段的分步推进相位：0=打空弹匣，1=按 R，2=按住 W 走完换弹，3=收尾。
+     */
+    private int walkPhase;
+    /**
+     * 换弹期间"确实在换弹 且 确实在按 W"的逻辑步数（逐步累加）。
+     *
+     * <p>它是"边走边换"最直接的一条物证：旧口径（移动即取消）下这个数只能停在 1 步 ——
+     * 因为第二步起 {@code isReloading()} 已经是 false，累加器不再增长。
+     */
+    private int walkStepsDuringReload;
+    /** 按 R 那一步的脚位（用来量换弹期间的总位移）。 */
+    private double walkStartX;
+    private double walkStartZ;
+    /** 换弹完成那一刻的累计水平位移（格）；由相位 2→3 时采样。 */
+    private double walkDistanceDuringReload = -1;
     private int magAfterEmptying = -1;
     private int reserveAfterEmptying = -1;
-    private int magAfterInterrupt = -1;
-    private int reserveAfterInterrupt = -1;
+    /** 换弹走完那一刻的弹匣读数（期望 = 满匣）。 */
+    private int magAtCompletion = -1;
 
     private double aimStartZ;
     private double aimMoveDistance;
@@ -722,7 +738,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             }
             case BREAK_PARTICLES -> observeBreak(player);
             case DEATH_AND_RESPAWN -> observeDeath(player);
-            case RELOAD_FULL, RELOAD_INTERRUPTED -> observeReloadStarted(player);
+            case RELOAD_FULL, RELOAD_WHILE_WALKING -> observeReloadStarted(player);
             default -> {
             }
         }
@@ -741,7 +757,8 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      * 而该步执行期间的 {@code stageStep++} 不会回写 {@code currentStep} ——
      * 也就是说 {@code observeAfterStep()} 看到的 {@code currentStep} 仍然是"这一步"的步号。
      * 首轮实现按 +1 写，结果 RELOAD_FULL 侥幸命中（观察落在下一步、那时换弹还没结束），
-     * 而 RELOAD_INTERRUPTED 稳定失败（下一步已经在按 W，换弹恰好被那一步取消）。
+     * 而当时的 RELOAD_INTERRUPTED 稳定失败（下一步已经在按 W，那一步把换弹取消了）——
+     * 该阶段在 M2.2 已改写成"边走边换"（走路不再取消换弹），但这条时序判据不变。
      */
     private void observeReloadStarted(Player player) {
         if (reloadRequestedAtStep >= 0 && currentStep == reloadRequestedAtStep) {
@@ -762,7 +779,6 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         stageStartEventEntityHits = eventEntityHits;
         stageStartEventDryFires = eventDryFires;
         stageStartEventReloadCompletions = eventReloadCompletions;
-        stageStartEventReloadCancellations = eventReloadCancellations;
         stageStartBreakParticles = host.combatFx().totalBreakParticles();
         stageStartEntitySize = host.entities().size();
         stageStartEntityAlive = host.entities().aliveCount();
@@ -775,7 +791,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         }
 
         // 每个阶段开始时重置"本阶段的按键时点"记录，避免跨阶段串味。
-        // reloadingObservedAfterRequest 必须一起清：它被 RELOAD_FULL 与 RELOAD_INTERRUPTED
+        // reloadingObservedAfterRequest 必须一起清：它被 RELOAD_FULL 与 RELOAD_WHILE_WALKING
         // 共用，不清的话第二个阶段会读到第一个阶段留下的 true 而永远"通过"。
         reloadRequestedAtStep = -1;
         reloadingObservedAfterRequest = false;
@@ -864,39 +880,44 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 yield PlayerIntent.NONE;
             }
 
-            case RELOAD_INTERRUPTED -> {
+            case RELOAD_WHILE_WALKING -> {
                 GunState gun = host.combat().existingGun(player);
-                if (interruptPhase == 0) {
+                if (walkPhase == 0) {
                     // ① 按住左键打空 12 发（射速由 GunState 节流）
                     if (gun != null && gun.magazineAmmo() > 0) {
                         yield PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, false);
                     }
-                    interruptPhase = 1;
+                    walkPhase = 1;
                     magAfterEmptying = gun == null ? -1 : gun.magazineAmmo();
                     reserveAfterEmptying = player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID);
                     yield PlayerIntent.NONE;
                 }
-                if (interruptPhase == 1) {
-                    // ② 按 R 开始换弹
-                    interruptPhase = 2;
+                if (walkPhase == 1) {
+                    // ② 按 R 开始换弹，并记下起点脚位（后面用来量"边走边换"的位移）
+                    walkPhase = 2;
                     reloadRequestedAtStep = currentStep;
+                    walkStartX = player.position().x;
+                    walkStartZ = player.position().z;
                     yield PlayerIntent.combat(0f, 0f, false, 0, 0, false, false, true);
                 }
-                if (interruptPhase == 2) {
-                    // ③ 按住 W：移动即取消换弹（PRD 5.4.3「换弹打断」）
-                    if (interruptMoveSteps < INTERRUPT_MOVE_STEPS) {
-                        interruptMoveSteps++;
-                        yield PlayerIntent.combat(1f, 0f, false, 0, 0, false, false, false);
+                if (walkPhase == 2) {
+                    // 换弹已经走完（事件在上一步/本步的 combat.step 里到达）→ 收尾采样。
+                    // 判据只看"完成事件有没有到"，不依赖"玩家此刻是否还在走"：
+                    // 本阶段从按 R 之后一路按着 W，因此完成必然发生在行走中。
+                    if (eventReloadCompletions - stageStartEventReloadCompletions >= 1) {
+                        walkPhase = 3;
+                        magAtCompletion = gun == null ? -1 : gun.magazineAmmo();
+                        walkDistanceDuringReload = Math.hypot(player.position().x - walkStartX,
+                                player.position().z - walkStartZ);
+                        yield PlayerIntent.NONE;
                     }
-                    interruptPhase = 3;
-                    yield PlayerIntent.NONE;
-                }
-                if (interruptPhase == 3) {
-                    // ④ 采样"被打断之后"的弹药读数，然后立刻再按一次 R
-                    magAfterInterrupt = gun == null ? -1 : gun.magazineAmmo();
-                    reserveAfterInterrupt = player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID);
-                    interruptPhase = 4;
-                    yield PlayerIntent.combat(0f, 0f, false, 0, 0, false, false, true);
+                    // ③ 边走边换：换弹中依然按住 W（PRD 5.4.3 M2.2 修订：移动不打断换弹）。
+                    //    计数条件把"换弹中"与"在按 W"同时钉住 —— 只有两者同时成立才累加，
+                    //    因此这个数就是"边走边换"持续了多少步的直接物证。
+                    if (gun != null && gun.isReloading()) {
+                        walkStepsDuringReload++;
+                    }
+                    yield PlayerIntent.combat(1f, 0f, false, 0, 0, false, false, false);
                 }
                 yield PlayerIntent.NONE;
             }
@@ -1200,7 +1221,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             case MINE_BLOCKED_WHILE_HOLDING_GUN -> checkMineBlocked();
             case DRY_FIRE -> checkDryFire();
             case RELOAD_FULL -> checkReloadFull();
-            case RELOAD_INTERRUPTED -> checkReloadInterrupted();
+            case RELOAD_WHILE_WALKING -> checkReloadWhileWalking();
             case AIM -> checkAim();
             case SPAWN_AND_APPROACH -> checkSpawnAndApproach();
             case SHOOT_KILL -> checkShootKill();
@@ -1373,7 +1394,30 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 reserve == 24, "reserveAmmo=" + reserve);
     }
 
-    private void checkReloadInterrupted() {
+    /**
+     * 边走边换阶段断言（M2.2 修订：移动<b>不</b>打断换弹）。
+     *
+     * <h2>这一阶段为什么从"被打断"改成了"边走边换"</h2>
+     * v0.3.2 原本规定「移动打断换弹 = 取消换弹」，本阶段当时叫
+     * {@code RELOAD_INTERRUPTED}，做法是"按 R → 按 W → 断言换弹被取消、弹药没转移"。
+     * M2.2 收尾时用户改口径为「移动不打断换弹」：按 R 之后照常行走，1.2 秒走满照样上膛。
+     * 因此本阶段改为断言<u>相反的</u>性质，而相位机保留"打空 → 按 R → 一路按 W"的形状 ——
+     * 刺激序列没变，变的是期望（旧期望=被取消，新期望=走完全程）。
+     *
+     * <h2>判据的可鉴别性（为什么不只是"换弹完成了"）</h2>
+     * <ol>
+     *   <li>{@code walkStepsDuringReload}：只有"换弹中<b>且</b>在按 W"的步才累加。
+     *       旧口径（移动即取消）下这个数会停在 1 —— 第二步起 {@code isReloading()} 已是 false，
+     *       累加器不再增长。因此"≥ 70"直接否证旧行为；</li>
+     *   <li>{@code completions == 1}：旧口径下按住 W 会把换弹在第 2 步取消，
+     *       完成事件<b>一次都不会到</b>。这条与上一条互为交叉证据；</li>
+     *   <li>{@code walkDistanceDuringReload ≥ 3 格}：排除"intent 写了 W 但人被挡住"的假通过 ——
+     *       否则"原地不动也没被打断"会被误读成"边走边换成立"。</li>
+     * </ol>
+     * 反向验证（M2.2 报告第 10 节口径）：把 {@code GunState.tick} 的 moving 分支还原，
+     * 第 1、2 条立刻变红，第 3 条也会降到 0 格附近 —— 三条一起红，不是单点巧合。
+     */
+    private void checkReloadWhileWalking() {
         Player player = host.player();
         GunState gun = host.combat().existingGun(player);
         int mag = gun == null ? -1 : gun.magazineAmmo();
@@ -1381,33 +1425,39 @@ public final class M2CombatSelfTest implements CombatController.Listener {
 
         record("连续开火把弹匣打空", magAfterEmptying == 0, "打空后 magazineAmmo=" + magAfterEmptying);
         record("按 R 之后立刻进入换弹态", reloadingObservedAfterRequest,
-                "reloadingObservedAfterRequest=" + reloadingObservedAfterRequest);
-        int cancels = eventReloadCancellations - stageStartEventReloadCancellations;
-        record("按住 W 移动使换弹被取消（收到 onReloadCancelled）", cancels == 1,
-                "取消事件数=" + cancels);
-        record("被打断后换弹态已退出", gun != null && !gun.isReloading(),
-                "isReloading=" + (gun != null && gun.isReloading()));
-        // ★ A3 规则：完成前不得提前转移弹药 —— 打断等价于什么都没发生。
-        //   弹匣这一条<b>不是</b>恒真断言：它取 0，而"打断没生效、换弹其实走完了"
-        //   会把它变成 12，因此这条 0 == 0 有真实的鉴别力，保留原样。
-        record("被打断后弹匣数与打断前一致（弹药不提前转移）",
-                magAfterInterrupt == magAfterEmptying,
-                "打断前=" + magAfterEmptying + " 打断后=" + magAfterInterrupt);
+                "reloadingObservedAfterRequest=" + reloadingObservedAfterRequest
+                        + "（在第 " + reloadRequestedAtStep + " 步按下 R，同一逻辑步内观测）");
+        // ★ 核心：旧口径下这个数只能是 1（第二步就被取消），因此它是对"移动不打断"的直接否证点。
+        record("换弹期间全程按住 W 且未被取消（边走边换步数 ≥ "
+                        + MIN_WALK_STEPS_WHILE_RELOADING + "）",
+                walkStepsDuringReload >= MIN_WALK_STEPS_WHILE_RELOADING,
+                "边走边换步数=" + walkStepsDuringReload + "（换弹 1.2 s = 72 步；旧口径下停在 1）");
+        // ★ 排除"人没动"的假通过：这条与上一条必须同时成立，"边走"才算数。
+        record("换弹期间确实产生了水平位移（≥ "
+                        + MIN_WALK_DISTANCE_WHILE_RELOADING + " 格）",
+                walkDistanceDuringReload >= MIN_WALK_DISTANCE_WHILE_RELOADING,
+                String.format("位移=%.3f 格（4.317 格/秒 × 1.2 s ≈ 5.2 格）", walkDistanceDuringReload));
         //
-        //   M2.1-A 注意：后备那一条则不同 —— 无限后备下"两次读数相同"会退化成
-        //   24 == 24 的<b>恒真断言</b>（保留原写法等于留一个假阳性）。
-        //   因此改成与开局弹药数直接比对，它断言的是更强的性质：
-        //   整个"打空 → 按 R → 移动打断"过程里，背包弹药<b>从未被扣减过</b>。
-        record("打空+换弹+打断全程后备弹药未被扣减（仍为 24）",
-                reserveAfterInterrupt == 24 && reserveAfterEmptying == 24,
-                "打空后=" + reserveAfterEmptying + " 打断后=" + reserveAfterInterrupt
-                        + "（M2.1：换弹只读后备、不写背包）");
+        //   ★ 旧口径下按住 W 会在第 2 步把换弹取消，完成事件一次都不会到 ——
+        //   因此"完成事件恰好 1 次"本身就是"移动不打断"的第二条独立证据。
         int completions = eventReloadCompletions - stageStartEventReloadCompletions;
-        record("停下之后能再次成功换弹", completions == 1, "完成事件数=" + completions);
-        record("第二次换弹完成后弹匣 = 12", mag == 12, "magazineAmmo=" + mag);
-        // 同上：M2.1 无限口径下第二次换弹同样不动背包。
-        record("第二次换弹完成后后备弹药仍是 24（始终未被扣减）", reserve == 24,
-                "reserveAmmo=" + reserve);
+        record("边走边换：换弹走完全程（收到一次 onReloadCompleted）", completions == 1,
+                "完成事件数=" + completions + "（旧口径下按住 W 会取消换弹 → 0）");
+        record("换弹完成那一刻弹匣已补满 = 12", magAtCompletion == 12,
+                "magazineAmmo=" + magAtCompletion + "（完成时即时采样）");
+        // ★ A3 规则④：完成前不得提前转移弹药 —— 完成是唯一的转移时刻。
+        //   它<b>不是</b>恒真断言：若"完成时没补"会读到 0，若"提前补了"会在完成前就变 12。
+        record("换弹走完后弹匣 = 12（弹药在完成这一刻才转移）", mag == 12, "magazineAmmo=" + mag);
+        record("换弹走完后换弹态已退出", gun != null && !gun.isReloading(),
+                "isReloading=" + (gun != null && gun.isReloading()));
+        //
+        //   M2.1-A：无限后备下换弹只读后备、不写背包 —— 因此整个"打空 → 按 R → 边走边换"
+        //   过程里，背包弹药应当<b>始终等于开局那 24 发</b>。
+        //   （这条不能写成"打断前 == 打断后"：无限口径下那是 24 == 24 的恒真断言。）
+        record("打空 + 边走边换全程后备弹药未被扣减（仍为 24）",
+                reserve == 24 && reserveAfterEmptying == 24,
+                "打空后=" + reserveAfterEmptying + " 换弹后=" + reserve
+                        + "（M2.1：换弹只读后备、不写背包）");
     }
 
     private void checkAim() {
@@ -1896,7 +1946,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      *   <li>{@code gun_empty} ← DRY_FIRE 阶段每步都会产生一次空枪事件；</li>
      *   <li>{@code gun_fire} ← SHOOT_KILL 阶段打了 3 发；</li>
      *   <li>{@code hit_enemy} ← 同上，3 发全部命中；</li>
-     *   <li>{@code reload} ← RELOAD_FULL / RELOAD_INTERRUPTED 各按过一次 R 且被受理；</li>
+     *   <li>{@code reload} ← RELOAD_FULL / RELOAD_WHILE_WALKING 各按过一次 R 且被受理；</li>
      *   <li>{@code player_hurt} ← DEATH_AND_RESPAWN 阶段掉进虚空，血量下降。</li>
      * </ul>
      * 因此"计数为 0"只有两种可能：触发链断了，或音频层没接上 —— 两者都必须判红。
@@ -1929,8 +1979,8 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         record("命中事件已送达音频层（hit_enemy ≥ 3）",
                 audit.countOf(AudioEvent.HIT_ENEMY) >= 3,
                 "hit_enemy=" + audit.countOf(AudioEvent.HIT_ENEMY));
-        record("换弹事件已送达音频层（reload ≥ 1）",
-                audit.countOf(AudioEvent.RELOAD) >= 1,
+        record("换弹事件已送达音频层（reload ≥ 2：RELOAD_FULL 与 RELOAD_WHILE_WALKING 各一次）",
+                audit.countOf(AudioEvent.RELOAD) >= 2,
                 "reload=" + audit.countOf(AudioEvent.RELOAD));
         record("玩家受伤事件已送达音频层（player_hurt ≥ 1，来自坠落死亡）",
                 audit.countOf(AudioEvent.PLAYER_HURT) >= 1,

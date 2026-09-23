@@ -88,7 +88,6 @@ class CombatControllerTest {
         int dryFires;
         final List<GunState.ReloadOutcome> reloadRequests = new ArrayList<>();
         int reloadCompleted;
-        int reloadCancelled;
 
         /** 本步的曳光：{mx,my,mz,ex,ey,ez,hitAnything}。 */
         double[] lastTracer;
@@ -137,11 +136,6 @@ class CombatControllerTest {
         @Override
         public void onReloadCompleted(int magazineAmmo, int magazineSize) {
             reloadCompleted++;
-        }
-
-        @Override
-        public void onReloadCancelled() {
-            reloadCancelled++;
         }
 
         @Override
@@ -360,8 +354,30 @@ class CombatControllerTest {
                 "M2.1 无限后备：换弹只读后备、不写背包");
     }
 
+    /**
+     * M2.2 修订：<b>边走边换</b> —— 换弹期间持续给"移动"意图，换弹照样走完全程。
+     *
+     * <h2>这条用例替代了什么</h2>
+     * M2.2 之前这里是 {@code movingCancelsReloadAndChangesNothing}：按 R 之后推 10 步移动意图，
+     * 断言 {@code gun.isReloading() == false} 且收到 {@code onReloadCancelled}
+     * （旧 PRD 5.4.3「移动打断换弹 = 取消换弹」）。该规则已被废止，
+     * PRD 5.4.3 改写为「移动不打断换弹」，{@code CombatController.step} 也移除了
+     * {@code boolean moving = intent.hasMovement()} 与随后的取消分支。
+     *
+     * <p><b>为什么这条必须放在 {@code CombatController} 这一层：</b>
+     * 只有这里能拿到 {@link PlayerIntent} —— 也就是说只有在这里，"移动"才是一个
+     * 能被喂进去的输入。{@code GunState} 的 {@code tick} 已不再接收任何移动信号
+     * （它连这个参数都没有了，见 {@code CombatCoreTest#reloadRunsToCompletionOnAFixedStepClock}）。
+     * 两级测试合起来才覆盖了完整的主张：底层"换弹只由时间驱动"，
+     * 上层"移动意图喂进来也不会改变这条时间线"。
+     *
+     * <p>刺激序列刻意保持与旧用例一致（按 R → 一路推移动意图），
+     * 只把期望反过来：旧期望"被取消"，新期望"走完全程"。
+     * <b>反向验证</b>：把 {@code if (intent.hasMovement()) { gun.cancelReload(); ... }} 放回
+     * {@code step}，{@code reloadCompleted} 会停在 0、弹匣停在 0 —— 本用例立刻变红。
+     */
     @Test
-    void movingCancelsReloadAndChangesNothing() {
+    void walkingDoesNotInterruptReload() {
         World world = world();
         Player player = armedPlayer(0.5, TestWorlds.SURFACE_FEET_Y, 0.5);
         CombatController combat = new CombatController(new EntityManager());
@@ -370,19 +386,28 @@ class CombatControllerTest {
         Recorder recorder = new Recorder();
         step(combat, world, player,
                 PlayerIntent.combat(0, 0, false, 0, 0, false, false, true), recorder);
-        assertTrue(gun.isReloading());
+        assertEquals(List.of(GunState.ReloadOutcome.STARTED), recorder.reloadRequests);
+        assertTrue(gun.isReloading(), "按 R 之后必须进入换弹态");
+        assertEquals(0, gun.magazineAmmo(), "规则④：完成前不得提前转移弹药");
 
-        // 边动边换弹：推 10 步
-        for (int i = 0; i < 10; i++) {
-            step(combat, world, player,
-                    PlayerIntent.combat(1f, 0, false, 0, 0, false, false, false), recorder);
+        // 边走边换：全程推"按住 W"的移动意图（这是旧口径下会取消换弹的刺激）。
+        PlayerIntent walking = PlayerIntent.combat(1f, 0, false, 0, 0, false, false, false);
+        for (int i = 0; i < RELOAD_STEPS / 2; i++) {
+            step(combat, world, player, walking, recorder);
         }
-        assertFalse(gun.isReloading(), "PRD 5.4.3：移动打断换弹");
-        assertEquals(1, recorder.reloadCancelled);
-        // "取消"必须等价于"什么都没发生"：弹药从未提前转移，因此不需要任何回滚
-        assertEquals(0, gun.magazineAmmo(), "弹匣内弹药回到换弹前的状态");
+        assertTrue(gun.isReloading(), "走过一半路程时换弹必须仍在进行（1.2 秒还没走满）");
+        assertEquals(0, gun.magazineAmmo(), "换弹中途弹药仍未转移（规则④）");
+
+        for (int i = 0; i < RELOAD_STEPS - RELOAD_STEPS / 2; i++) {
+            step(combat, world, player, walking, recorder);
+        }
+        assertEquals(1, recorder.reloadCompleted, "边走边换：换弹必须走完全程（旧口径下会被取消 → 0）");
+        assertFalse(gun.isReloading(), "走完之后换弹态应当退出");
+        assertEquals(12, gun.magazineAmmo(), "边走边换完成后弹匣补满 12");
+        // 全程没有任何"取消"这件事可发生 —— 该事件在 M2.2 已从监听器接口删除，
+        // 因此这里只能断言它的对立面：完成事件恰好到了一次，弹药该在的地方都在。
         assertEquals(24, player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID),
-                "后备弹药一发都不能少");
+                "M2.1 无限后备：边走边换同样只读后备、不写背包");
     }
 
     /**

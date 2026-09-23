@@ -571,10 +571,6 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         }
 
         @Override
-        public void onReloadCancelled() {
-        }
-
-        @Override
         public void onMessage(String textKey, Object... args) {
             // 走去重通道：PRD 6.7 要求"同类提示 5 秒内不重复、每条 2 秒后淡出"。
             showEventDeduped(textKey, Localization.text(textKey, args), 2.0);

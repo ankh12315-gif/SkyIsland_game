@@ -401,3 +401,54 @@
 ---
 
 *本变更日志逐条对应 v0.3.2 的 27 处实际改动。PRD 中如有本文未记录但与 v0.3.1 存在差异的位置，属变更遗漏，请立即报告主理人。*
+
+---
+
+## R1. 后续修订（v0.3.2-r1 · M2.2 实现期，2026-09-23）
+
+> **本节是后来追加的，不修改 §1–§6 的任何历史记录。** §1 的 27 处改动是 v0.3.1 → v0.3.2 的完整记录，其中第 11 项（行 525「换弹打断 = 取消换弹」）在 v0.3.2 发布时**确实是那样定的**；本节记录的是**之后**用户对它的再次裁决。
+
+### R1.1 改动点
+
+| # | 裁决项 | PRD 章节 | v0.3.2 行号 | v0.3.2-r1 行号 | 改动类型 |
+|---|--------|----------|-------------|----------------|----------|
+| R1-1 | —（版本头） | 1.1 修订记录 | 26（末行） | 27 | **新增**（v0.3.2-r1 修订记录行） |
+| R1-2 | **用户裁决（M2.2）** | 5.4.3 射击机制 | 525 | 525 | **改写**（「换弹打断 = 取消换弹」→「换弹与移动：移动不打断换弹」） |
+| R1-3 | —（说明补全） | 5.4.3 射击机制 | — | 537–542 | **新增**（M2.2 修订说明块，4 条） |
+
+**合计 3 处**：新增 2 处、改写 1 处。**§5.4.3 其余各行（规则①②③、换弹耗时、满弹匣换弹废止、距离衰减……）一律未动。**
+
+### R1.2 口径变化
+
+- **旧（v0.3.2 行 525）**：移动打断换弹 = **取消换弹**；弹匣与后备回到换弹开始前的状态。
+- **新（v0.3.2-r1 行 525）**：**移动不打断换弹** —— 按 R 之后可继续行走 / 跳跃 / 转向，1.2 秒走满即完成；弹药仍**只在完成这一刻转移**（规则④）；**换弹期间不得开枪**不变。
+- **废止理由**：玩家无法从界面区分"被移动取消了换弹"与"换弹还没走完"（两者在 UI 上都是"没换完"），这条规则因此不可读；且它把换弹从一条时间线变成了带隐藏失败态的流程。规则④的存在意义本就是让"取消"零回滚成本 —— 取消口废止后它退化为更简单的不变量，无需改。
+
+### R1.3 受影响 Requirement ID
+
+| Requirement ID | 语义 | 变更 |
+|----------------|------|------|
+| `MVP-COMBAT-020` | 原「移动可打断换弹」 | **语义再次变更**：改为「移动**不**打断换弹」。矩阵状态由 `DEFERRED_WITH_RECORD` 改为 `IMPLEMENTED`，验收点改写为"按 R 后持续移动，换弹仍走满 1.2 秒并补满弹匣"（见 `docs/testing/MVP_REQUIREMENTS_TRACEABILITY.md`） |
+
+### R1.4 实现侧连带删除（本项目禁止死代码，故一并清除）
+
+| 删除项 | 位置 |
+|--------|------|
+| `GunState.cancelReload()`、`GunState.reloadsCancelled` 字段与 getter | `src/main/java/com/skyisland/combat/GunState.java` |
+| `GunState.tick(double, boolean moving, Inventory)` 的 `moving` 参数与取消分支 | 同上（签名收敛为 `tick(double, Inventory)`） |
+| `CombatController.step` 里的 `moving` / `cancelledBefore` 与取消回调分支 | `src/main/java/com/skyisland/combat/CombatController.java` |
+| `CombatController.Listener.onReloadCancelled()` 及全部实现 | 同上；实现方 5 处（`AudioFeedback`、`SkyIslandGame`、`M2CombatSelfTest`、两处匿名类） |
+| `Localization.MSG_RELOAD_INTERRUPTED` | `src/main/java/com/skyisland/ui/Localization.java`（含文案"换弹被打断"） |
+| 自测阶段 `RELOAD_INTERRUPTED` → **改名为** `RELOAD_WHILE_WALKING` | `src/main/java/com/skyisland/game/M2CombatSelfTest.java`（阶段数与编号不变，仍为 6/15） |
+
+### R1.5 证据与反向验证
+
+- **新断言**（3 处）：
+  1. `CombatCoreTest.reloadRunsToCompletionOnAFixedStepClock` —— 固定步长 72 步走完 1.2 秒换弹（替代原 `movingCancelsReloadAndLosesNothing`）；
+  2. `CombatControllerTest.walkingDoesNotInterruptReload` —— 全程喂"按住 W"意图，换弹仍完成（替代原 `movingCancelsReloadAndChangesNothing`）；
+  3. M2 自测 `RELOAD_WHILE_WALKING` 阶段 5 条（边走边换步数 ≥ 70、位移 ≥ 3 格、完成事件恰 1 次、完成时弹匣 = 12、走完后 = 12）。
+- **反向验证 1（还原取消分支）**：`CombatControllerTest.walkingDoesNotInterruptReload` 在"一半路程"处变红；M2 自测同轮实测 `边走边换步数=1`、`完成事件数=0` —— 预期中的红，归因可读。
+- **反向验证 2（把完成判据改早 0.02 s）**：`reloadRunsToCompletionOnAFixedStepClock` 与 `pistolReloadTakesExactlyOnePointTwoSeconds` 同时变红。
+- 两轮反向验证的注入标记均已删除，并由 `UiAudioWiringTest` 的残留守卫复核。
+
+*（本附录由主理人于 M2.2 收尾时追加；如与 §1–§6 冲突，以本附录为准。）*

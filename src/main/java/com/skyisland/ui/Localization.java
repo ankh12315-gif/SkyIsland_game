@@ -70,7 +70,6 @@ public final class Localization {
     public static final String MSG_FIRST_JOIN = "msg.first_join";
     public static final String MSG_RELOADING = "msg.reloading";
     public static final String MSG_RELOAD_DONE = "msg.reload_done";
-    public static final String MSG_RELOAD_INTERRUPTED = "msg.reload_interrupted";
     public static final String MSG_MAGAZINE_FULL = "msg.magazine_full";
     public static final String MSG_NO_RESERVE = "msg.no_reserve";
     public static final String MSG_RELOAD_BLOCKS_FIRE = "msg.reload_blocks_fire";
@@ -183,7 +182,6 @@ public final class Localization {
         TEXT.put(MSG_FIRST_JOIN, "WASD 移动，左键挖掘，右键放置");
         TEXT.put(MSG_RELOADING, "换弹中");
         TEXT.put(MSG_RELOAD_DONE, "换弹完成");
-        TEXT.put(MSG_RELOAD_INTERRUPTED, "换弹被打断");
         TEXT.put(MSG_MAGAZINE_FULL, "弹匣已满");
         TEXT.put(MSG_NO_RESERVE, "没有后备弹药");
         TEXT.put(MSG_RELOAD_BLOCKS_FIRE, "换弹中，无法开火");

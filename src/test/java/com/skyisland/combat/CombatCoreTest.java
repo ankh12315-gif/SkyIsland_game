@@ -216,12 +216,12 @@ class CombatCoreTest {
         GunState gun = GunState.forPistol();
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
 
-        gun.tick(1.19, false, inv);
+        gun.tick(1.19, inv);
         assertTrue(gun.isReloading(), "1.19 秒时仍在换弹");
         assertEquals(0, gun.magazineAmmo(), "完成前不得转移弹药（A3 规则④）");
         assertEquals(12, inv.countOfItem(AMMO), "完成前后备弹药不得减少");
 
-        gun.tick(0.02, false, inv);
+        gun.tick(0.02, inv);
         assertFalse(gun.isReloading(), "1.21 秒时必须已完成");
         assertEquals(12, gun.magazineAmmo());
         // M2.1-A：产品口径从"有限后备"改为"无限后备"，因此完成换弹时<b>不从背包取弹</b>。
@@ -276,7 +276,7 @@ class CombatCoreTest {
         gun.setMagazineAmmo(10);
 
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
-        gun.tick(1.2, false, inv);
+        gun.tick(1.2, inv);
 
         assertEquals(12, gun.magazineAmmo(), "10 + min(2, 3) = 12");
         assertEquals(1, inv.countOfItem(AMMO), "只应取走 2 发");
@@ -307,7 +307,7 @@ class CombatCoreTest {
         gun.setMagazineAmmo(1);
 
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
-        gun.tick(1.2, false, inv);
+        gun.tick(1.2, inv);
 
         assertEquals(12, gun.magazineAmmo(), "无限后备下弹匣补满（不是 1 + min(11, 7)）");
         assertEquals(7, inv.countOfItem(AMMO), "背包里的 7 发一发不少");
@@ -328,31 +328,68 @@ class CombatCoreTest {
 
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(empty),
                 "空背包也必须能换弹 —— 无限后备下不存在『后备 = 0』");
-        gun.tick(1.2, false, empty);
+        gun.tick(1.2, empty);
 
         assertEquals(12, gun.magazineAmmo(), "空背包也补满 12");
         assertEquals(0, empty.countOfItem(AMMO), "换弹不会往背包里塞东西");
         assertEquals(1, gun.reloadsCompleted());
     }
 
-    /** A3 规则⑤：移动打断换弹 = 取消，双方状态回到换弹开始前。 */
+    /**
+     * M2.2 修订：换弹进度<b>只由时间驱动</b>，玩家移动不再影响它。
+     *
+     * <h2>这条用例替代了什么</h2>
+     * M2.2 之前这里是 {@code movingCancelsReloadAndLosesNothing}：断言
+     * {@code gun.tick(0.5, true, inv)} 会取消换弹（旧 A3 规则⑤「移动打断换弹 = 取消」）。
+     * 该规则已被<b>废止</b> —— PRD 5.4.3 改写为「移动不打断换弹」，
+     * {@link GunState#tick} 移除了 {@code moving} 参数，{@code cancelReload()} 与
+     * {@code reloadsCancelled} 一并删除。
+     *
+     * <p><b>为什么"移动不打断"这条性质在 GunState 这一层只能被间接断言：</b>
+     * 移动是 {@code PlayerIntent} 的概念，{@code GunState} 根本收不到它。
+     * "收不到"没法用行为断言表达，只能靠"参数表里没有它"这个结构事实本身。
+     * 因此这里守住的是它的另一半：<b>换弹一旦开始，就走完一条只与时间有关的时间线</b> ——
+     * 不多不少、中途不因任何外部读数而变形、弹药只在完成这一刻转移。
+     *
+     * <p>真正的"边走边换"行为断言在两处：
+     * {@code CombatControllerTest#walkingDoesNotInterruptReload}（驱动带移动意图的
+     * {@code combat.step}，那里才有"移动"这个输入）与游戏内自测
+     * {@code RELOAD_WHILE_WALKING} 阶段（按 R 之后一路按 W，断言换弹走完全程）。
+     *
+     * <p><b>为什么按 {@code 1/60} 逐步行进，而不是一次 {@code tick(1.2)}：</b>
+     * 换弹 1.2 秒 = 72 个固定步（{@code GameLoop.FIXED_DT}）—— 这个算式是游戏内自测
+     * 预算（{@code STAGE_BUDGET}）的前提。用固定步长走一遍，等于把该前提也钉住。
+     */
     @Test
-    void movingCancelsReloadAndLosesNothing() {
+    void reloadRunsToCompletionOnAFixedStepClock() {
         Inventory inv = inventoryWithAmmo(12);
         GunState gun = GunState.forPistol();
-        gun.setMagazineAmmo(4);
+        gun.setMagazineAmmo(3);
 
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
-        gun.tick(0.5, true, inv);   // 移动
-
-        assertFalse(gun.isReloading(), "移动必须取消换弹");
-        assertEquals(4, gun.magazineAmmo(), "弹匣回到换弹开始前");
-        assertEquals(12, inv.countOfItem(AMMO), "后备弹药一发不少");
-        assertEquals(1, gun.reloadsCancelled());
+        for (int i = 0; i < 71; i++) {
+            gun.tick(1.0 / 60.0, inv);
+        }
+        assertTrue(gun.isReloading(), "71 步 = 1.1833 s，仍在换弹");
+        assertEquals(3, gun.magazineAmmo(), "完成前不得转移弹药（A3 规则④）");
+        assertEquals(12, inv.countOfItem(AMMO), "完成前后备弹药不得减少");
         assertEquals(0, gun.reloadsCompleted());
+
+        // 第 72 步 = 1.2000 s 是理论完成点。倒计时是逐步累减 dt，
+        // 浮点误差可能把完成推到第 73 步（与 M2CombatSelfTest 的预算口径一致），
+        // 因此这里允许一个步长的余量 —— 但绝不允许"永远不完成"。
+        gun.tick(1.0 / 60.0, inv);
+        if (gun.isReloading()) {
+            gun.tick(1.0 / 60.0, inv);
+        }
+        assertFalse(gun.isReloading(), "第 72~73 步之内换弹必须完成（1.2 s = 72 步）");
+        assertEquals(12, gun.magazineAmmo(), "完成后补满 12");
+        assertEquals(12, inv.countOfItem(AMMO),
+                "M2.1 无限后备：换弹只读后备、不写背包，12 发一发不少");
+        assertEquals(1, gun.reloadsCompleted());
     }
 
-    /** A3 规则⑤后半句：换弹期间不得开枪。 */
+    /** 换弹期间不得开枪（PRD 5.4.3；与"移动打不打断换弹"无关，M2.2 未改动这条）。 */
     @Test
     void cannotFireWhileReloading() {
         Inventory inv = inventoryWithAmmo(12);
@@ -386,7 +423,7 @@ class CombatCoreTest {
         assertEquals(GunState.ShotOutcome.COOLDOWN, gun.tryFire(), "同一瞬间不得连发");
         assertEquals(1, gun.magazineAmmo());
 
-        gun.tick(0.25, false, inv);
+        gun.tick(0.25, inv);
         assertEquals(GunState.ShotOutcome.FIRED, gun.tryFire(), "0.25 秒后才允许第二发");
         assertEquals(0, gun.magazineAmmo());
         assertEquals(2, gun.shotsFired());
@@ -417,9 +454,9 @@ class CombatCoreTest {
         gun.tryStartReload(inv);
 
         double p0 = gun.reloadProgress01();
-        gun.tick(0.3, false, inv);
+        gun.tick(0.3, inv);
         double p1 = gun.reloadProgress01();
-        gun.tick(0.3, false, inv);
+        gun.tick(0.3, inv);
         double p2 = gun.reloadProgress01();
 
         assertEquals(0.0, p0, 1e-9, "刚开始换弹时进度为 0");

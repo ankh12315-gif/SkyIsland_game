@@ -26,7 +26,7 @@ import java.util.Map;
  * 再用确定性测试举证（{@code Player}、{@code EntityManager}、{@code GunState} 都是这么做的）。
  *
  * <h2>为什么用监听器而不是"返回一个结果 record"</h2>
- * 一步之内可能同时发生"命中方块 + 打空弹匣 + 换弹被移动打断"。
+ * 一步之内可能同时发生"命中方块 + 打空弹匣 + 换弹完成"。
  * 塞进一个 record 会得到一个二十来个组件的位置参数表 —— 那正是
  * {@code PlayerIntentCopyTest} 专门在防的一类错误（相邻字段写反且编译器沉默）。
  * 监听器把"发生了什么"拆成互不相干的事件，每个事件的参数都在 6 个以内，
@@ -63,17 +63,13 @@ public final class CombatController {
          * 一次<b>换弹请求</b>的结果（玩家按了 R）。
          *
          * <p>只表示"这次按键被受理成什么"，<b>不表示换弹已经完成</b> ——
-         * 完成与打断走下面两个方法。把两件事合成一个回调的话，
+         * 完成走下面的 {@link #onReloadCompleted(int, int)}。把两件事合成一个回调的话，
          * "已受理"与"已完成"会共用一个枚举，迟早有人把 {@code STARTED} 当成完成。
          */
         void onReloadRequest(GunState.ReloadOutcome outcome);
 
         /** 换弹走到终点，弹药已转移进弹匣（PRD 5.4.3 规则④：只在完成这一刻转移）。 */
         void onReloadCompleted(int magazineAmmo, int magazineSize);
-
-        /** 换弹被打断（PRD 5.4.3：「移动打断换弹 = 取消换弹」）。由于弹药从未提前转移，
-         *  这里没有任何需要回滚的状态 —— 回调只是为了给玩家一个"没换成"的反馈。 */
-        void onReloadCancelled();
 
         /**
          * 需要显示给玩家的一行短提示。
@@ -113,10 +109,6 @@ public final class CombatController {
 
             @Override
             public void onReloadCompleted(int magazineAmmo, int magazineSize) {
-            }
-
-            @Override
-            public void onReloadCancelled() {
             }
 
             @Override
@@ -183,7 +175,7 @@ public final class CombatController {
      *
      * <p><b>顺序与理由：</b>
      * <ol>
-     *   <li><b>先 tick 枪械（含换弹推进）</b>：换弹完成/被打断这件事必须在本步的
+     *   <li><b>先 tick 枪械（含换弹推进）</b>：换弹完成这件事必须在本步的
      *       开火判定<b>之前</b>结算，否则"换弹刚好完成的同一帧按左键"会打不出去 ——
      *       而玩家看到的是弹匣已经满了；</li>
      *   <li><b>再处理换弹请求</b>：先于开火，因为同一帧按 R 与左键时，
@@ -198,17 +190,12 @@ public final class CombatController {
             return;
         }
 
-        // ① 推进时间：移动即取消换弹（PRD 5.4.3「换弹打断」）
+        // ① 推进时间：换弹进度只由时间决定，移动不打断（PRD 5.4.3，M2.2 修订）
         int completedBefore = gun.reloadsCompleted();
-        int cancelledBefore = gun.reloadsCancelled();
-        boolean moving = intent.hasMovement();
-        gun.tick(dt, moving, player.inventory());
+        gun.tick(dt, player.inventory());
         if (gun.reloadsCompleted() > completedBefore) {
             listener.onReloadCompleted(gun.magazineAmmo(), gun.magazineSize());
             listener.onMessage(Localization.MSG_RELOAD_DONE);
-        } else if (gun.reloadsCancelled() > cancelledBefore) {
-            listener.onReloadCancelled();
-            listener.onMessage(Localization.MSG_RELOAD_INTERRUPTED);
         }
 
         // ② 换弹请求

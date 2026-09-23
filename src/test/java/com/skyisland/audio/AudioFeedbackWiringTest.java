@@ -174,7 +174,7 @@ class AudioFeedbackWiringTest {
     void andThenForwardsEveryEventToTheDownstreamListener() {
         AudioManager audio = silentAudio();
         List<String> downstream = new ArrayList<>();
-        // Listener 的 8 个方法全部是抽象的，这里逐个实现并记录（留空的方法也必须写出，
+        // Listener 的 7 个方法全部是抽象的，这里逐个实现并记录（留空的方法也必须写出，
         // 否则"下游根本没收到"与"下游收到了但没记"会混在一起）
         CombatController.Listener next = new CombatController.Listener() {
             @Override
@@ -207,11 +207,6 @@ class AudioFeedbackWiringTest {
             @Override
             public void onReloadCompleted(int magazineAmmo, int magazineSize) {
                 downstream.add("onReloadCompleted");
-            }
-
-            @Override
-            public void onReloadCancelled() {
-                downstream.add("onReloadCancelled");
             }
 
             @Override
@@ -339,7 +334,7 @@ class AudioFeedbackWiringTest {
     // ============================================================ 顺序与"不吞事件"
 
     /**
-     * 串联链必须<b>先发声、后转发</b>，且八个回调一个都不能被吞。
+     * 串联链必须<b>先发声、后转发</b>，且七个回调一个都不能被吞。
      *
      * <p><b>这条断言抓的是什么：</b>{@link AudioFeedback#andThen} 有两种写错的方式 ——
      * ① "替换"而不是"串联"（下游收不到，表现为"开了音频之后曳光没了"）；
@@ -348,11 +343,13 @@ class AudioFeedbackWiringTest {
      *
      * <p>判据不靠计数，而是<b>在转发的那一刻读一次音频侧已经记下几条</b>
      * （{@code audioSizeAtDelegate}）。顺序一旦颠倒，第一个元素会从 1 变成 0。
-     * 期望序列 {@code [1,2,3,4,4,4,4,4]} 同时也是"哪几个事件该发声"的书面记录：
-     * 击发 / 命中 / 空仓 / 换弹四个有声，换弹完成、换弹取消、方块命中、文案提示四个无声。
+     * 期望序列 {@code [1,2,3,4,4,4,4]} 同时也是"哪几个事件该发声"的书面记录：
+     * 击发 / 命中 / 空仓 / 换弹四个有声，换弹完成、方块命中、文案提示三个无声。
+     * （M2.2：原先"换弹取消"也是无声事件之一；该回调已随"移动打断换弹"废止，
+     * 因此这里从 8 个回调 / 8 个期望值收紧为 7 个。）
      */
     @Test
-    void andThenPlaysTheSoundBeforeDelegatingAndForwardsAllEightEvents() {
+    void andThenPlaysTheSoundBeforeDelegatingAndForwardsAllSevenEvents() {
         AudioManager audio = silentAudio();
         AudioFeedback feedback = AudioFeedback.wrap(audio);
         List<String> order = new ArrayList<>();
@@ -397,11 +394,6 @@ class AudioFeedbackWiringTest {
             }
 
             @Override
-            public void onReloadCancelled() {
-                record("reloadCancel");
-            }
-
-            @Override
             public void onMessage(String textKey, Object... args) {
                 record("message");
             }
@@ -412,25 +404,24 @@ class AudioFeedbackWiringTest {
         chained.onDryFire();
         chained.onReloadRequest(GunState.ReloadOutcome.STARTED);
         chained.onReloadCompleted(12, 12);
-        chained.onReloadCancelled();
         chained.onBlockHit(0, 0, 0, 0, 1, 0, 1);
         chained.onMessage("k");
 
-        // 音频侧：四个有声事件各响一次，四个无声事件一次都不响
+        // 音频侧：四个有声事件各响一次，三个无声事件一次都不响
         assertEquals(1, audio.audit().countOf(AudioEvent.GUN_FIRE));
         assertEquals(1, audio.audit().countOf(AudioEvent.HIT_ENEMY));
         assertEquals(1, audio.audit().countOf(AudioEvent.GUN_EMPTY));
         assertEquals(1, audio.audit().countOf(AudioEvent.RELOAD));
         assertEquals(4, audio.audit().size(),
-                "M2.1 的五个音里，这八个回调只该产生四条记录");
+                "M2.1 的五个音里，这七个回调只该产生四条记录");
 
-        // 下游侧：八个事件一个不少、次序原样
+        // 下游侧：七个事件一个不少、次序原样
         assertEquals(List.of("shot", "entity", "dry", "reloadReq",
-                        "reloadDone", "reloadCancel", "block", "message"),
-                order, "串联必须把八个事件全部原样转发给下游，且次序不变");
+                        "reloadDone", "block", "message"),
+                order, "串联必须把七个事件全部原样转发给下游，且次序不变");
 
         // 顺序：转发的那一刻，该响的已经响完了
-        assertEquals(List.of(1, 2, 3, 4, 4, 4, 4, 4), audioSizeAtDelegate,
+        assertEquals(List.of(1, 2, 3, 4, 4, 4, 4), audioSizeAtDelegate,
                 "发声必须发生在转发之前：顺序颠倒时首位会是 0");
     }
 

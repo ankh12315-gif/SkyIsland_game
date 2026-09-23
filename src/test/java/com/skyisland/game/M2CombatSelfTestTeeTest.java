@@ -18,16 +18,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p><b>为什么这件小事值得一个测试文件：</b>
  * M2 战斗自测的全部"事件类"断言（onDryFire / onBlockHit / onEntityHit /
- * onReloadCompleted / onReloadCancelled 的计数）都建立在"自测那份 Listener 确实收到了
- * 每一次事件"之上。而 {@code tee} 是手写的 8 方法转发 —— 这个形状的失败模式非常隐蔽：
+ * onReloadCompleted 的计数）都建立在"自测那份 Listener 确实收到了
+ * 每一次事件"之上。而 {@code tee} 是手写的逐方法转发 —— 这个形状的失败模式非常隐蔽：
  * 将来 {@code CombatController.Listener} 新增一个方法时，接口会给出默认实现（或编译报错被随手补上），
  * 而 {@code tee} 里漏掉的那一个会<b>静默丢掉</b>那一类事件。
  * 丢掉之后的表现不是"测试变红"，而是"测试照常变绿、只是那条断言永远看不到事件"——
  * 与 M1 报告里"观测点选错比测试变红更危险"是同一类问题。
  *
- * <p>因此这里对 8 个方法逐个断言：<b>两边都收到、实参逐一相同、且 first 先于 second</b>。
+ * <p>因此这里对 7 个方法逐个断言：<b>两边都收到、实参逐一相同、且 first 先于 second</b>。
  * 顺序也要测，因为 {@link M2CombatSelfTest#tee} 的契约是"先产品反馈、后自测记录"
  * （自测记录可能写断言，必须描述产品已经做完事之后的同一时刻状态）。
+ *
+ * <p><b>M2.2 计数变化：</b>Listener 从 8 个方法减到 7 个 ——
+ * {@code onReloadCancelled} 随"移动打断换弹"一齐废止（见 PRD 5.4.3 修订）。
+ * 本文件里的组数与清单同步收紧：<b>漏转发一个方法仍然会指名道姓地变红</b>，
+ * 只是现在清单里没有那一条了。
  */
 class M2CombatSelfTestTeeTest {
 
@@ -84,17 +89,12 @@ class M2CombatSelfTestTeeTest {
         }
 
         @Override
-        public void onReloadCancelled() {
-            note("onReloadCancelled");
-        }
-
-        @Override
         public void onMessage(String textKey, Object... args) {
             note("onMessage", textKey, java.util.Arrays.toString(args));
         }
     }
 
-    /** 把 tee 串起来，跑一遍全部 8 个事件，返回两侧的记录。 */
+    /** 把 tee 串起来，跑一遍全部 7 个事件，返回两侧的记录。 */
     private static List<String> runAllEvents(Entity entity) {
         List<String> log = new ArrayList<>();
         CombatController.Listener product = new Recorder("product", log);
@@ -107,7 +107,6 @@ class M2CombatSelfTestTeeTest {
         tee.onDryFire();
         tee.onReloadRequest(GunState.ReloadOutcome.STARTED);
         tee.onReloadCompleted(12, 12);
-        tee.onReloadCancelled();
         tee.onMessage("combat.msg.reload.done", 12, 12);
         return log;
     }
@@ -117,9 +116,9 @@ class M2CombatSelfTestTeeTest {
         Entity entity = new MeleeMonster(1.5, 64.0, -2.5);
         List<String> log = runAllEvents(entity);
 
-        // 8 个事件 × 2 个接收方 = 16 条记录。少一条就说明有事件被吞了。
-        assertEquals(16, log.size(),
-                "8 个事件各应到达 2 个接收方（共 16 条），实际记录=" + log);
+        // 7 个事件 × 2 个接收方 = 14 条记录。少一条就说明有事件被吞了。
+        assertEquals(14, log.size(),
+                "7 个事件各应到达 2 个接收方（共 14 条），实际记录=" + log);
 
         for (int i = 0; i < log.size(); i += 2) {
             String fromProduct = log.get(i);
@@ -133,7 +132,7 @@ class M2CombatSelfTestTeeTest {
     }
 
     @Test
-    void allEightListenerMethodsAreForwarded() {
+    void allSevenListenerMethodsAreForwarded() {
         List<String> log = runAllEvents(new MeleeMonster(0.5, 64.0, 0.5));
         List<String> events = log.stream()
                 .filter(line -> line.startsWith("product:"))
@@ -144,9 +143,9 @@ class M2CombatSelfTestTeeTest {
         // 逐方法点名，而不是只数总数：漏掉任意一个都会在这里被指名道姓地报出来。
         assertEquals(List.of(
                         "onShotFired", "onBlockHit", "onEntityHit", "onDryFire",
-                        "onReloadRequest", "onReloadCompleted", "onReloadCancelled", "onMessage"),
+                        "onReloadRequest", "onReloadCompleted", "onMessage"),
                 events,
-                "tee 必须把 Listener 的全部 8 个事件都转发出去，实际=" + events);
+                "tee 必须把 Listener 的全部 7 个事件都转发出去，实际=" + events);
     }
 
     @Test
@@ -185,10 +184,6 @@ class M2CombatSelfTestTeeTest {
                     }
 
                     @Override
-                    public void onReloadCancelled() {
-                    }
-
-                    @Override
                     public void onMessage(String textKey, Object... args) {
                     }
                 });
@@ -208,9 +203,10 @@ class M2CombatSelfTestTeeTest {
                 M2CombatSelfTest.tee(CombatController.Listener.NONE, new Recorder("only", log));
 
         tee.onDryFire();
-        tee.onReloadCancelled();
+        tee.onReloadCompleted(12, 12);
 
-        assertEquals(List.of("only:onDryFire", "only:onReloadCancelled"), log);
+        assertEquals(List.of("only:onDryFire", "only:onReloadCompleted 12 12"), log,
+                "NONE 侧不得吞掉事件");
         assertTrue(log.size() == 2, "NONE 侧不得吞掉事件");
     }
 }
