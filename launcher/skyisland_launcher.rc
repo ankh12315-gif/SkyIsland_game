@@ -1,0 +1,43 @@
+/* ============================================================================
+ * SkyIsland launcher resources.
+ *
+ *   1 ICON      -> the window/Explorer/taskbar icon of the .exe
+ *   1 24        -> RT_MANIFEST, id CREATEPROCESS_MANIFEST_RESOURCE_ID
+ *
+ * Build:  windres -I <mingw>\x86_64-w64-mingw32\include \
+ *                  -i skyisland_launcher.rc -o build\launcher_res.o
+ * ========================================================================= */
+
+#include <windows.h>
+
+1 ICON "skyisland.ico"
+1 24 "skyisland_launcher.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    0,3,2,0
+ PRODUCTVERSION 0,3,2,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "SkyIsland"
+            VALUE "FileDescription",  "SkyIsland launcher"
+            VALUE "FileVersion",      "0.3.2.0"
+            VALUE "InternalName",     "SkyIsland"
+            VALUE "OriginalFilename", "SkyIsland.exe"
+            VALUE "ProductName",      "SkyIsland"
+            VALUE "ProductVersion",   "0.3.2-M2_2-UI-INVENTORY"
+            VALUE "Comments",         "Native launcher: mimics play-m2.bat, adds the game icon."
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

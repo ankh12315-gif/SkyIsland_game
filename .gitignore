@@ -41,3 +41,13 @@ tmp/*
 !tmp/gen_play_bat.js
 !tmp/run_gate.js
 !tmp/scan_gate.js
+
+# =====================================================================
+# launcher/ — native Windows .exe entry point.
+# STRATEGY: track the SOURCE (C launcher, .rc, manifest, icon builder,
+# source art), but NOT the compiled binaries or the windres/gcc scratch.
+# The .exe is regenerated from source via the same MinGW toolchain; keeping
+# it out of git avoids 300KB+ binary diffs on every rebuild.
+# =====================================================================
+/launcher/*.exe
+/launcher/build/
