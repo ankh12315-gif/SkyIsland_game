@@ -83,13 +83,34 @@ public final class Screenshot {
         return argb;
     }
 
-    /** 同步写 PNG（供测试与收尾阶段使用；正常截图走 {@link #writePngAsync}）。 */
+    /**
+     * 同步写 PNG（供测试与收尾阶段使用；正常截图走 {@link #writePngAsync}）。
+     *
+     * <p><b>写出的 PNG 一律不透明（alpha 强制 255）。</b>
+     * {@link #readPixels} 从帧缓冲<br>读回来的 alpha 是<b>混合运算的副产物</b>，
+     * 不是画面的属性：窗口本身不透明，屏幕上看到的就是 RGB。
+     * 但默认帧缓冲带 alpha 位，UI 的 {@code SRC_ALPHA / ONE_MINUS_SRC_ALPHA} 混合会把它
+     * 累加成 0.67–0.78 一类的值 —— 于是一张"其实完全正常"的截图，在任何会做合成
+     * 的看图工具里（合成到白底）会变成<b>发灰、像 UI 坏掉的</b>样子。
+     *
+     * <p>这不是理论风险：M2.2 的验收截图就是这么被误读的 —— 背包面板实测像素是
+     * {@code #151D29}（深色底 + {@code #505763} 格线，对比清晰），
+     * 但在看图工具里呈现为一片浅灰，一度被当成"面板没画出来"。
+     * 验收证据被误读等于没有证据，所以这里把 alpha 钉死为不透明。
+     *
+     * <p>RGB 一字不动：所有读图方（{@code MonsterPixelEvidence}、
+     * {@code M2CombatSelfTest} 的像素门）都用 {@code & 0xFFFFFF} 取色，不受影响。
+     */
     public static Path writePng(int[] argb, int width, int height, Path directory, String baseName)
             throws IOException {
         Files.createDirectories(directory);
         Path target = directory.resolve(baseName + ".png");
-        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-        image.setRGB(0, 0, width, height, argb, 0, width);
+        int[] opaque = new int[argb.length];
+        for (int i = 0; i < argb.length; i++) {
+            opaque[i] = 0xFF000000 | (argb[i] & 0xFFFFFF);
+        }
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        image.setRGB(0, 0, width, height, opaque, 0, width);
         if (!ImageIO.write(image, "png", target.toFile())) {
             throw new IOException("没有可用的 PNG 编码器（ImageIO 未找到 writer）");
         }
