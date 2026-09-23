@@ -58,6 +58,9 @@ public final class Renderer {
     private final HudRenderer hudRenderer = new HudRenderer();
     private final MenuRenderer menuRenderer = new MenuRenderer();
     private final InventoryRenderer inventoryRenderer = new InventoryRenderer();
+    /** M2.2：模态压暗层。它是独立 pass，因此必须排在 HUD 之前（见类注释）。 */
+    private final com.skyisland.render.ui.ModalDimRenderer modalDimRenderer =
+            new com.skyisland.render.ui.ModalDimRenderer();
     private final Frustum frustum = new Frustum();
 
     private ShaderProgram voxelShader;
@@ -77,6 +80,7 @@ public final class Renderer {
         hudRenderer.init();
         menuRenderer.init();
         inventoryRenderer.init();
+        modalDimRenderer.init();
         crackOverlay.init();
         entityRenderer.init();
         combatFxRenderer.init();
@@ -88,7 +92,7 @@ public final class Renderer {
         GL11.glCullFace(GL11.GL_BACK);
         GL11.glFrontFace(GL11.GL_CCW);
         GL11.glDisable(GL11.GL_BLEND);
-        Log.info("[Renderer] 渲染器已就绪（帧缓冲 %d×%d，pass 顺序：清屏 → 世界 → 手持物 → HUD → 菜单）",
+        Log.info("[Renderer] 渲染器已就绪（帧缓冲 %d×%d，pass 顺序：清屏 → 世界 → 手持物 → 压暗 → HUD → 背包 → 菜单）",
                 fbWidth, fbHeight);
     }
 
@@ -186,6 +190,23 @@ public final class Renderer {
     }
 
     /**
+     * 模态压暗 pass（M2.2）。<b>调用顺序：世界 → 手持物 → 压暗 → HUD → 背包 → 菜单。</b>
+     *
+     * <p><b>为什么压暗必须排在 HUD 之前：</b>它此前是"面板渲染的第一步"，
+     * 而面板在 HUD 之后，于是压暗顺手把生命条与通知一起压暗了 66%
+     * （实测满心 {@code rgb(229,51,61)} → {@code rgb(81,23,29)}，恰为 0.34 倍）。
+     * 这与 {@code UiState#vitalsVisible()} 的产品决定冲突：那条决定要求
+     * "开背包时生命条仍要显示，玩家不能因为开了背包就看不见自己在挨打"。
+     *
+     * <p>压暗只该压<b>世界</b>。分开之后，生命条与通知以原色浮在压暗之上，
+     * 而面板仍然盖在全部之上（模态性不变）。
+     */
+    public void renderModalDim() {
+        modalDimRenderer.render(uiShader, com.skyisland.render.ui.UiTheme.DIM,
+                framebufferWidth, framebufferHeight);
+    }
+
+    /**
      * 菜单 pass（M1.5）：在 HUD 之后绘制，因此菜单永远盖在 HUD 与世界之上。
      *
      * <p>顺序是硬性的：菜单是模态层，被 HUD 盖住的话"暂停了却看不见菜单"就只是
@@ -268,6 +289,7 @@ public final class Renderer {
         hudRenderer.dispose();
         menuRenderer.dispose();
         inventoryRenderer.dispose();
+        modalDimRenderer.dispose();
         if (voxelShader != null) {
             voxelShader.dispose();
             voxelShader = null;

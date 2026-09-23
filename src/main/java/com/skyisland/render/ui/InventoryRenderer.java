@@ -71,8 +71,12 @@ public final class InventoryRenderer {
 
         batch.begin(fbWidth, fbHeight);
 
-        // ---- 1) 压暗：背包是模态层，游戏画面退到背景 ----
-        batch.rect(0, 0, fbWidth, fbHeight, UiTheme.DIM);
+        // ---- 1) 压暗 ----
+        // M2.2：压暗已<b>移出本类</b>，改由 Renderer#renderModalDim 作为独立 pass
+        // 在 HUD 之前绘制。原来写在这里的后果是：它跟着面板一起排在 HUD 之后，
+        // 于是把先画好的生命条与通知压暗了 66%（实测满心 229,51,61 → 81,23,29），
+        // 而 vitalsVisible 的产品决定是"开背包也要看得见自己在挨打"。
+        // 不要把它搬回来 —— 谁在这里画全屏压暗，谁就会再次压暗 HUD。
 
         // ---- 2) 面板底板 ----
         batch.rect(l.panelX(), l.panelY(), l.panelWidth(), l.panelHeight(), UiTheme.PANEL_BG);
@@ -123,7 +127,12 @@ public final class InventoryRenderer {
         }
 
         // ---- 8) 底部操作提示 ----
-        String hint = Localization.text(Localization.HINT_INVENTORY);
+        // 这里必须给<b>操作</b>提示，而不只是"怎么关"。
+        // 玩家第一次打开背包时，唯一的操作知识来源就是这一行 ——
+        // 左键怎么取放、Shift+左键怎么搬运，不写在这里就没有别的地方可写。
+        // （M2.2 收尾时这里原本只画"E 或 Esc 关闭背包"，而写好了完整操作的
+        //   INV_CURSOR_HINT 一直没人画：界面能用，但只能靠猜。）
+        String hint = Localization.text(Localization.INV_CURSOR_HINT);
         int hintScale = UiMetrics.px(UiMetrics.TEXT_SCALE, scale);
         batch.text((fbWidth - BitmapFont.textWidth(hint, hintScale)) / 2f,
                 l.panelY() + l.panelHeight() + UiMetrics.px(6, scale),
