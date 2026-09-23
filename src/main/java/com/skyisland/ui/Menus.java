@@ -128,7 +128,7 @@ public final class Menus {
 
     public static MenuScreen settingsMenu(GameSettings settings) {
         return new MenuScreen(Localization.text(MENU_SETTINGS_TITLE),
-                Localization.text(HINT_SETTINGS), settingsEntries(settings));
+                Localization.text(MENU_SETTINGS_SUBTITLE), settingsEntries(settings));
     }
 
     /**

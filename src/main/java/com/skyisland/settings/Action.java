@@ -17,11 +17,12 @@ package com.skyisland.settings;
  * 就会出现"为了改界面文案而让老配置文件失效"。
  *
  * <p><b>关于 {@code consumedBy}：</b>M1.5 阶段存在的意义是"把键位系统立起来"，
- * 而不是"把全部动作实现出来"。{@code CROUCH / INVENTORY} 至今
- * <u>有默认键位、可重绑、可落盘，但没有任何消费方</u> —— 这一点必须显式记录，
+ * 而不是"把全部动作实现出来"。至今仍然<b>没有消费方</b>的只剩 {@code CROUCH}
+ * —— 它<u>有默认键位、可重绑、可落盘，但按不动</u>；这一点必须显式记录，
  * 否则"能改键"会被误读成"能蹲下"。
  * <b>M2 起 {@code RELOAD} 有了真实消费方</b>（{@code GunState}），
- * 标注随之摘掉；这同时是报告里"规格完成度"的诚实依据。
+ * <b>M2.2 起 {@code INVENTORY} 也有了</b>（{@code SkyIslandGame#openInventoryScreen}），
+ * 两处标注随之摘掉；这同时是报告里"规格完成度"的诚实依据。
  */
 public enum Action {
 
@@ -52,8 +53,16 @@ public enum Action {
     RELOAD("reload", "Reload", Group.INTERACTION, "M2 已消费"),
 
     // ---- 界面 ----
-    /** 完整背包界面属 M3（§S′），本阶段只到"键位可配置"。 */
-    INVENTORY("inventory", "Inventory", Group.INTERFACE, "已绑定，界面消费方在 M3"),
+    /**
+     * 背包。<b>M2.2 起有了真实消费方</b>（{@code SkyIslandGame#openInventoryScreen}，
+     * 默认键 {@code E}，{@code E} 或 {@code Esc} 关闭）。
+     *
+     * <p>它比原计划提前了一个里程碑落地：M1.5 时这一行的标注写的是"界面消费方在 M3"，
+     * 而 M2.2 把 36 格背包做进了本里程碑，<b>标注必须同时摘掉</b> ——
+     * 否则设置界面会显示 {@code "Inventory [M3]"}，等于告诉玩家"这个键要等下个版本才有用"，
+     * 而它现在就有用。{@link #shortNote()} 的存在意义正是"不要误导玩家"。
+     */
+    INVENTORY("inventory", "Inventory", Group.INTERFACE, "M2.2 已消费"),
     /** 暂停 / 返回。这是 M1.5 的界面主线动作。 */
     PAUSE("pause", "Pause / Back", Group.INTERFACE, "M1.5 已消费");
 

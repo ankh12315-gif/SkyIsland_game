@@ -170,7 +170,7 @@ class LocalizationTest {
                 Localization.INV_TOOLTIP_MAX_STACK, Localization.INV_CURSOR_HINT,
                 Localization.MSG_INV_DROPPED_ON_CLOSE, Localization.MSG_INV_MOVE_BLOCKED,
                 Localization.HINT_MAIN, Localization.HINT_PAUSE,
-                Localization.HINT_SETTINGS, Localization.HINT_INVENTORY}) {
+                Localization.HINT_SETTINGS}) {
             assertTrue(Localization.hasText(key), "M2.2 文案 key 未登记: " + key);
             String text = Localization.text(key);
             assertFalse(text.equals(key),

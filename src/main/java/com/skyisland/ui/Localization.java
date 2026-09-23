@@ -113,8 +113,20 @@ public final class Localization {
     public static final String MENU_PAUSE_TITLE = "menu.pause.title";
     public static final String MENU_PAUSE_SUBTITLE = "menu.pause.subtitle";
 
-    // ---- 设置界面（标题 + 三类分组 + 各项 + 键位小节） ----
+    // ---- 设置界面（标题 + 副标题 + 三类分组 + 各项 + 键位小节） ----
     public static final String MENU_SETTINGS_TITLE = "menu.settings.title";
+    /**
+     * 设置屏的副标题。
+     *
+     * <p><b>为什么它必须存在：</b>{@link Menus#settingsMenu} 一度把
+     * {@code HINT_SETTINGS}（操作提示）塞进了 {@code MenuScreen} 的
+     * <b>副标题</b>参数 —— 那是当时唯一能塞进去的位置（副标题参数确实空着），
+     * 于是同一句话会以"副标题"的身份出现在标题下方，而底部由
+     * {@code footerHint()} 另画一行英文提示。<b>提示与副标题是两种东西</b>：
+     * 副标题讲这个界面是干什么的，提示讲这个界面怎么操作。
+     * 用前者顶替后者的后果是"提示位置随排版漂移"，且真正该显示副标题的地方空着。
+     */
+    public static final String MENU_SETTINGS_SUBTITLE = "menu.settings.subtitle";
     public static final String MENU_SETTINGS_GROUP_CONTROL = "menu.settings.group.control";
     public static final String MENU_SETTINGS_GROUP_DISPLAY = "menu.settings.group.display";
     public static final String MENU_SETTINGS_GROUP_AUDIO = "menu.settings.group.audio";
@@ -140,10 +152,15 @@ public final class Localization {
     public static final String MSG_INV_MOVE_BLOCKED = "msg.inv_move_blocked";
 
     // ---- 底部操作提示 ----
+    // 背包不在这里：背包是面板式界面，它的操作提示画在面板下方，
+    // 用的是 INV_CURSOR_HINT（含"左键取放 / Shift+左键搬运"这些实际操作）。
+    // 曾经这里还有一个 HINT_INVENTORY（"E 或 Esc 关闭背包"），但它与
+    // INV_CURSOR_HINT 抢同一个位置，而后者是前者的超集 ——
+    // 两个 key 争一个绘制点时，被删掉的一定是信息更全的那个，
+    // 于是"能关但不知道怎么用"就成了最终形态。见 DeadLocalizationKeyTest。
     public static final String HINT_MAIN = "hint.main";
     public static final String HINT_PAUSE = "hint.pause";
     public static final String HINT_SETTINGS = "hint.settings";
-    public static final String HINT_INVENTORY = "hint.inventory";
 
     private static final Map<String, String> TEXT = new HashMap<>();
     private static final Map<String, String> DISPLAY_NAMES = new HashMap<>();
@@ -205,6 +222,7 @@ public final class Localization {
 
         // 设置界面
         TEXT.put(MENU_SETTINGS_TITLE, "设置");
+        TEXT.put(MENU_SETTINGS_SUBTITLE, "改动立即生效");
         TEXT.put(MENU_SETTINGS_GROUP_CONTROL, "控制");
         TEXT.put(MENU_SETTINGS_GROUP_DISPLAY, "显示");
         TEXT.put(MENU_SETTINGS_GROUP_AUDIO, "音频");
@@ -228,11 +246,12 @@ public final class Localization {
         TEXT.put(MSG_INV_DROPPED_ON_CLOSE, "背包已满，%d 个物品已丢弃");
         TEXT.put(MSG_INV_MOVE_BLOCKED, "没有空位，无法移动");
 
-        // 底部操作提示
+        // 底部操作提示（注意：背包不在这一组 —— 它的提示画在面板下方，
+        // 用的是上面已登记的 INV_CURSOR_HINT。曾有一个 HINT_INVENTORY 与它争同一个
+        // 绘制点，已删；详见 HINT_MAIN 上方的注释。）
         TEXT.put(HINT_MAIN, "继续游戏 / 新建世界 / 设置 / 退出游戏");
         TEXT.put(HINT_PAUSE, "继续 / 设置 / 保存返回 / 退出游戏");
         TEXT.put(HINT_SETTINGS, "回车 切换或改键，左右 调整，Esc 返回");
-        TEXT.put(HINT_INVENTORY, "E 或 Esc 关闭背包");
 
         // ---------------------------------------------------------- Display Name
         // PRD 6.7 点名的四个是硬性示例（pistol/pistol_ammo/iron_ore/coal），
