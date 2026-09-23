@@ -51,3 +51,9 @@ tmp/*
 # =====================================================================
 /launcher/*.exe
 /launcher/build/
+
+# =====================================================================
+# Local tooling — WorkBuddy memory / skills / session data. Never commit;
+# it is per-machine state, not project source.
+# =====================================================================
+.workbuddy/
