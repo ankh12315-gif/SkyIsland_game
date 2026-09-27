@@ -36,13 +36,30 @@ public final class Item {
     /** 枪械规格；非枪械为 {@code null}。 */
     private final GunSpec gun;
 
-    Item(int runtimeId, String id, ItemKind kind, Block block, int maxStack, GunSpec gun) {
+    /**
+     * 枪械表现规格；非枪械为 {@code null}（WEAPON-DOC-001 v2 §4）。
+     *
+     * <p>与 {@link #gun} 同级但在语义上正交：{@code gun} 是"怎么打人"（战斗规则），
+     * 本字段是"长什么样、听起来什么样、火光从哪冒"（表现资源）。它只能是<b>查表键</b>，
+     * 见 {@link GunPresentationSpec} 的类注释。
+     */
+    private final GunPresentationSpec presentation;
+
+    Item(int runtimeId, String id, ItemKind kind, Block block, int maxStack,
+         GunSpec gun, GunPresentationSpec presentation) {
         this.runtimeId = runtimeId;
         this.id = id;
         this.kind = kind;
         this.block = block;
         this.maxStack = maxStack;
         this.gun = gun;
+        // 不变式：表现规格只挂在枪上。给它挂到方块/弹药/材料上会让"表现层按枪查 presentation"
+        // 这条接缝失去意义 —— 那类物品的表现由 kind()/block() 决定，不经过本字段。
+        if (presentation != null && gun == null) {
+            throw new IllegalArgumentException(
+                    "非枪械物品不得携带 GunPresentationSpec: " + id);
+        }
+        this.presentation = presentation;
     }
 
     // ------------------------------------------------------------ 标识
@@ -100,6 +117,18 @@ public final class Item {
 
     public boolean isGun() {
         return gun != null;
+    }
+
+    /**
+     * 枪械表现规格；非枪械为 {@code null}（WEAPON-DOC-001 v2 §4）。
+     *
+     * <p>表现层（第一人称模型 / 图标 / 枪口锚点 / 音频）通过它把"战斗逻辑"与
+     * "资源查表"解耦：逻辑层不认识几何与音效，表现层不认识伤害与弹匣。见
+     * {@link GunPresentationSpec}。枪械的 {@code presentation()} 由注册表在构建期
+     * 保证非 {@code null}（见 {@link ItemRegistry}）。
+     */
+    public GunPresentationSpec presentation() {
+        return presentation;
     }
 
     @Override

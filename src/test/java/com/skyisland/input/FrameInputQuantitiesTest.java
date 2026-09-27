@@ -165,12 +165,12 @@ class FrameInputQuantitiesTest {
 
         // 第 1 帧：玩家点了右键，但这一帧没轮到逻辑步
         q.beginFrame();
-        q.accumulateDiscrete(true, false, -1);
+        q.accumulateDiscrete(true, false, false, -1);
         assertTrue(q.hasPending(), "没被取走就必须还在");
 
         // 第 2 帧：终于跑了逻辑步，这一下点击必须生效
         q.beginFrame();
-        q.accumulateDiscrete(false, false, -1);
+        q.accumulateDiscrete(false, false, false, -1);
         PlayerIntent out = q.apply(BASE);
 
         assertTrue(out.usePressed(), "跨帧保留下来的点击必须发放");
@@ -182,7 +182,7 @@ class FrameInputQuantitiesTest {
     void discreteEdgesApplyOnlyToFirstLogicStep() {
         FrameInputQuantities q = new FrameInputQuantities();
         q.beginFrame();
-        q.accumulateDiscrete(true, true, -1);
+        q.accumulateDiscrete(true, true, false, -1);
 
         PlayerIntent first = q.apply(BASE);
         PlayerIntent second = q.apply(BASE);
@@ -202,7 +202,7 @@ class FrameInputQuantitiesTest {
     void hotbarSlotUsesFrameChannel() {
         FrameInputQuantities q = new FrameInputQuantities();
         q.beginFrame();
-        q.accumulateDiscrete(false, false, 4);
+        q.accumulateDiscrete(false, false, false, 4);
 
         PlayerIntent out = q.apply(BASE);
         assertEquals(4, out.hotbarSlot());
@@ -214,8 +214,8 @@ class FrameInputQuantitiesTest {
     void repeatedClicksInOneFrameCollapse() {
         FrameInputQuantities q = new FrameInputQuantities();
         q.beginFrame();
-        q.accumulateDiscrete(true, false, -1);
-        q.accumulateDiscrete(true, false, -1);
+        q.accumulateDiscrete(true, false, false, -1);
+        q.accumulateDiscrete(true, false, false, -1);
 
         assertTrue(q.apply(BASE).usePressed());
         assertFalse(q.apply(BASE).usePressed());
@@ -226,7 +226,7 @@ class FrameInputQuantitiesTest {
     void discardDropsPendingDiscreteEdges() {
         FrameInputQuantities q = new FrameInputQuantities();
         q.beginFrame();
-        q.accumulateDiscrete(true, true, 2);
+        q.accumulateDiscrete(true, true, false, 2);
         assertTrue(q.hasPending());
 
         q.discard();
@@ -236,5 +236,79 @@ class FrameInputQuantitiesTest {
         assertFalse(out.usePressed());
         assertFalse(out.reloadPressed());
         assertEquals(-1, out.hotbarSlot());
+    }
+
+    // ============================================================ v2 §7.3 / §14.2 回归：攻击键按下沿
+    //
+    // 下面这四条守护的是 SINGLE 半自动开火的"按下沿"语义（左键 attackPressed）。
+    // 它与 usePressed/reloadPressed 同族，都必须走"帧级暂存 → 本帧第一个逻辑步
+    // 一次性发放"的通道；否则会同时具备两个方向相反的毛病：
+    //   · 0 逻辑步的帧 → 按下沿被静默丢弃（表现："按了左键不开火"）；
+    //   · 多逻辑步的帧 → 同一次按下被每个逻辑步重复消费（表现：单发变点射/连发）。
+    // AUTO 用的 attackHeld（电平）不走本通道，它逐逻辑步复用，这里刻意不断言它。
+
+    @Test
+    @DisplayName("左键按下沿：零逻辑步的帧不会把它丢掉（按了左键不开火的直接原因）")
+    void attackPressedSurvivesFrameWithoutLogicStep() {
+        FrameInputQuantities q = new FrameInputQuantities();
+
+        // 第 1 帧：玩家按下了左键，但这一帧没轮到逻辑步
+        q.beginFrame();
+        q.accumulateDiscrete(false, false, true, -1);
+        assertTrue(q.hasPending(), "没被取走就必须还在");
+
+        // 第 2 帧：终于跑了逻辑步，这一下按下沿必须生效（SINGLE 打出一发）
+        q.beginFrame();
+        q.accumulateDiscrete(false, false, false, -1);
+        PlayerIntent out = q.apply(BASE);
+
+        assertTrue(out.attackPressed(), "跨帧保留下来的按下沿必须发放");
+        assertFalse(q.hasPending());
+    }
+
+    @Test
+    @DisplayName("一帧多个逻辑步：一次左键按下只开火一次、不重复发放")
+    void attackPressedAppliesOnlyToFirstLogicStep() {
+        FrameInputQuantities q = new FrameInputQuantities();
+        q.beginFrame();
+        q.accumulateDiscrete(false, false, true, -1);
+        // 刻意用一个"脏"基底：attackPressed 已为 true，模拟调用方忘了从 frameIntent
+        // 清掉按下沿（v2 §7.3 正是要防这条路径）。后续逻辑步必须被强制归零，
+        // 否则同一次按下会被每个逻辑步重复消费 —— 单发半自动会退化成连发。
+        PlayerIntent dirtyBase = BASE.withAttackPressed(true);
+
+        PlayerIntent first = q.apply(dirtyBase);
+        PlayerIntent second = q.apply(dirtyBase);
+
+        assertTrue(first.attackPressed(), "第一个逻辑步拿到按下沿");
+        assertFalse(second.attackPressed(), "第二个逻辑步不得再开一火（否则单发变连发）");
+        // 连续量不受影响：移动键按住就应该每个逻辑步都生效
+        assertEquals(1f, second.moveForward(), 1e-6);
+    }
+
+    @Test
+    @DisplayName("同一帧内连按两次左键：合并为一次（不重复开火）")
+    void repeatedAttacksInOneFrameCollapse() {
+        FrameInputQuantities q = new FrameInputQuantities();
+        q.beginFrame();
+        q.accumulateDiscrete(false, false, true, -1);
+        q.accumulateDiscrete(false, false, true, -1);
+
+        assertTrue(q.apply(BASE).attackPressed());
+        assertFalse(q.apply(BASE).attackPressed());
+    }
+
+    @Test
+    @DisplayName("discard 会丢弃待发放的左键按下沿（失焦/进菜单时点的那下不该带进游戏开火）")
+    void discardDropsPendingAttackPressed() {
+        FrameInputQuantities q = new FrameInputQuantities();
+        q.beginFrame();
+        q.accumulateDiscrete(false, false, true, -1);
+        assertTrue(q.hasPending());
+
+        q.discard();
+
+        assertFalse(q.hasPending());
+        assertFalse(q.apply(BASE).attackPressed(), "菜单里点的那下不得带进游戏变成一次开火");
     }
 }

@@ -58,7 +58,7 @@ public final class ItemIcon {
 
         switch (item.kind()) {
             case BLOCK -> blockParts(out, x, y, size, item);
-            case GUN -> gunParts(out, x, y, size);
+            case GUN -> gunParts(out, x, y, size, item);
             case AMMO -> ammoParts(out, x, y, size);
             case MATERIAL -> materialParts(out, x, y, size);
             default -> blockParts(out, x, y, size, item); // EMPTY 不应出现（已上方拦截），兜底当方块
@@ -90,7 +90,9 @@ public final class ItemIcon {
                 float b = item.block().colorB();
                 yield new float[]{r, g, b, 1.0f};
             }
-            case GUN -> UiTheme.ITEM_GUN_COLOR;
+            case GUN -> ItemRegistry.SMG_ICON_ID.equals(iconIdOf(item))
+                    ? SMG_ICON_COLOR
+                    : UiTheme.ITEM_GUN_COLOR;
             case AMMO -> UiTheme.ITEM_AMMO_COLOR;
             case MATERIAL -> UiTheme.ITEM_MATERIAL_COLOR;
             default -> UiTheme.ITEM_MATERIAL_COLOR;
@@ -132,9 +134,41 @@ public final class ItemIcon {
                 shade(r, 0.72f), shade(g, 0.72f), shade(b, 0.72f), 1.0f);
     }
 
-    // ---- 枪：横长枪身 + 右侧伸出的细枪管 + 浅色高光点 ----
+    // ---- 枪：按 iconId 分派（v2 §4.2 第②项：两把枪的图标必须肉眼可分）----
 
-    private static void gunParts(List<IconPart> out, float x, float y, float size) {
+    /**
+     * 枪械图标：手枪与 SMG 各走一套几何 + 配色。
+     *
+     * <p><b>为什么按 {@link Item#presentation()} 的 {@code iconId} 而不是按 kind 分派：</b>
+     * kind 只能回答"这是不是枪"，回答不了"是哪把枪"。M2 只有手枪时这没问题，
+     * M3 加了 SMG 之后，若两把枪继续共用 {@code gunParts}，快捷栏里就会出现
+     * 两个一模一样的图标 —— 玩家看不出自己选的是哪把枪（v2 §4.2 明令禁止）。
+     *
+     * <p>分派键取 {@code iconId}（而不是 item stable id）：图标是<b>表现资源</b>，
+     * 它的解析规则应当与其它表现资源（viewmodel / 音效 / 后坐）一致 ——
+     * 都由 {@code GunPresentationSpec} 里的键决定。stable id 是存档权威标识，
+     * 不该兼任"用哪张图"的开关。
+     *
+     * <p>未知 iconId 兜底走手枪几何：宁可画错一把枪，也不要画出一格空白 ——
+     * 空白会让玩家以为那一格是空的。
+     */
+    private static void gunParts(List<IconPart> out, float x, float y, float size, Item item) {
+        if (ItemRegistry.SMG_ICON_ID.equals(iconIdOf(item))) {
+            smgParts(out, x, y, size);
+            return;
+        }
+        pistolParts(out, x, y, size);
+    }
+
+    /** 该物品的表现图标键；无 presentation（理论上枪必有）时返回 {@code null}。 */
+    private static String iconIdOf(Item item) {
+        var pres = item.presentation();
+        return pres == null ? null : pres.iconId();
+    }
+
+    // ---- 手枪：横长枪身 + 右侧伸出的细枪管 + 浅色高光点（M2 既有几何，逐值不变）----
+
+    private static void pistolParts(List<IconPart> out, float x, float y, float size) {
         float[] body = UiTheme.ITEM_GUN_COLOR;
         // 枪身（深灰，横长条，占中部）
         add(out, x, y, size, 0.12f, 0.46f, 0.60f, 0.18f,
@@ -145,6 +179,33 @@ public final class ItemIcon {
         // 高光点（浅色，表现金属反光）
         add(out, x, y, size, 0.20f, 0.52f, 0.12f, 0.08f,
                 0.70f, 0.72f, 0.78f, 1.0f);
+    }
+
+    // ---- SMG：更瘦长的枪身 + 更长的枪管 + 向下凸出的弹匣 + 不同高光位置 ----
+    //
+    // 相对手枪的四处可辨识差异（都写在图元签名里，由 ItemIconTest 断言不相等）：
+    //   ① 枪身更瘦（高 0.14 vs 0.18）且更宽（0.66 vs 0.60）—— 侧影更"长条"；
+    //   ② 枪管更长（0.26 vs 0.18）且更细（0.08 vs 0.10）—— 一眼是"长管连发枪"；
+    //   ③ 多一个向下突出的弹匣矩形 —— 手枪完全没有这个部件；
+    //   ④ 配色偏冷暗绿（连发枪的灰绿），而手枪是冷灰。
+
+    /** SMG 图标主色：冷暗绿 —— 与手枪的冷灰刻意拉开色相，色觉障碍下靠形状也能分。 */
+    private static final float[] SMG_ICON_COLOR = {0.28f, 0.34f, 0.30f};
+
+    private static void smgParts(List<IconPart> out, float x, float y, float size) {
+        float[] body = SMG_ICON_COLOR;
+        // 机匣（冷暗绿，比手枪的枪身更宽更瘦）
+        add(out, x, y, size, 0.10f, 0.44f, 0.66f, 0.14f,
+                body[0], body[1], body[2], 1.0f);
+        // 枪管（更长的细条，向右伸出得更远）
+        add(out, x, y, size, 0.72f, 0.47f, 0.26f, 0.08f,
+                shade(body[0], 0.6f), shade(body[1], 0.6f), shade(body[2], 0.6f), 1.0f);
+        // 弹匣：向枪身<b>下方</b>凸出的一截 —— SMG 的独有剪影特征，手枪没有
+        add(out, x, y, size, 0.30f, 0.58f, 0.14f, 0.24f,
+                shade(body[0], 0.78f), shade(body[1], 0.78f), shade(body[2], 0.78f), 1.0f);
+        // 高光点：位置比手枪更靠右（机匣靠前段），亮度略低
+        add(out, x, y, size, 0.48f, 0.46f, 0.14f, 0.06f,
+                0.62f, 0.66f, 0.64f, 1.0f);
     }
 
     // ---- 弹药：竖立金铜弹壳 + 顶部深色弹头 ----

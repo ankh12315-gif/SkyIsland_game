@@ -32,13 +32,19 @@ import com.skyisland.player.Inventory;
  * 弹出剩余弹药不损失（回背包）」口径作废"）。用户裁决 A3 采纳了这条。
  * 本类不实现"弹出余弹"，也不保留任何相关分支。
  *
- * <h2>M2.1：后备弹药改为「无限」（Combat Prototype 口径）</h2>
- * <p><b>决定（M2.1-A）：默认口径是无限后备</b> —— 见 {@link #INFINITE_RESERVE_DEFAULT}。
+ * <h2>后备弹药口径：M2.1 Prototype 无限 → M3 Survival 有限</h2>
+ * <p><b>决定（M2.1-A）：Combat Prototype / Debug 口径是无限后备</b>。
  * 这条改动只放宽"弹药从哪来"，<b>不动"必须由玩家按 R 上膛"这条节奏</b>：
  * 弹匣仍是 12 发，打空仍要按 R，换弹仍是 1.2 秒。
- * （M2.2 起这句不再附加"可被移动打断" —— 见上文修订段：边走边换是允许的。）
  * 战斗原型阶段要观测的是"枪战的手感与可读性"，而不是"资源管理的压力测试"；
  * 让玩家在 24 发之后只能站着挨咬，会让每一次批量试玩都在第 25 发戛然而止。
+ *
+ * <p><b>M3 Story 8 收紧了正式玩法口径</b>（v2 §5.3 / §19-6 / §19-7）：
+ * 无限后备不再是一个全局默认值，而是 {@link ReserveMode#PROTOTYPE} 这一种
+ * <b>由上层显式传入</b>的 Run Mode 配置。M3 Survival 正式游戏流程用的是
+ * {@link ReserveMode#SURVIVAL}（有限后备、真实从 Inventory 扣减）。
+ * 两种口径因此可以并存：正式玩法走有限，战斗原型自测走无限，互不污染。
+ * 谁传什么见 {@code CombatController#setReserveMode} 与 {@code SkyIslandGame}。
  *
  * <p><b>为什么选"完全不消耗背包"，而不是"先扣再补回来"：</b>
  * <ol>
@@ -58,20 +64,88 @@ import com.skyisland.player.Inventory;
  * <p><b>为什么仍然保留有限后备那条代码路径：</b>把分支删掉会让
  * PRD 5.4.3 的规则②③（"后备 > 0 才允许换弹"、"部分填充 load = min(need, reserve)"）
  * 变成"读起来很合理、却永远不会执行"的代码 —— 那正是本项目反复吃过亏的一类缺陷。
- * 有限口径由 {@link #forPistolWithFiniteReserve()} 显式构造并保持单测覆盖，
- * 后续里程碑若要恢复"弹药作为资源"，改一个常量即可，不需要重新推规则。
+ * 有限口径（M3 Survival）现在是<b>正式玩法口径</b>，由上层经
+ * {@link #GunState(Item, ReserveMode)} 传入；无限口径（Prototype）同样只能显式传入。
+ * 两条路径都必须被上层显式选择，规则不分主次。
+ *
+ * <h2>M3 泛化（WEAPON-DOC-001 v2 §5）：去手枪硬编码</h2>
+ * <p>M2 这里焊死了两个"手枪"假设：两个把手枪写进状态类的静态工厂
+ * （旧版的两个 {@code forXxx} 工厂），以及从
+ * {@link ItemRegistry#PISTOL_AMMO_ID} 直接读后备弹药。M3 要落地第二把枪（SMG），
+ * 两者都会让"每加一把枪再写一条 if"重演。
+ * 现在：
+ * <ul>
+ *   <li>只保留 {@link #GunState(Item, ReserveMode)} 构造器 —— <b>没有单参便捷构造器</b>，
+ *       因此"这一局是什么口径"不存在可以默认漂移的入口，调用方必须显式回答一次；
+ *       <b>枪种信息全部来自 {@link Item#gun()} 的 {@link GunSpec}</b>，本类对"是不是手枪"零感知；</li>
+ *   <li>后备弹药一律走 {@link GunSpec#ammoId()}，经 {@link ItemRegistry#byName(String)}
+ *       取真实弹药 Item —— <b>不存在任何 {@code PISTOL_AMMO_ID} 字面量</b>。</li>
+ * </ul>
+ *
+ * <p><b>构造期校验 ammoId 必须能解析到真实弹药：</b>若某把枪的 {@code ammoId} 在注册表里
+ * 查不到，属于开发期数据错误，应当在<b>构造时立刻崩</b>（{@link IllegalStateException}，
+ * 消息含 ammoId），而不是等到换弹时静默把所有扣减失败、表现为"打不完的子弹"。
+ * 因此本类<b>不做任何静默 fallback</b>。
  */
 public final class GunState {
 
     /**
-     * M2.1：新建枪械状态时后备弹药的默认口径 —— {@code true} = 无限。
+     * 后备弹药口径：<b>由上层显式传入</b>的 Run Mode / Combat Rule 配置。
      *
-     * <p>它是 Combat Prototype 这一阶段的<b>产品口径</b>，不是调试开关：
-     * 由 {@link #GunState(Item)} 单参构造器与 {@link #forPistol()} 采用，
-     * 因此在正常游戏流程里没有第二个值。把它做成常量而不是散落在判断里的
-     * 字面量 {@code true}，是为了让"改回有限"这件事只有一处可改。
+     * <h2>为什么它是枚举而不是一个 {@code boolean}</h2>
+     * M2.1 时"是否无限后备"是一个 {@code boolean}，并配了一个全局常量
+     * {@code INFINITE_RESERVE_DEFAULT = true} 当产品口径。那条路线的问题不是"值错了"，
+     * 而是<b>"一个全局默认值没有办法同时表达两种合法口径"</b>：
+     * M3 要求正式玩法是有限后备（v2 §19-6），而战斗原型 / 调试仍是无限（v2 §19-7）。
+     * 只要默认值只有一个取值，把正式玩法改对就必然把原型口径一起改错。
+     *
+     * <p>v2 §5.3 给的正解是「把『是否无限后备』从 {@code GunState} 的全局默认常量
+     * 提升为上层明确传入的 Combat Rule / Run Mode 配置」—— 本枚举就是那个配置的类型。
+     * 它把"这一局到底是什么口径"变成调用方在<b>建枪状态那一刻就必须回答</b>的问题，
+     * 于是 {@link #GunState(Item, ReserveMode)} 这一层不存在任何默认值可以漂移。
+     *
+     * <h2>为什么放在这里，而不放到 {@code combat} 包外面（例如 game 包）</h2>
+     * 它是<b>玩法规则</b>而非某个调用方的私有口味：规则的定义域应贴在执行它的规则载体
+     * （{@code GunState}）旁边，否则 {@code game} 包就会成为唯一能说清"弹药怎么算"的地方，
+     * 而 {@code CombatControllerTest} 这类不经过 {@code game} 的单测就必须反向依赖它。
      */
-    public static final boolean INFINITE_RESERVE_DEFAULT = true;
+    public enum ReserveMode {
+        /**
+         * {@code true} —— 无限后备：换弹补满弹匣，<b>不读写背包</b>。
+         *
+         * <p>Combat Prototype / Debug 口径（v2 §5.3、§19-7）：
+         * 原型阶段要观测"枪战的手感与可读性"，不是"资源管理的压力测试"。
+         */
+        PROTOTYPE(true),
+
+        /**
+         * {@code false} —— 有限后备：换弹按 PRD 5.4.3 规则②③从背包取弹并真实扣减。
+         *
+         * <p>M3 Survival 正式口径（v2 §5.3、§19-6）：弹药是资源，打光就是打光。
+         */
+        SURVIVAL(false);
+
+        private final boolean infiniteReserve;
+
+        ReserveMode(boolean infiniteReserve) {
+            this.infiniteReserve = infiniteReserve;
+        }
+
+        /** 本口径下后备弹药是否无限。 */
+        public boolean infiniteReserve() {
+            return infiniteReserve;
+        }
+
+        /**
+         * 由 {@code boolean} 取得对应口径。
+         *
+         * <p>保留这条映射是为了让既有的布尔语义（{@code true} = 无限）在测试与
+         * 显式构造路径上继续可用，而不是让调用方去写 {@code == true ? PROTOTYPE : SURVIVAL}。
+         */
+        public static ReserveMode of(boolean infiniteReserve) {
+            return infiniteReserve ? PROTOTYPE : SURVIVAL;
+        }
+    }
 
     /** 开始换弹的结果。 */
     public enum ReloadOutcome {
@@ -82,10 +156,10 @@ public final class GunState {
         /**
          * 后备弹药为 0 —— 无法换弹（规则②的另一侧）。
          *
-         * <p><b>M2.1 起只在有限后备口径下才可能出现</b>：无限口径下
-         * {@link #tryStartReload(Inventory)} 不会返回它（见类注释），
-         * 因此产品也不会再显示"没有后备弹药"这条提示。
-         * 枚举值保留是为了让有限口径的规则 ② 仍然可判定、可单测。
+         * <p><b>只在 {@link ReserveMode#SURVIVAL}（有限后备）口径下才可能出现</b>：
+         * {@link ReserveMode#PROTOTYPE} 下 {@link #tryStartReload(Inventory)} 不会返回它
+         * （见类注释），因此原型也不会显示"没有后备弹药"这条提示。
+         * 它在 M3 Survival（正式玩法）里是<b>常态之一</b>：弹药打光就是打光。
          */
         NO_RESERVE,
         /** 已在换弹中 —— 重复按键无操作。 */
@@ -113,59 +187,60 @@ public final class GunState {
     private double fireCooldown;
 
     /**
-     * 后备弹药口径：{@code true} = 无限（Combat Prototype 默认）。
+     * 后备弹药口径：{@link ReserveMode#PROTOTYPE} = 无限。
      *
      * <p>是 {@code final} 而不是运行时可切：一次游戏会话里"弹药到底是资源还是无限"
      * 必须只有一个答案，否则"刚才那一匣是从背包扣的、这一匣不是"会成为无法解释的现象。
      */
-    private final boolean infiniteReserve;
+    private final ReserveMode reserveMode;
 
     private int shotsFired;
     private int dryFires;
     private int reloadsCompleted;
 
     /**
-     * 按 {@link #INFINITE_RESERVE_DEFAULT} 建一个枪械状态（正常流程走这里）。
+     * 显式指定后备口径。<b>这是唯一的构造入口</b>（M3 Story 8 删除了单参便捷构造器）。
      *
-     * <p>保留一个单参构造器而不是让调用方到处写第二个实参：
-     * {@link com.skyisland.combat.CombatController#gunFor} 在渲染路径上被调用，
-     * "创建模式"这件事不该由它决定。
-     */
-    public GunState(Item gun) {
-        this(gun, INFINITE_RESERVE_DEFAULT);
-    }
-
-    /**
-     * 显式指定后备口径。
+     * <p><b>为什么连一个"便捷默认"都不留：</b>M2.1 的单参构造器读的是一个全局默认常量，
+     * 于是"正式玩法是什么口径"这件事由 {@code GunState} 自己说了算 ——
+     * 结果就是 M3 要把正式玩法改成有限时，唯一可动的旋钮同时也在改战斗原型。
+     * v2 §5.3 明确要求把它提升为<b>上层显式传入</b>的配置：现在没有默认值，
+     * 建状态的人必须在调用点回答"这一局是 Survival 还是 Prototype"，
+     * 而这个回答在代码里是<b>可被测试断言</b>的（见 {@code CombatControllerTest}）。
      *
-     * <p><b>存在理由：让有限后备的规则保持可执行、可断言。</b>
-     * 见类注释最后一段 —— 有限口径的第二参数不是为了给玩家用，
-     * 而是为了让 PRD 5.4.3 的规则②③不至于退化成死代码。
+     * <p><b>构造期校验（M3 §5.2）：</b>本枪的 {@link GunSpec#ammoId()} 必须能在
+     * {@link ItemRegistry} 里解析到真实弹药 Item，否则立刻抛 {@link IllegalStateException}。
+     * 这条校验替代了 M2 对 {@code PISTOL_AMMO_ID} 的硬编码：
+     * 后者"永远找得到"，前者把"数据写错"从运行期难查的症状提前成启动期的崩溃。
      */
-    public GunState(Item gun, boolean infiniteReserve) {
+    public GunState(Item gun, ReserveMode reserveMode) {
         if (gun == null || !gun.isGun()) {
             throw new IllegalArgumentException("GunState 只能用于枪械物品: " + gun);
         }
+        if (reserveMode == null) {
+            throw new IllegalArgumentException(
+                    "GunState 的后备弹药口径必须显式指定（M3 §5.3）：传 null 等于引入一个隐式默认值");
+        }
         this.gun = gun;
         this.spec = gun.gun();
-        this.infiniteReserve = infiniteReserve;
+        this.reserveMode = reserveMode;
         this.magazineAmmo = 0;
-    }
-
-    /** 手枪开局状态：弹匣为空（PRD 5.7.1 的初始物资另给弹药，需要先上一次膛）。 */
-    public static GunState forPistol() {
-        return new GunState(ItemRegistry.pistol());
+        if (ItemRegistry.byName(spec.ammoId()) == null) {
+            throw new IllegalStateException(
+                    "枪械 " + gun.id() + " 的 ammoId 在 ItemRegistry 中不存在: " + spec.ammoId()
+                            + "（禁止静默 fallback —— 请修正 GunSpec.ammoId 或先注册该弹药）");
+        }
     }
 
     /**
-     * 手枪状态，<b>有限</b>后备口径（M2.1 起仅供单测使用）。
+     * 显式指定后备口径（{@code boolean} 形式，{@code true} = 无限）。
      *
-     * <p>用它而不是把 {@link #INFINITE_RESERVE_DEFAULT} 改成 false：
-     * 后者会把产品的口径改掉，而这里要的恰恰相反 —— 保留有限规则的可测性，
-     * 同时让产品运行在无限口径上。
+     * <p>存在的理由是<b>可读性与既有调用点</b>：测试里"我要验无限那条规则"
+     * 写成 {@code new GunState(pistol, true)} 比 {@code ReserveMode.PROTOTYPE} 更短；
+     * 语义完全等价于 {@link #GunState(Item, ReserveMode)}，不构成第二个默认值。
      */
-    public static GunState forPistolWithFiniteReserve() {
-        return new GunState(ItemRegistry.pistol(), false);
+    public GunState(Item gun, boolean infiniteReserve) {
+        this(gun, ReserveMode.of(infiniteReserve));
     }
 
     public Item gun() {
@@ -193,7 +268,12 @@ public final class GunState {
      * 但"这一局的弹药口径是什么"是<b>玩法规则</b>，规则必须只有一个来源。
      */
     public boolean reserveInfinite() {
-        return infiniteReserve;
+        return reserveMode.infiniteReserve();
+    }
+
+    /** 本枪状态采用的后备口径（M3 §5.3 的 Run Mode 配置）。 */
+    public ReserveMode reserveMode() {
+        return reserveMode;
     }
 
     public boolean isMagazineFull() {
@@ -263,7 +343,7 @@ public final class GunState {
             return ReloadOutcome.ALREADY_FULL;      // 规则①：满弹匣按 R 无操作
         }
         if (availableReserve(inventory) <= 0) {
-            return ReloadOutcome.NO_RESERVE;        // 规则②的另一侧（无限口径下不可达）
+            return ReloadOutcome.NO_RESERVE;        // 规则②的另一侧（PROTOTYPE 口径下不可达）
         }
         reloading = true;
         reloadRemaining = spec.reloadSeconds();
@@ -278,7 +358,7 @@ public final class GunState {
      * 每步扣掉 {@code dt}，扣到 0 就完成上膛。玩家在换弹期间行走、跳跃、切视角，
      * 都不会改变这条时间线 —— 这正是"边走边换"的实现方式。
      *
-     * @param inventory 换弹完成时用来取后备弹药（无限口径下只读不写）
+     * @param inventory 换弹完成时用来取后备弹药（{@link ReserveMode#PROTOTYPE} 下只读不写）
      */
     public void tick(double dt, Inventory inventory) {
         if (fireCooldown > 0) {
@@ -297,8 +377,8 @@ public final class GunState {
         reloading = false;
         reloadRemaining = 0;
         int need = spec.magazineSize() - magazineAmmo;
-        if (infiniteReserve) {
-            // 无限口径：弹匣补满，背包一个数都不动。
+        if (reserveMode.infiniteReserve()) {
+            // PROTOTYPE 口径：弹匣补满，背包一个数都不动。
             // 之所以连"假装扣一下再补回"都不做，见类注释里的三条理由
             // （谎报语义 / 造出 count<=0 的非法中间态 / 中间过程不可举证）。
             if (need > 0) {
@@ -310,7 +390,9 @@ public final class GunState {
         int reserve = reserveAmmo(inventory);
         // 规则③：部分填充 load = min(弹匣容量 − 弹匣内弹药, 后备弹药)
         int load = Math.min(need, reserve);
-        if (load > 0 && inventory != null && inventory.consumeItem(ItemRegistry.PISTOL_AMMO_ID, load)) {
+        // 弹药 ID 数据化：走本枪 spec.ammoId()，不再硬编码 PISTOL_AMMO_ID（M3 §5.2）。
+        // 构造期已校验该 ID 能解析到真实弹药，故这里不会拿到 null。
+        if (load > 0 && inventory != null && inventory.consumeItem(spec.ammoId(), load)) {
             magazineAmmo += load;   // 规则④：只在完成这一刻转移
         }
         reloadsCompleted++;
@@ -319,17 +401,25 @@ public final class GunState {
     /**
      * 本次判定用的"可用后备弹药"。
      *
-     * <p>无限口径返回 {@link Integer#MAX_VALUE} 而不是某个"很大的数"：
+     * <p>{@link ReserveMode#PROTOTYPE} 返回 {@link Integer#MAX_VALUE} 而不是某个"很大的数"：
      * 换弹的实际转移量是 {@code min(need, 可用)}，而 {@code need} 最多就是弹匣容量，
      * 因此这里只要是一个远大于容量的数就足够了 —— 用 {@code MAX_VALUE} 的额外好处是
      * "无限"这个值本身不会与任何真实库存数混淆（真实库存上限远小于它）。
      */
     private int availableReserve(Inventory inventory) {
-        return infiniteReserve ? Integer.MAX_VALUE : reserveAmmo(inventory);
+        return reserveMode.infiniteReserve() ? Integer.MAX_VALUE : reserveAmmo(inventory);
     }
 
+    /**
+     * 后备弹药数量：读 {@link GunSpec#ammoId()} 对应的真实弹药在背包里的数量。
+     *
+     * <p>M3 §5.2：这里原来硬读 {@code ItemRegistry.PISTOL_AMMO_ID}，
+     * 使本类只服务手枪。现在一律走 {@code spec.ammoId()} 字符串
+     * （{@link Inventory#countOfItem(String)} 本就接受 stable ID），本类不再认识枪种。
+     * ammoId 的存在性已在构造期校验（见 {@link #GunState(Item, boolean)}）。
+     */
     private int reserveAmmo(Inventory inventory) {
-        return inventory == null ? 0 : inventory.countOfItem(ItemRegistry.PISTOL_AMMO_ID);
+        return inventory == null ? 0 : inventory.countOfItem(spec.ammoId());
     }
 
     // ------------------------------------------------------------ 统计

@@ -32,6 +32,20 @@ public final class ViewmodelModel {
     public ViewmodelKind kind = ViewmodelKind.EMPTY;
 
     /**
+     * 枪械轮廓查表键（{@link ViewmodelKind#GUN} 用）；非枪为 {@code null}。
+     *
+     * <p><b>为什么 kind 之外还要一个键：</b>{@code kind} 只能回答"这是不是枪"，
+     * 回答不了"是哪把枪"。M2 只有手枪时"所有枪共用一套 {@code GUN_PARTS}"没问题，
+     * M3 加了 SMG 之后，若继续共用，玩家右手里就是一把一模一样的手枪 ——
+     * 这正是 v2 §4.2 明令禁止的"逻辑上是 SMG，右手仍是一模一样的手枪模型"。
+     *
+     * <p>取值来自 {@code item.presentation().viewmodelId()}（与图标 / 音效 / 后坐同一套键的解析方式），
+     * 而不是从 item stable id 现推：表现资源统一由 {@code GunPresentationSpec} 指路。
+     * {@code ViewmodelGeometry} 按本键选轮廓数组。
+     */
+    public String gunViewmodelId;
+
+    /**
      * 手持物主色（{@link ViewmodelKind#BLOCK} 用）。
      *
      * <p>枪械与空手有自己的配色表（见 {@code ViewmodelGeometry}），
@@ -84,6 +98,11 @@ public final class ViewmodelModel {
         this.slot = slot;
         Item item = stack == null ? null : stack.item();
         this.kind = ViewmodelKind.of(item);
+        // 枪械轮廓键：只有枪有 presentation（Item 的不变式保证非枪携带它会在构造期抛异常）。
+        // 非枪一律置 null —— 否则"上一帧拿的是 SMG、这一帧换成方块"会留下一个陈旧的键。
+        this.gunViewmodelId = item != null && item.isGun() && item.presentation() != null
+                ? item.presentation().viewmodelId()
+                : null;
         if (kind != ViewmodelKind.BLOCK || item == null) {
             return;
         }

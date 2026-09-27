@@ -27,6 +27,16 @@ package com.skyisland.player;
  * @param lookDeltaY    本帧鼠标位移 Y（像素，下为正）
  * @param attackHeld    是否按住攻击键（左键）：M1 用于持续挖掘，M2 持枪时同时是"持续开火"
  *                      （射速由 {@code GunState} 按 4 发/秒节流，因此不需要半自动的按下沿）
+ * @param attackPressed 本帧是否按下攻击键（左键，用于 SINGLE 半自动开火 —— 只取按下沿）。
+ *                      <b>v2 §7.3 新增</b>：与 {@link #attackHeld} 是<b>同一个物理键（左键）的两个语义切片</b>，
+ *                      二者<b>并存</b>而不是二选一（与 {@link #usePressed}/{@link #useHeld} 的先例一致）：
+ *                      持续开火（AUTO）只关心"此刻是否按着"（电平），
+ *                      半自动（SINGLE）只关心"按下的那一刻"（按下沿能天然去重长按）。
+ *                      若把 SINGLE 也做成电平，长按左键会按射速反复走"新一次开火"的路径。
+ *                      <p><b>它也是帧级量，必须走与 {@code usePressed} 相同的可靠通道</b>：
+ *                      本项目已证明"只活一个渲染帧的一次性输入会在 0 逻辑步的帧里丢失"
+ *                      （见 {@code FrameInputQuantities} 的类注释）。若把它留在逐逻辑步
+ *                      复用的 {@code frameIntent} 里，症状是同源的"按了左键不开火"。
  * @param usePressed    本帧是否按下使用键（右键，用于放置 —— 只取按下沿）
  * @param useHeld       是否按住使用键（右键，电平）。<b>M2 新增</b>：持枪时右键是"瞄准"，
  *                      而瞄准是一个<b>持续状态</b>，用按下沿表达不了"松手退出瞄准"。
@@ -50,6 +60,7 @@ public record PlayerIntent(
         double lookDeltaX,
         double lookDeltaY,
         boolean attackHeld,
+        boolean attackPressed,
         boolean usePressed,
         boolean useHeld,
         boolean reloadPressed,
@@ -63,7 +74,7 @@ public record PlayerIntent(
 
     /** 空意图：不产生任何动作。用于"本帧没有输入"与自测脚本的静止帧。 */
     public static final PlayerIntent NONE = new PlayerIntent(
-            0f, 0f, false, 0, 0, false, false, false, false, false, false, false, false, 0, -1);
+            0f, 0f, false, 0, 0, false, false, false, false, false, false, false, false, false, 0, -1);
 
     public boolean hasMovement() {
         return moveForward != 0f || moveStrafe != 0f;
@@ -82,15 +93,29 @@ public record PlayerIntent(
      */
     public PlayerIntent withLook(double deltaX, double deltaY) {
         return new PlayerIntent(moveForward, moveStrafe, jump, deltaX, deltaY,
-                attackHeld, usePressed, useHeld, reloadPressed, respawnPressed,
+                attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
                 toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot);
     }
 
     /** 复制本意图并替换滚轮切槽增量（同为帧级量，理由见 {@link #withLook}）。 */
     public PlayerIntent withScroll(int scrollSteps) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
-                attackHeld, usePressed, useHeld, reloadPressed, respawnPressed,
+                attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
                 toggleDebugPressed, savePressed, screenshotPressed, scrollSteps, hotbarSlot);
+    }
+
+    /**
+     * 复制本意图并替换"攻击键按下沿"（左键 = SINGLE 半自动开火）。
+     *
+     * <p><b>它也是帧级量。</b>理由与 {@link #withUsePressed} 完全同源：按下沿说的是
+     * "这一帧玩家点了一下"，不是"每个逻辑步各点一下"。若让它留在逐逻辑步复用的意图里，
+     * 会同时产生两个方向相反的错误：零逻辑步的帧把它丢掉、多逻辑步的帧把它重复施加。
+     * AUTO 用的 {@code attackHeld}（电平）不走这里，它逐逻辑步复用。
+     */
+    public PlayerIntent withAttackPressed(boolean pressed) {
+        return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
+                attackHeld, pressed, usePressed, useHeld, reloadPressed, respawnPressed,
+                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot);
     }
 
     /**
@@ -103,27 +128,27 @@ public record PlayerIntent(
      */
     public PlayerIntent withUsePressed(boolean pressed) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
-                attackHeld, pressed, useHeld, reloadPressed, respawnPressed,
+                attackHeld, attackPressed, pressed, useHeld, reloadPressed, respawnPressed,
                 toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot);
     }
 
     /** 复制本意图并替换"换弹按下沿"（R）。理由见 {@link #withUsePressed}。 */
     public PlayerIntent withReloadPressed(boolean pressed) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
-                attackHeld, usePressed, useHeld, pressed, respawnPressed,
+                attackHeld, attackPressed, usePressed, useHeld, pressed, respawnPressed,
                 toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot);
     }
 
     /** 复制本意图并替换数字键选槽（{@code -1} = 不选）。理由见 {@link #withUsePressed}。 */
     public PlayerIntent withHotbarSlot(int slot) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
-                attackHeld, usePressed, useHeld, reloadPressed, respawnPressed,
+                attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
                 toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, slot);
     }
 
     /** 便于自测脚本构造：只关心移动与跳跃。 */
     public static PlayerIntent moving(float forward, float strafe, boolean jump) {
-        return new PlayerIntent(forward, strafe, jump, 0, 0, false, false, false, false,
+        return new PlayerIntent(forward, strafe, jump, 0, 0, false, false, false, false, false,
                 false, false, false, false, 0, -1);
     }
 
@@ -134,13 +159,13 @@ public record PlayerIntent(
                                  double lookX, double lookY,
                                  boolean attackHeld, boolean usePressed) {
         return new PlayerIntent(forward, strafe, jump, lookX, lookY,
-                attackHeld, usePressed, false, false, false, false, false, false, 0, -1);
+                attackHeld, false, usePressed, false, false, false, false, false, false, 0, -1);
     }
 
-    /** 便于自测脚本构造：只切换快捷栏槽位（十五个组件的 record 手写构造点越少越安全）。 */
+    /** 便于自测脚本构造：只切换快捷栏槽位（十六个组件的 record 手写构造点越少越安全）。 */
     public static PlayerIntent selectSlot(int slot) {
         return new PlayerIntent(0f, 0f, false, 0, 0, false, false, false, false,
-                false, false, false, false, 0, slot);
+                false, false, false, false, false, 0, slot);
     }
 
     /**
@@ -154,14 +179,14 @@ public record PlayerIntent(
                                       boolean attackHeld, boolean useHeld,
                                       boolean reloadPressed) {
         return new PlayerIntent(forward, strafe, jump, lookX, lookY,
-                attackHeld, false, useHeld, reloadPressed,
+                attackHeld, false, false, useHeld, reloadPressed,
                 false, false, false, false, 0, -1);
     }
 
     /** 复制本意图并把"强制重生"置为真（帧级边沿动作，由游戏层注入）。 */
     public PlayerIntent withRespawn() {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
-                attackHeld, usePressed, useHeld, reloadPressed,
+                attackHeld, attackPressed, usePressed, useHeld, reloadPressed,
                 true, toggleDebugPressed, savePressed, screenshotPressed,
                 hotbarScroll, hotbarSlot);
     }

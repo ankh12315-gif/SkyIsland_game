@@ -71,6 +71,19 @@ class CombatControllerTest {
     /** 无事件记录器：只需要"不会 NPE"的场景用它。 */
     private static final CombatController.Listener QUIET = CombatController.Listener.NONE;
 
+    /**
+     * 手枪的一次"开火"意图。
+     *
+     * <p><b>v2 §7.1 起这里是 {@code attackPressed}（按下沿）而不是 {@code attackHeld}（电平）：</b>
+     * 手枪是 {@code SINGLE}，只认按下沿。本类里所有"打一枪看看结果"的用例都走这个工厂，
+     * 于是"手枪不再是按住就发"这件事只需要在一处表达。
+     * 按下沿之外仍然带上 {@code attackHeld}（模拟"手还按在键上"），
+     * 这正是真实帧级 latch 发放那一步的样子。
+     */
+    private static PlayerIntent firePistol() {
+        return PlayerIntent.combat(0, 0, false, 0, 0, true, false, false).withAttackPressed(true);
+    }
+
     // ============================================================ 事件记录器
 
     /**
@@ -172,7 +185,7 @@ class CombatControllerTest {
 
         Recorder recorder = new Recorder();
         step(combat, world, player,
-                PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                firePistol(), recorder);
 
         assertEquals(1, recorder.shots, "按住左键且弹匣有弹必须击发");
         assertEquals(1, recorder.entityHits, "正前方 6 格的怪必须被打中");
@@ -195,7 +208,7 @@ class CombatControllerTest {
 
         Recorder recorder = new Recorder();
         step(combat, world, player,
-                PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                firePistol(), recorder);
 
         assertEquals(1, recorder.entityHits, "45 格仍在 32 格射程的射线可达范围内，只是衰减了");
         int expected = DamageFalloff.damage(8, recorder.lastDistance, 32);
@@ -225,7 +238,7 @@ class CombatControllerTest {
 
         Recorder recorder = new Recorder();
         step(combat, world, player,
-                PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                firePistol(), recorder);
 
         assertEquals(1, recorder.shots, "墙不影响击发");
         assertEquals(0, recorder.entityHits, "PRD 12.2：最近命中是方块时不得结算实体伤害");
@@ -247,7 +260,7 @@ class CombatControllerTest {
 
         Recorder recorder = new Recorder();
         step(combat, world, player,
-                PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                firePistol(), recorder);
 
         assertNotNull(recorder.lastHitPoint, "命中方块必须给出溅射粒子的落点");
         assertEquals(1, recorder.blockHits);
@@ -272,7 +285,7 @@ class CombatControllerTest {
 
         Recorder recorder = new Recorder();
         step(combat, world, player,
-                PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                firePistol(), recorder);
 
         double[] t = recorder.lastTracer;
         assertNotNull(t);
@@ -297,7 +310,7 @@ class CombatControllerTest {
 
         Recorder recorder = new Recorder();
         step(combat, world, player,
-                PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                firePistol(), recorder);
 
         assertEquals(1, recorder.shots);
         assertEquals(0, recorder.entityHits);
@@ -325,13 +338,19 @@ class CombatControllerTest {
         World world = world();
         Player player = armedPlayer(0.5, TestWorlds.SURFACE_FEET_Y, 0.5);
         CombatController combat = new CombatController(new EntityManager());
+        // 本用例验的是"换弹耗时 + 完成前不转移"这两条<b>与口径无关</b>的规则
+        // （见方法名：leavesTheReserveAlone 描述的是原型口径那一半）。
+        // 因此显式选 Combat Prototype 口径，而不是依赖控制器的默认值 ——
+        // M3 Story 8 把默认值收紧成了 Survival，若这里不显式指定，
+        // 本用例会从"验无限不扣弹"悄悄变成"验有限扣弹"，而方法名仍在说相反的话。
+        combat.setReserveMode(GunState.ReserveMode.PROTOTYPE);
 
         GunState gun = combat.gunFor(player);
         assertNotNull(gun, "手持手枪必须能取到枪械状态");
         assertEquals(0, gun.magazineAmmo(), "开局弹匣为空（需要先上一次膛）");
         assertEquals(12, gun.magazineSize());
         assertEquals(1.2, gun.spec().reloadSeconds(), 1e-9, "PRD 12.3：换弹耗时 1.2 秒");
-        assertTrue(gun.reserveInfinite(), "M2.1：产品默认口径是无限后备");
+        assertTrue(gun.reserveInfinite(), "显式选定的 PROTOTYPE 口径 = 无限后备");
 
         Recorder recorder = new Recorder();
         PlayerIntent reload = PlayerIntent.combat(0, 0, false, 0, 0, false, false, true);
@@ -348,10 +367,9 @@ class CombatControllerTest {
         }
         assertEquals(1, recorder.reloadCompleted);
         assertEquals(12, gun.magazineAmmo(), "补满到弹匣容量 12");
-        // M2.1-A：无限后备下换弹不从背包扣弹，24 发<b>一发不少</b>。
-        // 改动前这条断言是 12（24 − 12），它随产品口径一起变，不是被放宽后凑绿。
         assertEquals(24, player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID),
-                "M2.1 无限后备：换弹只读后备、不写背包");
+                "PROTOTYPE 无限后备：换弹只读后备、不写背包（有限口径的对应断言见 "
+                        + "survivalReloadSpendsExactlyTheAmmoItLoads）");
     }
 
     /**
@@ -381,6 +399,9 @@ class CombatControllerTest {
         World world = world();
         Player player = armedPlayer(0.5, TestWorlds.SURFACE_FEET_Y, 0.5);
         CombatController combat = new CombatController(new EntityManager());
+        // 口径显式取 PROTOTYPE：本用例验的是"移动不打断换弹"这条时间线性质，
+        // 与"弹药从哪来"无关。显式指定后，它不会随控制器默认口径（Survival）漂移。
+        combat.setReserveMode(GunState.ReserveMode.PROTOTYPE);
         GunState gun = combat.gunFor(player);
 
         Recorder recorder = new Recorder();
@@ -407,18 +428,22 @@ class CombatControllerTest {
         // 全程没有任何"取消"这件事可发生 —— 该事件在 M2.2 已从监听器接口删除，
         // 因此这里只能断言它的对立面：完成事件恰好到了一次，弹药该在的地方都在。
         assertEquals(24, player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID),
-                "M2.1 无限后备：边走边换同样只读后备、不写背包");
+                "PROTOTYPE 无限后备：边走边换同样只读后备、不写背包");
     }
 
     /**
-     * M2.1-A：无限后备下"部分填充"不再发生 —— 背包里几乎没弹也能把弹匣补满，
-     * 且背包里的那几发一发不动。
+     * Combat Prototype / Debug 口径（v2 §5.3、§19-7）：无限后备下"部分填充"不发生 ——
+     * 背包里几乎没弹也能把弹匣补满，且背包里的那几发一发不动。
      *
      * <p>本用例在 M2.1 之前叫 {@code partialReloadLoadsOnlyWhatTheReserveHas}，
      * 断言的是 PRD 5.4.3 规则③（{@code load = min(缺口, 后备)}）。
-     * 规则③本身没有作废，它只是不再走产品的默认口径，
-     * 因此那条语义改由 {@link CombatCoreTest#partialReloadFillsExactlyWhatIsAvailable}
-     * 用显式构造的有限口径继续守 —— 这里守的是"产品口径下玩家不会被弹药卡住"。
+     * 规则③本身没有作废，它在正式玩法口径（Survival）下是常态，由
+     * {@link CombatCoreTest#partialReloadFillsExactlyWhatIsAvailable} 与
+     * {@link #survivalReloadSpendsExactlyTheAmmoItLoads} 守着；
+     * 这里守的是 Debug 口径下"玩家不会被弹药卡住"。
+     *
+     * <p><b>口径必须显式指定：</b>Story 8 之后控制器的默认值已是 Survival，
+     * 不再指定就会读到有限口径、与用例名说着相反的事。
      */
     @Test
     void infiniteReserveFillsTheMagazineEvenWithAlmostNoAmmoInTheBag() {
@@ -427,6 +452,7 @@ class CombatControllerTest {
         player.inventory().add(ItemRegistry.runtimeIdOf(ItemRegistry.PISTOL_ID), 1);
         player.inventory().add(ItemRegistry.runtimeIdOf(ItemRegistry.PISTOL_AMMO_ID), 5);
         CombatController combat = new CombatController(new EntityManager());
+        combat.setReserveMode(GunState.ReserveMode.PROTOTYPE);
 
         Recorder recorder = new Recorder();
         PlayerIntent reload = PlayerIntent.combat(0, 0, false, 0, 0, false, false, true);
@@ -437,7 +463,7 @@ class CombatControllerTest {
         }
 
         GunState gun = combat.gunFor(player);
-        assertEquals(12, gun.magazineAmmo(), "M2.1：无限后备下弹匣直接补满 12，不再部分填充");
+        assertEquals(12, gun.magazineAmmo(), "PROTOTYPE：无限后备下弹匣直接补满 12，不再部分填充");
         assertEquals(5, player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID),
                 "背包里的 5 发一发不少（换弹只读后备）");
         assertEquals(1, recorder.reloadCompleted);
@@ -459,22 +485,26 @@ class CombatControllerTest {
     }
 
     /**
-     * M2.1-A：把背包里的弹全部抽干之后，按 R <b>仍然</b>能换弹。
+     * Debug / Prototype 口径：把背包里的弹全部抽干之后，按 R <b>仍然</b>能换弹
+     * （v2 §19-7「Debug 模式仍可无限备弹」）。
      *
      * <p>本用例在 M2.1 之前是
      * {@code fullMagazineReloadIsANoOpAndZeroReserveIsRefused} 的后半段，
      * 断言的是"后备为 0 → NO_RESERVE + 提示『没有后备弹药』"。
-     * 无限后备使那条路径不可达，因此这里断言的是<b>反面</b>：
-     * 换弹必须能开始、必须能补满、背包必须仍然是空的，且
-     * {@link Localization#MSG_NO_RESERVE} <b>不得</b>出现 ——
-     * 如果它出现了，说明有人把口径改回了有限，而"改回有限"会让原型阶段的
-     * 连续试玩在第 25 发之后中断，那正是 M2.1-A 要消除的东西。
+     * 无限后备使那条路径不可达。M3 Story 8 之后，那条路径在<b>正式玩法</b>里是常态
+     * （见 {@link #survivalRefusesReloadOnceTheAmmoPoolIsDry}），
+     * 而本用例守的是另一侧：调试口径下 NO_RESERVE 必须仍然不可达 ——
+     * 否则"原型阶段连续试玩在第 25 发之后中断"会重新出现，那正是 M2.1-A 要消除的东西。
+     *
+     * <p><b>口径显式指定（Story 8 前它依赖的是控制器的默认值）</b>：
+     * 显式之后本用例验的是"Debug 口径仍然无限"，而不是"默认值恰好是无限"。
      */
     @Test
     void emptiedInventoryStillReloadsUnderInfiniteReserve() {
         World world = world();
         Player player = armedPlayer(0.5, TestWorlds.SURFACE_FEET_Y, 0.5);
         CombatController combat = new CombatController(new EntityManager());
+        combat.setReserveMode(GunState.ReserveMode.PROTOTYPE);
         loadMagazine(combat, world, player);
 
         Recorder recorder = new Recorder();
@@ -483,7 +513,7 @@ class CombatControllerTest {
                 player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID));
         assertEquals(0, player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID), "前提：后备已抽干");
         step(combat, world, player,
-                PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                firePistol(), recorder);
         assertEquals(11, combat.gunFor(player).magazineAmmo());
 
         // 按 R：无限后备下必须被受理
@@ -491,9 +521,9 @@ class CombatControllerTest {
                 PlayerIntent.combat(0, 0, false, 0, 0, false, false, true), recorder);
         assertEquals(GunState.ReloadOutcome.STARTED,
                 recorder.reloadRequests.get(recorder.reloadRequests.size() - 1),
-                "M2.1：无限后备下空背包也能换弹（NO_RESERVE 不可达）");
+                "Debug 口径：无限后备下空背包也能换弹（NO_RESERVE 不可达，v2 §19-7）");
         assertFalse(recorder.textKeys.contains(Localization.MSG_NO_RESERVE),
-                "无限后备下不得再出现「没有后备弹药」提示");
+                "无限后备下不得出现「没有后备弹药」提示");
 
         // 走完换弹
         for (int i = 0; i < RELOAD_STEPS; i++) {
@@ -515,7 +545,7 @@ class CombatControllerTest {
 
         Recorder recorder = new Recorder();
         step(combat, world, player,
-                PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                firePistol(), recorder);
 
         assertEquals(0, recorder.shots, "弹匣为空时不得击发");
         assertEquals(1, recorder.dryFires);
@@ -559,7 +589,7 @@ class CombatControllerTest {
         Recorder recorder = new Recorder();
         for (int i = 0; i < 10; i++) {
             step(combat, world, player,
-                    PlayerIntent.combat(0, 0, false, 0, 0, true, false, false), recorder);
+                    firePistol(), recorder);
         }
         assertEquals(0, recorder.shots, "倒下期间不得继续开火");
         assertEquals(12, combat.existingGun(player).magazineAmmo(), "倒下期间不得消耗弹药");
@@ -577,7 +607,7 @@ class CombatControllerTest {
         loadMagazine(combat, world, player);
 
         Recorder recorder = new Recorder();
-        PlayerIntent fire = PlayerIntent.combat(0, 0, false, 0, 0, true, false, false);
+        PlayerIntent fire = firePistol();
         PlayerIntent idle = PlayerIntent.combat(0, 0, false, 0, 0, false, false, false);
 
         // 20 点生命 / 每发 8 点 → 3 发。射速 4 发/秒 → 每发之间等 0.25 秒 = 15 步，

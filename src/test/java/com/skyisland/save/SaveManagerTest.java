@@ -221,6 +221,86 @@ class SaveManagerTest {
         assertEquals(3, reloadedPlayer.inventory().usedSlotCount(), "中间的空槽不得被填充");
     }
 
+    /**
+     * M3 / v2 §11.3 与 §14.7：<b>SMG 的 Item stable ID 必须能跨存档往返，
+     * 且槽位保持不变、世界重启后当前选中的那把枪正确。</b>
+     *
+     * <h2>为什么这条不能靠"手枪往返测试通过"顺带覆盖</h2>
+     * 手枪与 SMG 走的确实是同一条序列化路径（都是 {@code ItemRegistry.byRuntimeId(...).id()}
+     * 写、{@code ItemRegistry.runtimeIdOf(...)} 读）。但"同一条路径"是<u>当前的实现事实</u>，
+     * 不是规格 —— 一旦有人把写盘改回"按方块表写 ID"或"按 runtimeId 数值写"，
+     * 手枪可能因为 runtimeId 小、恰好还能对上而侥幸不红，而 SMG（表尾追加的那个）
+     * 会静默变成别的东西。因此"表尾那把新枪也能往返"必须单独成为一条断言。
+     *
+     * <h2>这条测试覆盖 v2 §11.3 的完整链路</h2>
+     * <pre>
+     *   拿到 SMG → 放进 Hotbar / Inventory → Save → Exit → Relaunch → 同槽位仍是 skyisland:smg
+     * </pre>
+     * "Exit / Relaunch"用"另造一个全新世界与玩家再 loadInto"来模拟（与
+     * {@link #gunAndAmmoSurviveASaveLoadRoundTrip} 同一手法，也是本类其它用例的既有约定）。
+     *
+     * <p>断言刻意分成三组，缺一不可：
+     * <ol>
+     *   <li><b>Hotbar 槽位保持</b>：SMG 放在快捷栏第 5 格 → 读回必须仍在快捷栏第 5 格；</li>
+     *   <li><b>Inventory（主背包）槽位保持</b>：另放一把 SMG 在主背包第 2 格 → 读回仍在原处
+     *       （主背包与快捷栏在 v2 存档里是同一套绝对索引，两个区都必须验）；</li>
+     *   <li><b>当前选中枪正确</b>：{@code selectedSlot} 指向 SMG 那一格，读回后
+     *       {@code selectedStack().item().id()} 仍是 {@code skyisland:smg}。</li>
+     * </ol>
+     */
+    @Test
+    void smgSurvivesASaveLoadRoundTripInTheSameSlotsWithTheSameSelectedGun(@TempDir Path root)
+            throws IOException {
+        SaveManager manager = manager(root);
+        World world = freshWorld();
+        Player player = freshPlayer();
+
+        int smg = ItemRegistry.runtimeIdOf(ItemRegistry.SMG_ID);
+        int ammo = ItemRegistry.runtimeIdOf(ItemRegistry.PISTOL_AMMO_ID);
+        // ① 快捷栏第 5 格（相对 4 → 绝对 31）放 SMG
+        player.inventory().setSlot(player.inventory().hotbarIndex(4), ItemStack.of(smg, 1));
+        // ② 主背包第 2 格（绝对 1）再放一把 SMG —— 验证主背包槽位也保持
+        player.inventory().setSlot(1, ItemStack.of(smg, 1));
+        // 共用弹药：SMG 的后备来自 pistol_ammo（v2 §6.1）
+        player.inventory().add(ammo, 40);
+        // ③ 选中 SMG 那一格（快捷栏相对 4）
+        player.inventory().selectSlot(4);
+
+        assertTrue(manager.save(world, player).success());
+
+        // ---- 全新的世界与玩家（模拟"退出 → 重启程序"）----
+        World reloaded = freshWorld();
+        Player reloadedPlayer = freshPlayer();
+        SaveResult loaded = manager.loadInto(reloaded, reloadedPlayer);
+
+        assertTrue(loaded.success(), loaded.summary());
+        assertTrue(loaded.warnings().isEmpty(),
+                "干净的 M3 存档不得产生任何告警（SMG 必须能被注册表解析）: " + loaded.warnings());
+
+        // ① Hotbar 槽位保持（绝对索引 31 = 快捷栏相对 4）
+        assertEquals(smg, reloadedPlayer.inventory().hotbarSlot(4).itemRuntimeId(),
+                "SMG 必须回到快捷栏第 5 格（按 stable ID 还原）");
+        assertEquals(ItemRegistry.SMG_ID, reloadedPlayer.inventory().hotbarSlot(4).item().id(),
+                "读回的物品 stable ID 必须仍是 skyisland:smg");
+        assertEquals(1, reloadedPlayer.inventory().hotbarSlot(4).count());
+
+        // ② Inventory（主背包）槽位保持（绝对索引 1）
+        assertEquals(smg, reloadedPlayer.inventory().slot(1).itemRuntimeId(),
+                "主背包第 2 格里的 SMG 也必须回到原处");
+        assertEquals(ItemRegistry.SMG_ID, reloadedPlayer.inventory().slot(1).item().id());
+
+        // ③ 世界重启后当前选中的枪正确
+        assertEquals(4, reloadedPlayer.inventory().selectedSlot(),
+                "selectedSlot 必须保持指向 SMG 那一格");
+        assertEquals(ItemRegistry.SMG_ID,
+                reloadedPlayer.inventory().selectedStack().item().id(),
+                "重启后手里拿的必须仍是 SMG（v2 §14.7「世界重启后当前选中枪正确」）");
+
+        // 对照：读回的弹药按共享 Item 计得回来（SMG 后备来自 pistol_ammo）
+        assertEquals(40, reloadedPlayer.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID),
+                "共用弹药必须一并往返（v2 §6.1）");
+    }
+
     @Test
     void levelMetaRecordsTheFactsNeededToDiagnoseASave(@TempDir Path root) throws IOException {
         SaveManager manager = manager(root);

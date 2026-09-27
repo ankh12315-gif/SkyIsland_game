@@ -9,6 +9,8 @@ import com.skyisland.combat.GunState;
 import com.skyisland.entity.Entity;
 import com.skyisland.entity.EntityManager;
 import com.skyisland.entity.MeleeMonster;
+import com.skyisland.item.GunSpec;
+import com.skyisland.item.Item;
 import com.skyisland.item.ItemRegistry;
 import com.skyisland.player.Inventory;
 import com.skyisland.player.ItemStack;
@@ -144,6 +146,33 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         void grantDebugSupply();
 
         /**
+         * M3 Story 9：发放并把第二把枪（SMG）切到手上，用于"连续按住 30 秒"的稳定性阶段。
+         *
+         * <p><b>为什么单开一条宿主入口，而不是复用 F6：</b>F6 只给手枪 + 手枪弹
+         * （PRD 5.4.1 开局装备表）。SMG 是 v2 §10 的第二把验证枪，它不在开局装备里 ——
+         * 若让本阶段去翻背包找 SMG，就会把"SMG 到时在不在快捷栏"变成一个隐含前提。
+         * 由宿主显式发一把并切到手，本阶段的前提就只有一句可说清的话。
+         *
+         * @return SMG 的 runtimeId；注册表里没有 SMG 时返回 {@code -1}
+         */
+        int grantSmgForSustain();
+
+        /**
+         * M3 Story 9：SMG 稳定性阶段结束后，把阶段夹具还原 —— 从背包移除本阶段发放的 SMG，
+         * 并把选中的快捷栏槽位恢复为阶段开始前的那一格。
+         *
+         * <p><b>为什么必须还原（不是"可选清理"）：</b>本阶段<b>在存档阶段之后</b>运行，
+         * 而那把 SMG 会一直留在背包里直到进程退出 —— 退出时的自动存档
+         * （{@code SkyIslandGame.shutdown()} 的"退出即保存"）会把它写进存档，
+         * 于是循环外的读档校验（{@code verifyReload()} 重放的是<b>退出存档</b>）
+         * 会读到一把存档阶段快照里并不存在的 SMG，报"逐格不一致"。
+         * 这是<b>夹具污染</b>，不是产品缺陷；清理它才能让读档校验继续只检验产品行为。
+         *
+         * @param restoreSelectedSlot 阶段开始前选中的快捷栏相对槽位（{@code 0..8}）
+         */
+        void releaseSmgAfterSustain(int restoreSelectedSlot);
+
+        /**
          * M2.1：音频门面。
          *
          * <p>暴露它不是为了"顺便看看音效有没有响"，而是因为"音频子系统被整块建好却一行没接线"
@@ -169,6 +198,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         BREAK_PARTICLES("破坏粒子 8–12 个"),
         DEATH_AND_RESPAWN("死亡与 3 秒重生"),
         SAVE_RELOAD_ROUNDTRIP("存档（读档校验在收尾阶段执行）"),
+        SMG_SUSTAINED("SMG 连续按住 30 秒（稳定性 / 无异常增长）"),
         DONE("结束");
 
         final String label;
@@ -260,11 +290,40 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             420,
             // SAVE_RELOAD_ROUNDTRIP：F6 补给 1 步 + 同步存档（写盘耗时不计入步数）+ 断言若干步。
             20,
-            // DONE：收尾。
+            /*
+             * SMG_SUSTAINED（Story 9 / v2 §15）：连续按住 SMG 30 秒的稳定性。
+             *
+             *   · 30 秒 = 60 TPS × 30 = 1800 步。这是 v2 §15 明文要求的时长，不是"够用就好"。
+             *   · 阶段内一路 attackHeld=true（SMG 是 AUTO，电平驱动）；弹匣 24 发打空后
+             *     本阶段会在同一步内按 R 开始换弹（换弹 1.5 s = 90 步），走完继续连发。
+             *   · 本阶段的目的是"无异常增长"：曳光 ≤ MAX_TRACERS、粒子 ≤ MAX_PARTICLES、
+             *     干枪/开火计数与射速一致、不 OOM、不抛异常 —— 这些都由 checkSmgSustained()
+             *     在阶段末逐条断言。frame time 的 p95/p99 由独立的性能对照运行取证（见文档）。
+             *   取 1800 步（无额外余量：这就是被测规格本身）。
+             */
+            1800,
+             // DONE：收尾。
             1
     };
 
     // ---- 与世界一致性有关的常量（避免为读一个常量而暴露整个类）----
+
+    /**
+     * SMG 稳定性阶段的总步数：30 秒 × 60 TPS = 1800（v2 §15 明文时长）。
+     *
+     * <p>与 {@link #STAGE_BUDGET} 里 SMG_SUSTAINED 的预算保持同一个数：
+     * 意图脚本要用它算"收尾的松开扳机窗口"从哪一步开始。
+     */
+    private static final int SMG_STAGE_STEPS = 1800;
+
+    /**
+     * SMG 阶段末尾"松开扳机"的步数（不产生新的击发，只让后坐力回落）。
+     *
+     * <p>取值 30 步 = 0.5 s。推导：后坐力上限 {@code MAX_RECOIL_PITCH_DEG = 1.8°}，
+     * 回落速度 {@code RECOIL_RECOVER_DEG_PER_SEC = 5.0°/s} → 从满值回落需要 1.8/5 = 0.36 s = 22 步。
+     * 取 30 步留 8 步余量。这 30 步内 SMG 仍然"在手上、在按住之外"，只是松开了扳机。
+     */
+    private static final int SMG_RELEASE_SETTLE_STEPS = 30;
 
     /** 世界出生点（与 {@link TestWorldGenerator} 一致）。 */
     private static final double SPAWN_X = TestWorldGenerator.spawnX();
@@ -663,6 +722,35 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private int savedAmmoCount = -1;
     private boolean saveVerifiedInLoop;
 
+    // ---- M3 Story 9：SMG 连续按住 30 秒稳定性阶段的观测值 ----
+
+    /** SMG 阶段开始时的开火计数（阶段末据此算增量）。 */
+    private int smgStartShots;
+    /** SMG 阶段开始时的干枪计数。 */
+    private int smgStartDryFires;
+    /** SMG 阶段开始时的累计曳光生成数（自测证据，不受 clear() 影响）。 */
+    private long smgStartTracersGenerated;
+    /** SMG 阶段开始时的累计枪口闪光数。 */
+    private int smgStartMuzzleFlashes;
+    /** SMG 阶段内观测到的曳光存活峰值（应 ≤ {@code CombatFxModel.MAX_TRACERS}）。 */
+    private int smgPeakTracers;
+    /** SMG 阶段内观测到的粒子存活峰值（应 ≤ {@code CombatFxModel.MAX_PARTICLES}）。 */
+    private int smgPeakParticles;
+    /** SMG 阶段内观测到的枪口闪光存活峰值（应 ≤ {@code CombatFxModel.MAX_FLASHES}）。 */
+    private int smgPeakFlashes;
+    /** SMG 阶段内本阶段按 R 的次数（用于核对"打空→换弹"节奏）。 */
+    private int smgReloadRequests;
+    /** SMG 阶段开始时的后备弹药数（PROTOTYPE 口径下不应被扣减）。 */
+    private int smgStartReserve;
+    /** SMG 阶段结束时读到的 SMG runtimeId（-1 表示注册表里没有 SMG）。 */
+    private int smgRuntimeId = -1;
+    /** SMG 阶段内是否观测到过一次"弹匣打空"（应当出现，才说明真的连发到空）。 */
+    private boolean smgObservedEmptyMagazine;
+    /** SMG 阶段开始时的世界时刻（收尾用，仅记录）。 */
+    private int smgStageSteps;
+    /** SMG 阶段开始前选中的快捷栏相对槽位（阶段末还原用，见 {@code releaseSmgAfterSustain}）。 */
+    private int smgPrevSelectedSlot = 0;
+
     public M2CombatSelfTest(Host host) {
         this.host = host;
         Log.info("[自测] M2 战斗自测已装载：%d 个阶段（进程内意图注入，不依赖 OS 输入）",
@@ -739,6 +827,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             case BREAK_PARTICLES -> observeBreak(player);
             case DEATH_AND_RESPAWN -> observeDeath(player);
             case RELOAD_FULL, RELOAD_WHILE_WALKING -> observeReloadStarted(player);
+            case SMG_SUSTAINED -> observeSmgSustained(player);
             default -> {
             }
         }
@@ -764,6 +853,31 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         if (reloadRequestedAtStep >= 0 && currentStep == reloadRequestedAtStep) {
             GunState gun = host.combat().existingGun(player);
             reloadingObservedAfterRequest = gun != null && gun.isReloading();
+        }
+    }
+
+    /**
+     * M3 Story 9：SMG 连续按住 30 秒阶段里的逐步观测。
+     *
+     * <p><b>只采样峰值与"是否见过空弹匣"，不做断言。</b>断言集中在阶段末的
+     * {@link #checkSmgSustained()}：本方法每个逻辑步都会跑 1800 次，任何在这里
+     * {@code record(...)} 的写法都会把断言数炸成上千条（并让摘要不可读）。
+     *
+     * <p>峰值采样是"无异常增长"的关键物证：若高射速下粒子/曳光/闪光某一环只进不出，
+     * 峰值会在阶段内顶到容量上限。因此峰值本身就是一个会变红的量 ——
+     * 正常节奏下曳光寿命 0.05 s（3 帧）、10 发/秒（每 6 步一发）→ 同时存活 ≈ 1 条。
+     */
+    private void observeSmgSustained(Player player) {
+        smgStageSteps++;
+        CombatFxModel fx = host.combatFx();
+        if (fx != null) {
+            smgPeakTracers = Math.max(smgPeakTracers, fx.tracerCount());
+            smgPeakParticles = Math.max(smgPeakParticles, fx.particleCount());
+            smgPeakFlashes = Math.max(smgPeakFlashes, fx.flashCount());
+        }
+        GunState gun = host.combat().existingGun(player);
+        if (gun != null && gun.magazineAmmo() == 0) {
+            smgObservedEmptyMagazine = true;
         }
     }
 
@@ -797,6 +911,29 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         reloadingObservedAfterRequest = false;
 
         Stage stage = Stage.values()[stageIndex];
+
+        // M3 Story 9：SMG 阶段的起始快照。放在这里（每个阶段开始）而不是只给 SMG 阶段，
+        // 是为了让"阶段内增量"的口径与其它阶段一致，读的人不用去记哪个阶段有特殊初始化。
+        if (stage == Stage.SMG_SUSTAINED) {
+            smgStartShots = host.combat().shotsFired();
+            smgStartDryFires = host.combat().dryFires();
+            smgStartTracersGenerated = host.combatFx() == null ? 0 : host.combatFx().totalTracers();
+            smgStartMuzzleFlashes = host.combatFx() == null ? 0 : host.combatFx().totalMuzzleFlashes();
+            smgPeakTracers = 0;
+            smgPeakParticles = 0;
+            smgPeakFlashes = 0;
+            smgReloadRequests = 0;
+            smgObservedEmptyMagazine = false;
+            smgStageSteps = 0;
+            // 先记下阶段前的选中槽位，再发 SMG —— 阶段末要把选中槽位还原回去，
+            // 否则退出自动存档里"选中的是 SMG"会与存档阶段的快照不一致（夹具污染）。
+            smgPrevSelectedSlot = player.inventory().selectedSlot();
+            smgRuntimeId = host.grantSmgForSustain();
+            smgStartReserve = player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID);
+            Log.info("[自测] SMG 阶段：runtimeId=%d，手持=%s，后备弹药=%d",
+                    smgRuntimeId, player.inventory().selectedStack().item().id(), smgStartReserve);
+        }
+
         Log.info("[自测] ▶ 阶段 %d/%d %s（预算 %d 步）",
                 stageIndex + 1, Stage.values().length, stage.label, STAGE_BUDGET[stageIndex]);
     }
@@ -865,10 +1002,10 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                     yield PlayerIntent.NONE;   // 本步只摆姿势：下一步才开始按左键
                 }
                 // ★ 关键：此时手持的是手枪（第 1 格）。左键在这里应当是"开火"而不是"挖掘"。
-                yield PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, false);
+                yield singleShotIntent(player);
             }
 
-            case DRY_FIRE -> PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, false);
+            case DRY_FIRE -> singleShotIntent(player);
 
             case RELOAD_FULL -> {
                 if (currentStep == 0) {
@@ -883,9 +1020,9 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             case RELOAD_WHILE_WALKING -> {
                 GunState gun = host.combat().existingGun(player);
                 if (walkPhase == 0) {
-                    // ① 按住左键打空 12 发（射速由 GunState 节流）
+                    // ① 按住左键打空 12 发（射速由 GunState 节流；SINGLE 走按下沿，见 singleShotIntent）
                     if (gun != null && gun.magazineAmmo() > 0) {
-                        yield PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, false);
+                        yield singleShotIntent(player);
                     }
                     walkPhase = 1;
                     magAfterEmptying = gun == null ? -1 : gun.magazineAmmo();
@@ -946,7 +1083,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                     // 3 发已致死：立刻松手，保证 shotsFired 的增量恰好是 3
                     yield PlayerIntent.NONE;
                 }
-                yield PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, false);
+                yield singleShotIntent(player);
             }
 
             case WALL_BLOCKS_BULLET -> intentForWall(player);
@@ -982,7 +1119,81 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 }
                 yield PlayerIntent.NONE;
             }
+
+            case SMG_SUSTAINED -> intentForSmgSustained(player);
         };
+    }
+
+    /**
+     * M3 Story 9：SMG 连续按住 30 秒的输入脚本。
+     *
+     * <p><b>为什么"按住"之外还要按 R：</b>SMG 是 AUTO（电平驱动，{@code attackHeld=true}），
+     * 射速 10 发/秒、弹匣 24 发 —— 弹匣 2.4 秒就见底。若只按住左键不换弹，30 秒里
+     * 绝大部分时间是"打空后空扣扳机"，那样测到的是空枪路径，不是连发路径。
+     * 因此在"弹匣已空且未在换弹"的那一步按一次 R，让连发-换弹-再连发的循环真的跑起来。
+     *
+     * <p>判据落在 {@code gun.magazineAmmo() == 0 && !gun.isReloading()}：
+     * 不在"正在换弹"时重复按 R（{@code tryStartReload} 本来也会返回 ALREADY_RELOADING，
+     * 但在这里挡住可以让 {@code smgReloadRequests} 如实反映"真的发起了几次换弹"）。
+     */
+    private PlayerIntent intentForSmgSustained(Player player) {
+        GunState gun = host.combat().existingGun(player);
+        // 收尾的"松开扳机"窗口：最后 SMG_RELEASE_SETTLE_STEPS 步不再开火，
+        // 让后坐力按 Camera.RECOIL_RECOVER_DEG_PER_SEC 自然回落到 0。
+        // 为什么必须留这个窗口：DONE 阶段有一条断言"后坐力已精确回落到 0"，
+        // 它原本假定"收尾时距最后一次开火已隔了若干阶段"。SMG 阶段是最后一个开火阶段，
+        // 若一直扣着扳机到第 1800 步，后坐力就会停在 1.3° 让那条断言变红 ——
+        // 那是被测行为（松开扳机后自然回落）没被跑完，而不是产品缺陷。
+        if (currentStep >= SMG_STAGE_STEPS - SMG_RELEASE_SETTLE_STEPS) {
+            return PlayerIntent.NONE;
+        }
+        boolean needReload = gun != null && gun.magazineAmmo() == 0 && !gun.isReloading();
+        if (needReload) {
+            smgReloadRequests++;
+        }
+        // 换弹期间仍然按住左键（AUTO 语义：按住即持续尝试；换弹中 tryFire 返回 RELOADING，
+        // 不消耗弹药、不产生曳光）。这正好也覆盖了"换弹中按住左键"这条交互。
+        return PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, needReload);
+    }
+
+    /**
+     * M3 Story 9：手枪「按住左键开火」的输入脚本。
+     *
+     * <p><b>为什么这里不能直接写 {@code attackHeld=true} 了事：</b>
+     * v2 §7.1 把 {@code FireMode.SINGLE}（手枪）的击发依据从<b>电平</b>
+     * {@link PlayerIntent#attackHeld()} 改成了<b>按下沿</b>
+     * {@link PlayerIntent#attackPressed()}（{@code CombatController.fireRequested}：
+     * {@code case SINGLE -> intent.attackPressed()}）。按下沿是<b>帧级</b>量，
+     * 走 {@code FrameInputQuantities} 的 latch 通道；而自测<b>绕过了</b>
+     * {@code frameQuantities.apply}（{@code SkyIslandGame} 在 {@code combatSelfTest != null}
+     * 时直接使用脚本意图），因此自测必须自己把「这一帧点了左键」这件事显式表达出来 ——
+     * 否则每步都送 {@code attackPressed=false}，手枪永远不开火（Story 7 之后暴露的正是这条）。
+     *
+     * <p><b>为什么用「武器可击发时才给按下沿」而不是「每步都给」：</b>
+     * 半自动的真实语义是「一次点击 = 一发」。玩家按住左键不放时，硬件只会产生<b>一个</b>
+     * 按下沿，长按不会连发（这正是 §7.1 要的）。但本自测要复现的旧口径是
+     * 「按住左键 → 按射速持续开火」（4 发/秒的手枪在 1.5 秒刺激窗口里要出好几发），
+     * 两者在<b>观测层面等价</b>的实现是：只要枪「此刻可以击发」（不在换弹、射速冷却已过），
+     * 就在这一步给出一个按下沿。这样击发节奏仍然被 {@code GunState.fireCooldown} 节流，
+     * 与旧口径逐发一致，而每一次击发都确实携带了合法的按下沿。
+     *
+     * <p><b>为什么可以同一步里既 {@code attackHeld=true} 又 {@code attackPressed=true}：</b>
+     * 二者是同一物理键（左键）的两个语义切片、<b>并存</b>而非二选一
+     * （见 {@link PlayerIntent#attackPressed()} 的类注释）。手枪只读按下沿，
+     * 电平字段对它是无害的冗余；一旦脚本被复用到 SMG 阶段，电平字段仍然表达
+     * 「此刻按着左键」。因此本方法对手枪与 SMG 是安全统一的。
+     *
+     * @param player 当前玩家（用于取本枪 {@link GunState}）
+     * @return 携带合法按下沿（仅当本步可击发）的战斗意图
+     */
+    private PlayerIntent singleShotIntent(Player player) {
+        GunState gun = host.combat().existingGun(player);
+        // 「可击发」= 有枪、不在换弹、射速冷却已过。空弹匣也照样给按下沿 ——
+        // 那样会走到 NO_AMMO 分支、产生 dryFires/onDryFire，正是 DRY_FIRE /
+        // MINE_BLOCKED 阶段要观测的「左键进入开火路径」物证。
+        boolean ready = gun != null && !gun.isReloading() && gun.fireCooldownRemaining() <= 1e-9;
+        return PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, false)
+                .withAttackPressed(ready);
     }
 
     private PlayerIntent intentForAim(Player player) {
@@ -1087,7 +1298,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         }
         if (eventBlockHits - stageStartEventBlockHits == 0) {
             // 只开一枪：多开会让"怪物血量不变"这条断言无法区分"被墙挡住"与"压根没打"
-            return PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, false);
+            return singleShotIntent(player);
         }
         return PlayerIntent.NONE;
     }
@@ -1115,7 +1326,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             return PlayerIntent.NONE;
         }
         if (eventEntityHits - stageStartEventEntityHits == 0) {
-            return PlayerIntent.combat(0f, 0f, false, 0, 0, true, false, false);
+            return singleShotIntent(player);
         }
         return PlayerIntent.NONE;
     }
@@ -1230,6 +1441,13 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             case BREAK_PARTICLES -> checkBreak();
             case DEATH_AND_RESPAWN -> checkDeath();
             case SAVE_RELOAD_ROUNDTRIP -> checkSave();
+            case SMG_SUSTAINED -> {
+                checkSmgSustained();
+                // 断言跑完再还原阶段夹具：移除 SMG、恢复原选中槽位。
+                // 必须先 check 后 release —— 否则 checkSmgSustained() 就得在"SMG 已被拿走"
+                // 的状态下读运行时统计，语义立刻变味。
+                host.releaseSmgAfterSustain(smgPrevSelectedSlot);
+            }
             case DONE -> {
                 /*
                  * M2 缺陷回归（全轮断言）：游玩期间到底有没有重建过区块网格。
@@ -1856,6 +2074,120 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             }
         }
         saveVerifiedInLoop = true;
+    }
+
+    /**
+     * M3 Story 9：SMG 连续按住 30 秒的稳定性断言（v2 §15）。
+     *
+     * <h2>这一阶段要证明的四件事</h2>
+     * <ol>
+     *   <li><b>连发真的发生了</b>：30 秒里 {@code shotsFired} 的增量与"射速 × 净开火时间"
+     *       相符，且观测到过弹匣打空（说明确实连发到空，而不是偶尔点射）；</li>
+     *   <li><b>无异常增长</b>：曳光 / 粒子 / 枪口闪光的<b>同时存活峰值</b>都远低于各自容量上限
+     *       （只进不出的泄漏会把峰值顶到上限）；</li>
+     *   <li><b>表现与逻辑一一对应</b>：阶段内新增曳光数 == 新增枪口闪光数 == 非换弹路径的开火数，
+     *       高射速下漏接某一环会被这三条交叉计数直接暴露；</li>
+     *   <li><b>没有异常</b>：全程不抛异常、不 OOM（能跑到这里本身就是证据；若中途异常，
+     *       自测会以"没跑完"收场而 {@code allPassed()=false}）。</li>
+     * </ol>
+     *
+     * <h2>数字口径</h2>
+     * <p>SMG：{@code fireRate=10.0}、弹匣 24、换弹 1.5 s。一个"打空 + 换弹"周期约
+     * 24/10 + 1.5 = 3.9 s，30 s 约 7.7 个周期 → 约 185 发。因此本方法<b>不</b>断言 300 发
+     * （那是"从不换弹"才可能的上界），而是断言一个与周期模型一致的下界：
+     * 若连发路径正常，30 秒至少能打出 ~150 发；任一环卡死（例如换弹没完成、开火被吞）
+     * 都会把这数字显著拉低。上下都留了余量，避免浮点/调度抖动造成假红。
+     *
+     * <p><b>为什么不断言 frame time：</b>本方法是逐逻辑步的确定性脚本，不含墙钟时间；
+     * p95/p99 帧时间的无回归由独立的性能对照运行（1080p / vsync=false / measureSeconds=60）
+     * 取证，两者分工不同，见 {@code docs/testing/M3_WEAPON_S9_PERF_GATE.md}。
+     */
+    private void checkSmgSustained() {
+        Player player = host.player();
+        CombatFxModel fx = host.combatFx();
+        int shots = host.combat().shotsFired() - smgStartShots;
+        int dry = host.combat().dryFires() - smgStartDryFires;
+        int tracers = fx == null ? 0 : (int) (fx.totalTracers() - smgStartTracersGenerated);
+        int flashes = fx == null ? 0 : (fx.totalMuzzleFlashes() - smgStartMuzzleFlashes);
+        int reloadCompletions = eventReloadCompletions - stageStartEventReloadCompletions;
+        int reserve = player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID);
+
+        record("SMG 已在手上（宿主发放成功，runtimeId ≥ 0）", smgRuntimeId >= 0,
+                "smgRuntimeId=" + smgRuntimeId + " 手持=" + player.inventory().selectedStack().item().id());
+        // 断言 >= SMG_STAGE_STEPS - 1 而不是 == SMG_STAGE_STEPS：
+        // onStageEnd()（本方法在其中被调用）是在本阶段最后一步的 nextIntent() 内部、
+        // 该步的 observeAfterStep() 之前被触发的 —— 因此"最后一步的观测"永远晚于本断言，
+        // 计数器最多到 SMG_STAGE_STEPS - 1。这与 spawn/approach 阶段文档里记的
+        // "onStageEnd 早于最后一步观测"是同一条确定性时序（不是抖动）。
+        // 标签写「≥ 1799」而不是「= 1800」：判据必须和标签一致，否则只看标签的人
+        // 会以为真的数满了 1800 步。1799 是确定性上界，不是抖动留的容差。
+        record("阶段步数 ≥ 1799（30 秒 × 60 TPS = 1800 步；onStageEnd 早于最后一步观测 → 上界 1799）",
+                smgStageSteps >= SMG_STAGE_STEPS - 1,
+                "smgStageSteps=" + smgStageSteps + "（onStageEnd 早于最后一步观测 → 上界 "
+                        + (SMG_STAGE_STEPS - 1) + "）");
+
+        // ---- ① 连发真的发生了 ----
+        // 下界 150：周期模型各周期约 24 发 / 3.9 s，30 s ≈ 185；取 150 留 ~19% 余量。
+        // 上界 300 = fireRate × 30（理论上界，实际上做不到因为要换弹）—— 用来挡"计数被重复累加"。
+        record("SMG 连发击发数落在合理区间（150 ≤ shots ≤ 300）",
+                shots >= 150 && shots <= 300,
+                "shots=" + shots + "（周期模型 30s ≈ 185；上界 300 = 10 发/秒 × 30 秒）");
+        record("连发过程中确实打空过弹匣（说明是连发而非零星点射）", smgObservedEmptyMagazine,
+                "smgObservedEmptyMagazine=" + smgObservedEmptyMagazine);
+        record("阶段内至少完成过一次换弹（打空 → 按 R → 上膛的循环真的跑起来）",
+                reloadCompletions >= 5,
+                "reloadCompletions=" + reloadCompletions + " 发起请求=" + smgReloadRequests);
+
+        // ---- ② 无异常增长（峰值远低于容量上限）----
+        record("曳光同时存活峰值 ≤ 容量上限（无泄漏）",
+                smgPeakTracers <= CombatFxModel.MAX_TRACERS,
+                "peakTracers=" + smgPeakTracers + " ≤ MAX_TRACERS=" + CombatFxModel.MAX_TRACERS);
+        record("粒子同时存活峰值 ≤ 容量上限（无泄漏）",
+                smgPeakParticles <= CombatFxModel.MAX_PARTICLES,
+                "peakParticles=" + smgPeakParticles + " ≤ MAX_PARTICLES=" + CombatFxModel.MAX_PARTICLES);
+        record("枪口闪光同时存活峰值 ≤ 容量上限（无泄漏）",
+                smgPeakFlashes <= CombatFxModel.MAX_FLASHES,
+                "peakFlashes=" + smgPeakFlashes + " ≤ MAX_FLASHES=" + CombatFxModel.MAX_FLASHES);
+        // 更严的一条：正常节奏下（10 发/秒、曳光活 3 帧、闪光活 3 帧）同时存活应为个位数。
+        // 这条比"≤ 容量"有鉴别力得多 —— 容量断言只挡"顶到上限"，这条挡"数量失控增长"。
+        record("曳光同时存活峰值处于正常量级（≤ 8，无随按住时长增长）",
+                smgPeakTracers <= 8, "peakTracers=" + smgPeakTracers);
+
+        // ---- ③ 表现与逻辑一一对应 ----
+        record("新增曳光数 == 新增枪口闪光数（每发一份表现，高射速下无漏接）",
+                tracers == flashes,
+                "tracers=" + tracers + " flashes=" + flashes);
+        record("新增曳光数 ≤ 击发数（曳光不因连发被重复生成）",
+                tracers <= shots, "tracers=" + tracers + " shots=" + shots);
+
+        // ---- ④ 弹药口径 ----
+        // 自测走 PROTOTYPE（无限后备）—— 换弹只读后备、不写背包，故 SMG 连发 30 秒后备弹药不变。
+        record("SMG 连发 30 秒后备弹药未被扣减（PROTOTYPE 口径：换弹只读后备）",
+                reserve == smgStartReserve,
+                "reserve=" + reserve + " 起始=" + smgStartReserve);
+
+        // ---- ⑤ 每发临时对象分配（v2 §15 硬约束：禁止因高射速增加每发分配）----
+        // resolveShot 的每发分配集中在命中判定链（eyePosition 的 Vector3d、方向归一化的
+        // Vector3d、Hitscan.Result），这些与射速<b>无关</b>，只与"打了几发"成线性 ——
+        // SMG 与手枪走的是同一条 resolveShot。
+        // 真正会"因高射速而增加每发分配"的是<b>每发循环</b>：弹丸数（pelletCount）与散布采样。
+        // 二者都是 GunSpec 的数据字段：pelletCount=1 且 spreadRad=0 → 每发恰好一条射线、
+        // 不进入任何散布采样循环，因此每发分配量与手枪（同为 1/0）逐值相同。
+        // 这条断言钉住的就是"SMG 的数据没被写成 N 弹丸/带散布"，从而断死"因高射速增加每发分配"。
+        Item smgItem = ItemRegistry.byRuntimeId(smgRuntimeId);
+        GunSpec smgSpec = smgItem == null ? null : smgItem.gun();
+        record("SMG 每发恰好一条射线（pelletCount=1，无每发内层循环）",
+                smgSpec != null && smgSpec.pelletCount() == 1,
+                "pelletCount=" + (smgSpec == null ? "(无枪)" : smgSpec.pelletCount()));
+        record("SMG 无散布采样（spreadRad=0，无每发随机分配）",
+                smgSpec != null && smgSpec.spreadRad() == 0.0,
+                "spreadRad=" + (smgSpec == null ? "(无枪)" : smgSpec.spreadRad()));
+        // 交叉验证：曳光累计数 == 击发数（每发有且仅有一条曳光 → 表现层每发 O(1)、无随射速放大）。
+        record("新增曳光数 == 击发数（表现层每发恰一份，不随射速放大）",
+                tracers == shots, "tracers=" + tracers + " shots=" + shots);
+
+        Log.info("[自测] SMG 30 秒稳定性：shots=%d dry=%d reloads=%d peak(tr=%d,pa=%d,fl=%d) reserve=%d",
+                shots, dry, reloadCompletions, smgPeakTracers, smgPeakParticles, smgPeakFlashes, reserve);
     }
 
     // ============================================================ 循环之外的读档校验

@@ -275,6 +275,10 @@ public final class Localization {
         DISPLAY_NAMES.put("skyisland:pistol", "手枪");
         DISPLAY_NAMES.put("skyisland:pistol_ammo", "手枪弹");
         DISPLAY_NAMES.put("skyisland:coal", "煤炭");
+        // M3 第二把枪（v2 §10 / §17 Story 6）：武器表里唯一新增的物品。
+        // 中文名会触碰 CjkFontTest 的"源码里每个非 ASCII 字符都必须有字模"护栏，
+        // 因此新增后必须重跑 tools/fontgen/GenCjkFont.java 重烤字模。
+        DISPLAY_NAMES.put("skyisland:smg", "冲锋枪");
 
         DISPLAY_NAMES.put("skyisland:melee_monster", "近战怪");
     }

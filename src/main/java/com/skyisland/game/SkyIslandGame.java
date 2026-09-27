@@ -466,6 +466,24 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     private AudioFeedback audioFeedback;
 
     /**
+     * 当前手持枪的表现规格；手持物不是枪（或没有表现规格）时返回 {@code null}。
+     *
+     * <p>M3（Story 5）引入：枪口火光的位置来源从本类的全局常量改为"拿的那把枪的表现规格"。
+     * 取法刻意与 HUD 一致 —— 都读 {@code inventory.selectedStack()}，
+     * 于是"HUD 显示的枪"与"火光的枪"不可能不是同一把。
+     *
+     * <p>不缓存、每次现取：本方法只在<u>开火那一刻</u>被调用（不是渲染热路径），
+     * 缓存在换槽/换枪时需要失效，而失效时机正是最容易漏的地方。
+     */
+    private com.skyisland.item.GunPresentationSpec heldGunPresentation() {
+        ItemStack held = player.inventory().selectedStack();
+        if (held == null || held.item() == null || !held.item().isGun()) {
+            return null;
+        }
+        return held.item().presentation();
+    }
+
+    /**
      * 战斗事件 → 表现 / 提示的接线（M2）。
      *
      * <p>把 {@link CombatController} 的事件翻译成粒子、曳光与 HUD 提示。
@@ -497,17 +515,28 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             // 推出右下方的枪口点。方向依据：right() = forward × worldUp（见 Camera.updateBasis），
             // yaw=0 朝 −Z 时指向 +X（屏幕右）；up() 恒为世界 +Y（Camera 的 up 字段固定），
             // 故 −up 即向下。曳光<u>不</u>改起点：它必须与准星射线对齐，仍用 mx/my/mz。
+            // ---- M3（Story 5）：枪口位置改为从「手持枪的表现规格」读取 ----
+            // M2.2 这里用的是本类的全局常量 MUZZLE_FORWARD/RIGHT/DOWN。只有一把枪时
+            // 看不出问题，但第二把枪（SMG）一旦落地，"两把枪从同一点冒火光"就会成为
+            // 一次看得见的表现回归（v2 §4.2 第 3 点：两把枪的枪口位置必须有区别）。
+            // 因此枪口偏移改由 item.presentation().muzzle* 提供 —— 数据挂在拿的那把枪上。
+            // 对<u>手枪</u>而言这组值与旧常量逐值相等（0.55/0.20/0.12），故本步对画面零影响；
+            // 常量保留为"手持物品没有表现规格时的兜底"（例如将来某种非枪的射击道具）。
             org.joml.Vector3d eye = player.eyePosition();
             org.joml.Vector3fc fwd = player.camera().forward();
             org.joml.Vector3fc right = player.camera().right();
             org.joml.Vector3fc up = player.camera().up();
-            double muzzleX = eye.x
-                    + fwd.x() * MUZZLE_FORWARD + right.x() * MUZZLE_RIGHT - up.x() * MUZZLE_DOWN;
-            double muzzleY = eye.y
-                    + fwd.y() * MUZZLE_FORWARD + right.y() * MUZZLE_RIGHT - up.y() * MUZZLE_DOWN;
-            double muzzleZ = eye.z
-                    + fwd.z() * MUZZLE_FORWARD + right.z() * MUZZLE_RIGHT - up.z() * MUZZLE_DOWN;
-            combatFx.spawnMuzzleFlash(muzzleX, muzzleY, muzzleZ, eye.x, eye.y, eye.z,
+            com.skyisland.item.GunPresentationSpec pres = heldGunPresentation();
+            double[] muzzle = new double[3];
+            if (pres != null) {
+                // 数据驱动路径：手持枪的表现规格说了算。
+                com.skyisland.render.viewmodel.MuzzleAnchor.compute(muzzle, eye, fwd, right, up, pres);
+            } else {
+                // 兜底路径：没有表现规格时沿用 M2.2 的全局常量（保持旧行为，不制造新分支语义）。
+                com.skyisland.render.viewmodel.MuzzleAnchor.compute(muzzle, eye, fwd, right, up,
+                        MUZZLE_FORWARD, MUZZLE_RIGHT, MUZZLE_DOWN);
+            }
+            combatFx.spawnMuzzleFlash(muzzle[0], muzzle[1], muzzle[2], eye.x, eye.y, eye.z,
                     fwd.x(), fwd.y(), fwd.z());
             // 后坐力"只加不回落"：回落由逻辑步里的 decayRecoil(dt) 推进。
             // 分成两处是刻意的 —— 本方法每次开火调用一次，而回落必须按时长推进，
@@ -986,6 +1015,16 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             //   combatFeedback 当底子，等于把音频那一环从链上摘掉，
             //   自测日志里就再也看不到 gun_fire / hit_enemy 的计数。
             combatListener = M2CombatSelfTest.tee(combatListener, combatSelfTest.listener());
+
+            // ★ M3 Story 8：战斗自测跑的是 <b>M2.1 Combat Prototype 口径</b>，
+            //   因此它必须显式声明"本局是原型"（v2 §5.3 / §19-7：Debug 模式仍可无限备弹）。
+            //
+            //   为什么放在这里而不是让 GunState 自己兜底：M3 Survival 的正式口径是
+            //   <b>有限后备并真实扣 Inventory</b>（v2 §19-6）。两种口径必须能同时存在，
+            //   靠一个全局默认值表达不了；靠"自测时偷偷把默认值改回无限"则会让
+            //   "正式玩法到底消耗不消耗弹药"重新变成一件看不出来的事。
+            //   显式设定 → 这条选择在代码里可见、可被测试断言，正式玩法一个字都不受影响。
+            combat.setReserveMode(com.skyisland.combat.GunState.ReserveMode.PROTOTYPE);
         }
 
         loop = new GameLoop(/* frameRateCapFps = */ 0);   // 0 = 不限速，测量真实吞吐
@@ -1300,10 +1339,14 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             // 实测 34455 个渲染帧只跑了 3518 个逻辑步（约 10%），
             // 于是约九成的右键点击被静默丢弃 —— 表现就是"放置方块按了没反应"。
             // 反方向（40 FPS 下一帧多个逻辑步）则会重复施加，变成一次点击放置两格。
+            // v2 §7.3：左键按下沿（SINGLE 半自动开火）是同一类一次性语义，走同一条通道。
             frameQuantities.accumulateDiscrete(polled.usePressed(), polled.reloadPressed(),
-                    polled.hotbarSlot());
+                    polled.attackPressed(), polled.hotbarSlot());
+            // 逐逻辑步复用的 frameIntent 里只留连续量：这里把三个帧级离散通道清掉，
+            // 交给本帧第一个逻辑步经 frameQuantities.apply 一次性发放（不重复、不丢）。
             frameIntent = polled.withLook(0, 0).withScroll(0)
-                    .withUsePressed(false).withReloadPressed(false).withHotbarSlot(-1);
+                    .withUsePressed(false).withReloadPressed(false).withAttackPressed(false)
+                    .withHotbarSlot(-1);
             handleFrameEdges();
             // M2.2：开背包是一个"帧级边沿"动作 —— 与 F2/F3/F5 同类，
             //   不能走"逐逻辑步复用的 frameIntent"（那样在 60 Hz 逻辑下
@@ -2379,6 +2422,37 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         };
     }
 
+    /**
+     * 由"手持物 + 已存在的枪械状态"解析出 HUD 后备弹药要读哪个物品 ID（v2 §19-10）。
+     *
+     * <p><b>为什么是 static 且无 GL 依赖：</b>这是本 Story 唯一的硬编码修正点。
+     * 它必须是<b>纯函数</b>，才能让单元测试直接对着生产代码断言"读的是枪自己的 ammoId"，
+     * 而不是在测试里把同一段读法再抄一遍 —— 后者与产品解耦，破坏注入时压根不会变红。
+     *
+     * <p><b>两条取值路径：</b>
+     * <ol>
+     *   <li>{@code gun != null}（手持枪且它已建出 {@link com.skyisland.combat.GunState}）
+     *       → 取 {@code gun.spec().ammoId()}；</li>
+     *   <li>{@code gun == null} 但手持物确实是枪（还没开工、状态未惰性建出）
+     *       → 取 {@code held.item().gun().ammoId()}；</li>
+     *   <li>不是枪（空手 / 方块 / 弹药）→ 返回 {@code null}，调用方据此记 0。</li>
+     * </ol>
+     *
+     * <p><b>渲染路径约束：</b>{@code updateHud} 每渲染帧调用本方法，因此这里
+     * <b>只读取、绝不创建对象</b> —— 两条路径都是 {@code GunState} / {@link com.skyisland.item.Item}
+     * 上的纯 getter，不 new 任何东西（尤其是不能在这里 {@code gunFor} 惰性建 GunState，
+     * 否则"打开一次菜单"就会给还没拿到的枪建出弹匣状态）。
+     */
+    static String reserveAmmoIdOf(ItemStack held, com.skyisland.combat.GunState gun) {
+        if (gun != null) {
+            return gun.spec().ammoId();
+        }
+        if (held != null && held.item().isGun()) {
+            return held.item().gun().ammoId();
+        }
+        return null;
+    }
+
     /** 把游戏状态汇总进 HUD 模型。每帧一次，全部是读取。 */
     private void updateHud() {
         FrameStats.Snapshot s = loop.stats().snapshot();
@@ -2465,7 +2539,12 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         com.skyisland.combat.GunState gun = combat.existingGun(player);
         hud.magazineAmmo = gun == null ? 0 : gun.magazineAmmo();
         hud.magazineSize = gun == null ? 0 : gun.magazineSize();
-        hud.reserveAmmo = player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID);
+        // M3 §19-10：<b>后备弹药必须按手持枪自己的 ammoId 统计</b>，不能写死手枪弹。
+        // 解析这一步抽到 {@link #reserveAmmoIdOf(ItemStack, GunState)} —— 它是纯函数、
+        // 无 GL 依赖，因此"读的是枪自己的 ammoId"这件事能被单元测试直接按生产代码验，
+        // 而不是靠测试里再抄一遍读法（抄一遍的断言与产品解耦，注入破坏时不会变红）。
+        String ammoId = reserveAmmoIdOf(held, gun);
+        hud.reserveAmmo = ammoId == null ? 0 : player.inventory().countOfItem(ammoId);
         // M2.1：弹药读数是显示成「12 / 24」还是「12 / ∞」，由枪械状态里的<b>规则</b>
         // 决定，而不是由上面那个背包计数是否够大来猜。二者必须同源：
         // 后备无限时背包里的数字仍有信息价值（"我捡到过多少"），但它已经不是后备量了。
@@ -3200,6 +3279,61 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         @Override
         public void grantDebugSupply() {
             grantStartingGear("M2 战斗自测补给（F6 路径）");
+        }
+
+        @Override
+        public int grantSmgForSustain() {
+            // M3 Story 9：把 SMG 放进背包并切到手上，作为"连续按住 30 秒"阶段的前提。
+            //
+            // 为什么不复用 grantStartingGear：它只发开局装备（手枪 + 手枪弹，PRD 5.4.1），
+            // SMG 是 v2 §10 的第二把验证枪，不在开局装备表里。这里显式发一把并选中，
+            // 让该阶段的前提只有一句可说清的话。
+            int smgId = ItemRegistry.runtimeIdOf(ItemRegistry.SMG_ID);
+            if (smgId <= 0) {
+                // 注册表里没有 SMG（理论上不会发生 —— ItemRegistryTest 会挡住）：
+                // 返回 -1，由自测把它变成一条会变红的断言，而不是在这里静默失败。
+                Log.noteWarning("战斗", "SMG 未在 ItemRegistry 中注册，SMG 稳定性阶段无法前置装备");
+                return -1;
+            }
+            int leftover = player.inventory().add(smgId, 1);
+            if (leftover != 0) {
+                Log.noteWarning("战斗", "SMG 未能放入快捷栏（余 " + leftover + "），请检查快捷栏容量。");
+                return -1;
+            }
+            // 找到 SMG 落在快捷栏的哪一格并选中它 —— 不假定它一定落在某个固定槽。
+            for (int i = 0; i < Inventory.HOTBAR_SIZE; i++) {
+                if (player.inventory().hotbarSlot(i).itemRuntimeId() == smgId) {
+                    player.inventory().selectSlot(i);
+                    break;
+                }
+            }
+            Log.info("[战斗] SMG 稳定性阶段装备：SMG ×1，选中槽=%d，手持=%s",
+                    player.inventory().selectedSlot(), player.inventory().selectedStack().item().id());
+            return smgId;
+        }
+
+        @Override
+        public void releaseSmgAfterSustain(int restoreSelectedSlot) {
+            // M3 Story 9：还原 SMG 稳定性阶段的夹具。
+            //
+            // 为什么要还原（不是可选的客气动作）：
+            //   本阶段在"存档阶段"之后运行，而退出时的自动存档（shutdown 的"退出即保存"）
+            //   会把当前背包原样写盘。那把 SMG 若一直留着，就会被写进退出存档，
+            //   而循环外的读档校验比对的正是"存档阶段快照 vs 退出存档"——
+            //   于是多出来的 SMG 会让"逐格一致"这条断言变红。那是夹具污染，不是产品缺陷。
+            //
+            // 两步：① 删掉背包里所有该枪的槽位；② 把选中槽位还原到阶段开始前那一格。
+            // 只删 SMG 这一种物品，绝不动手枪 / 弹药 / 泥土 —— 那些是其它阶段的证据。
+            int smgId = ItemRegistry.runtimeIdOf(ItemRegistry.SMG_ID);
+            if (smgId > 0) {
+                for (int i = 0; i < player.inventory().size(); i++) {
+                    if (player.inventory().slot(i).itemRuntimeId() == smgId) {
+                        player.inventory().setSlot(i, ItemStack.EMPTY);
+                    }
+                }
+            }
+            player.inventory().selectSlot(restoreSelectedSlot);
+            Log.info("[战斗] SMG 稳定性阶段夹具已还原：移除 SMG，选中槽位恢复为 %d", restoreSelectedSlot);
         }
     }
 

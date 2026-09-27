@@ -307,6 +307,15 @@ public final class CombatFxModel {
     /** M2.1：累计触发过的刷怪生成提示物次数（自测证据）。 */
     private int totalSpawnCues;
 
+    /**
+     * M3 Story 9：累计生成过的曳光数（自测证据，不受 {@link #clear()} 影响）。
+     *
+     * <p>与 {@link #totalMuzzleFlashes()} 并列：两者都应当<b>等于击发次数</b>，
+     * 因此"连发 N 发后曳光累计数 == 枪口闪光累计数 == N"是一条能把
+     * "高射速下某一环漏接线"直接暴露出来的交叉断言。
+     */
+    private int totalTracers;
+
     // ============================================================ 生成
 
     /**
@@ -612,6 +621,7 @@ public final class CombatFxModel {
     public void spawnTracer(double x1, double y1, double z1,
                             double x2, double y2, double z2) {
         addTracer(new Tracer(x1, y1, z1, x2, y2, z2, TRACER_SECONDS));
+        totalTracers++;
         totalSpawnCalls++;
     }
 
@@ -773,6 +783,11 @@ public final class CombatFxModel {
     /** M2.1：累计触发过的刷怪生成提示物次数（自测断言用）。 */
     public int totalSpawnCues() {
         return totalSpawnCues;
+    }
+
+    /** M3 Story 9：累计生成过的曳光数（自测断言用；每次 {@link #spawnTracer} 各 +1）。 */
+    public int totalTracers() {
+        return totalTracers;
     }
 
     // ============================================================ 内部

@@ -55,6 +55,15 @@ public final class FrameInputQuantities {
      */
     private boolean pendingUsePressed;
     private boolean pendingReloadPressed;
+    /**
+     * 已暂存但尚未发放的"攻击键按下沿"（左键 = SINGLE 半自动开火）。
+     *
+     * <p><b>v2 §7.3 新增。</b>与 {@code pendingUsePressed} 同源：本项目已证明
+     * "只活一个渲染帧的一次性输入会在 0 逻辑步的帧里丢失"（见类注释），
+     * 而 SINGLE 开火正是"按下沿"语义，必须走这条可靠通道，不得留在逐逻辑步
+     * 复用的 {@code frameIntent} 里。AUTO 用的 {@code attackHeld}（电平）不走这里。
+     */
+    private boolean pendingAttackPressed;
     private int pendingSlot = -1;
 
     /** 本帧是否已经把帧级量发放出去。 */
@@ -86,11 +95,14 @@ public final class FrameInputQuantities {
      *
      * @param usePressed    本帧是否按下使用键（右键 = 放置）
      * @param reloadPressed 本帧是否按下换弹键（R）
+     * @param attackPressed 本帧是否按下攻击键（左键 = SINGLE 半自动开火）
      * @param slot          数字键选槽目标，{@code -1} = 本帧没有选槽
      */
-    public void accumulateDiscrete(boolean usePressed, boolean reloadPressed, int slot) {
+    public void accumulateDiscrete(boolean usePressed, boolean reloadPressed,
+                                   boolean attackPressed, int slot) {
         pendingUsePressed |= usePressed;
         pendingReloadPressed |= reloadPressed;
+        pendingAttackPressed |= attackPressed;
         if (slot >= 0) {
             pendingSlot = slot;
         }
@@ -106,18 +118,21 @@ public final class FrameInputQuantities {
         if (appliedThisFrame) {
             // 同一帧的后续逻辑步：帧级量已经发放过，必须归零，否则物理会被重复推进
             return base.withLook(0, 0).withScroll(0)
-                    .withUsePressed(false).withReloadPressed(false).withHotbarSlot(-1);
+                    .withUsePressed(false).withReloadPressed(false).withAttackPressed(false)
+                    .withHotbarSlot(-1);
         }
         appliedThisFrame = true;
         PlayerIntent out = base.withLook(pendingLookX, pendingLookY).withScroll(pendingScroll)
                 .withUsePressed(pendingUsePressed)
                 .withReloadPressed(pendingReloadPressed)
+                .withAttackPressed(pendingAttackPressed)
                 .withHotbarSlot(pendingSlot);
         pendingLookX = 0;
         pendingLookY = 0;
         pendingScroll = 0;
         pendingUsePressed = false;
         pendingReloadPressed = false;
+        pendingAttackPressed = false;
         pendingSlot = -1;
         return out;
     }
@@ -135,6 +150,7 @@ public final class FrameInputQuantities {
         pendingScroll = 0;
         pendingUsePressed = false;
         pendingReloadPressed = false;
+        pendingAttackPressed = false;
         pendingSlot = -1;
         appliedThisFrame = false;
     }
@@ -142,7 +158,8 @@ public final class FrameInputQuantities {
     /** 是否还有未被任何逻辑步取走的帧级量。 */
     public boolean hasPending() {
         return pendingLookX != 0 || pendingLookY != 0 || pendingScroll != 0
-                || pendingUsePressed || pendingReloadPressed || pendingSlot >= 0;
+                || pendingUsePressed || pendingReloadPressed || pendingAttackPressed
+                || pendingSlot >= 0;
     }
 
     /** 待发放的"使用键按下沿"。 */
@@ -153,6 +170,11 @@ public final class FrameInputQuantities {
     /** 待发放的"换弹按下沿"。 */
     public boolean pendingReloadPressed() {
         return pendingReloadPressed;
+    }
+
+    /** 待发放的"攻击键按下沿"（左键 = SINGLE 半自动开火）。 */
+    public boolean pendingAttackPressed() {
+        return pendingAttackPressed;
     }
 
     /** 待发放的选槽目标（{@code -1} = 无）。 */

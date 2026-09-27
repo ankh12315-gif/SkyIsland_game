@@ -207,13 +207,22 @@ class CombatCoreTest {
         return inv;
     }
 
+    /**
+     * 换弹时长与"完成前不转移"这两条<b>与后备口径无关</b>：两条口径下都成立。
+     *
+     * <p>因此这里<b>显式</b>选无限口径（{@code PROTOTYPE}）——
+     * 目的是把"验换弹时长规则"与"正式玩法默认是什么口径"解耦。
+     * 只写单参构造的话，本用例的语义会跟着 {@code CombatController} 的默认值一起漂移：
+     * M2.1 时它暗中验的是"无限后备不扣背包"，Story 8 之后又会变成"有限后备扣背包" ——
+     * 同一个用例名底下换了被测性质，而看名字看不出来。
+     */
     @Test
     void pistolReloadTakesExactlyOnePointTwoSeconds() {
         assertEquals(1.2, ItemRegistry.pistol().gun().reloadSeconds(), 1e-9,
                 "M2 通过标准第 3 条：手枪换弹 1.2 秒");
 
         Inventory inv = inventoryWithAmmo(12);
-        GunState gun = GunState.forPistol();
+        GunState gun = new GunState(ItemRegistry.pistol(), true);
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
 
         gun.tick(1.19, inv);
@@ -224,19 +233,18 @@ class CombatCoreTest {
         gun.tick(0.02, inv);
         assertFalse(gun.isReloading(), "1.21 秒时必须已完成");
         assertEquals(12, gun.magazineAmmo());
-        // M2.1-A：产品口径从"有限后备"改为"无限后备"，因此完成换弹时<b>不从背包取弹</b>。
-        // 这条断言在 M2.1 之前是 assertEquals(0, ...)。它随产品口径一起改，
-        // 不是为了让绿灯亮起来而放宽 —— 有限口径的那条语义仍在
-        // partialReloadFillsExactlyWhatIsAvailable 里用显式构造继续被断言。
+        // 无限口径（PROTOTYPE）：换弹只读后备、不写背包，12 发一发不少。
+        // 有限口径下"扣多少"的对应断言在 partialReloadFillsExactlyWhatIsAvailable
+        // 与 CombatControllerTest 的计数级用例里（那里断言的是"真的少了多少"）。
         assertEquals(12, inv.countOfItem(AMMO),
-                "M2.1 无限后备：换弹只读后备、不写背包，12 发一发不少");
+                "PROTOTYPE 无限后备：换弹只读后备、不写背包，12 发一发不少");
     }
 
     /** A3 规则①：满弹匣按 R 无操作（v0.3.1 的"弹出余弹"口径已作废）。 */
     @Test
     void reloadingAFullMagazineDoesNothing() {
         Inventory inv = inventoryWithAmmo(50);
-        GunState gun = GunState.forPistol();
+        GunState gun = new GunState(ItemRegistry.pistol(), true);
         gun.setMagazineAmmo(12);
 
         assertEquals(GunState.ReloadOutcome.ALREADY_FULL, gun.tryStartReload(inv));
@@ -248,15 +256,18 @@ class CombatCoreTest {
     /**
      * A3 规则②的另一侧：后备弹药为 0 时不得开始换弹。
      *
-     * <p><b>M2.1 起这条规则只在有限口径下可达</b>（产品默认是无限后备，
-     * 此时 NO_RESERVE 永远不会被返回）。因此本用例<b>显式</b>构造有限口径，
-     * 而不是把产品默认改回有限 —— 后者会让"玩家在原型阶段打到第 25 发就断供"
-     * 重新成为常态。保留它的目的是让 PRD 5.4.3 规则②一直是活代码。
+     * <p>规则②只在有限口径下可达（无限口径下"后备 = 0"这句话不成立），
+     * 因此本用例显式构造有限口径（{@code SURVIVAL}）。
+     *
+     * <p><b>M3 Story 8 起，这个口径就是正式玩法口径</b>（v2 §19-6）——
+     * 也就是说本用例描述的不再是"原型阶段用不到的一条规则"，
+     * 而是玩家在正式游戏里会真实遇到的一步：弹药打光后按 R 会被拒绝。
+     * 断言本身没变，但它从"防死代码"升级成了"正式口径的行为契约"。
      */
     @Test
     void reloadWithoutReserveAmmoIsRefused() {
         Inventory inv = new Inventory(); // 空背包
-        GunState gun = GunState.forPistolWithFiniteReserve();
+        GunState gun = new GunState(ItemRegistry.pistol(), false);
         gun.setMagazineAmmo(3);
 
         assertEquals(GunState.ReloadOutcome.NO_RESERVE, gun.tryStartReload(inv));
@@ -266,13 +277,13 @@ class CombatCoreTest {
     /**
      * A3 规则③：后备不足时部分填充 {@code load = min(容量 − 弹匣内, 后备)}。
      *
-     * <p>与 {@link #reloadWithoutReserveAmmoIsRefused} 同理：M2.1 起规则③只在
-     * 有限口径下可达，因此这里显式构造有限口径，好让这条规则继续被真的执行到。
+     * <p>与 {@link #reloadWithoutReserveAmmoIsRefused} 同理：显式构造有限口径，
+     * 好让这条规则继续被真的执行到。M3 Story 8 起它也是正式玩法口径（v2 §19-6）。
      */
     @Test
     void partialReloadFillsExactlyWhatIsAvailable() {
         Inventory inv = inventoryWithAmmo(3);
-        GunState gun = GunState.forPistolWithFiniteReserve();
+        GunState gun = new GunState(ItemRegistry.pistol(), false);
         gun.setMagazineAmmo(10);
 
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
@@ -282,28 +293,71 @@ class CombatCoreTest {
         assertEquals(1, inv.countOfItem(AMMO), "只应取走 2 发");
     }
 
-    // ============================================================ M2.1-A：无限后备口径
+    // ============================================================ 后备弹药口径（M3 Story 8 收紧）
 
     /**
-     * 产品默认口径就是无限后备 —— 这条断言是 M2.1-A 的<b>口径护栏</b>。
+     * 后备口径由<b>构造器第二实参</b>显式决定，且 <b>M3 Survival 的正式口径是有限后备</b>。
      *
-     * <p>它守的不是某个行为，而是"这一局弹药到底是资源还是无限"这个决定本身：
-     * 有人把 {@code INFINITE_RESERVE_DEFAULT} 改回 false（或让 {@code forPistol()}
-     * 不再走它）时，这里必须变红，而不是等到试玩时才发现"打到第 25 发就没了"。
+     * <h2>这条用例在 Story 8 之前是什么</h2>
+     * Story 3 留下的是 {@code theProductDefaultIsInfiniteReserve()}：断言
+     * {@code GunState.INFINITE_RESERVE_DEFAULT == true}（M2.1-A 的 Combat Prototype 产品口径），
+     * 并注明「TODO：Story 8 将改为有限」。Story 8 按 v2 §5.3 / §19-6 收紧了正式玩法口径：
+     * <ul>
+     *   <li>{@code INFINITE_RESERVE_DEFAULT} 这个<b>全局默认常量已删除</b> ——
+     *       一个全局默认值无法同时表达"正式玩法有限、原型无限"两种合法口径
+     *       （把其中之一改对就必然把另一个改错）；</li>
+     *   <li>口径提升为上限明确的 Run Mode 配置 {@link GunState.ReserveMode}，
+     *       并由 {@code CombatController#setReserveMode} 显式传入（v2 §5.3 原文建议）；
+     *   <li><b>正式玩法口径 = {@code ReserveMode.SURVIVAL}（有限）</b>，
+     *       由 {@code CombatController} 的字段默认值给出，见
+     *       {@code CombatControllerTest#combatControllerBuildsGunsWithFiniteReserveByDefault()}。</li>
+     * </ul>
+     *
+     * <h2>这里守住的性质</h2>
+     * <ol>
+     *   <li>两条口径都能被显式构造出来，且 {@code reserveInfinite()} 与之一一对应
+     *       （{@code true} ↔ PROTOTYPE / {@code false} ↔ SURVIVAL）——
+     *       这条替代了旧的"显式 true/false 等价性"断言；</li>
+     *   <li><b>正式玩法的默认口径是有限</b>：{@code CombatController} 不配置任何东西时
+     *       建出的枪必须是有限后备。这正是 v2 §19-6「M3 Survival 弹药有限并真实从
+     *       Inventory 消耗」在规则层的最小断言；</li>
+     *   <li>有限口径必须真的可达（PRD 5.4.3 规则②③不能退化成死代码）。</li>
+     * </ol>
+     *
+     * <p><b>为什么 {@code CombatController} 的默认值是 SURVIVAL、而不是"必须显式配置"：</b>
+     * 因为"忘记配置"的后果必须偏向安全的一侧 —— 忘记配置时弹药是资源，
+     * 而不是凭空多出无限炮弹。想拿无限必须像 {@code M2CombatSelfTest} 那样显式声明自己是原型。
      */
     @Test
-    void theProductDefaultIsInfiniteReserve() {
-        assertTrue(GunState.INFINITE_RESERVE_DEFAULT, "M2.1-A 的产品口径就是无限后备");
-        assertTrue(GunState.forPistol().reserveInfinite(), "forPistol() 必须走产品口径");
-        assertFalse(GunState.forPistolWithFiniteReserve().reserveInfinite(),
-                "有限口径必须能被显式构造出来，否则 PRD 5.4.3 规则②③会退化成死代码");
+    void reserveCaliberIsExplicitAndTheProductDefaultIsFinite() {
+        assertEquals(GunState.ReserveMode.SURVIVAL,
+                new CombatController(new com.skyisland.entity.EntityManager()).reserveMode(),
+                "M3 正式玩法口径是 Survival（有限后备，v2 §19-6）：不显式配置就是有限，"
+                        + "而不是'不配置就送无限炮弹'");
+
+        assertTrue(new GunState(ItemRegistry.pistol(), true).reserveInfinite(),
+                "显式 true → 无限口径（Combat Prototype / Debug，v2 §19-7）");
+        assertEquals(GunState.ReserveMode.PROTOTYPE,
+                new GunState(ItemRegistry.pistol(), true).reserveMode(),
+                "显式 true 对应的口径枚举必须是 PROTOTYPE");
+
+        assertFalse(new GunState(ItemRegistry.pistol(), false).reserveInfinite(),
+                "显式 false → 有限口径（M3 Survival，v2 §19-6）：弹药真实从 Inventory 扣除");
+        assertEquals(GunState.ReserveMode.SURVIVAL,
+                new GunState(ItemRegistry.pistol(), false).reserveMode(),
+                "显式 false 对应的口径枚举必须是 SURVIVAL");
+
+        // 枚举与它的布尔投影必须一致 —— 这两条不是重复：上面验的是"构造器怎么解释实参"，
+        // 这里验的是"枚举自己的值没错"。任何一处写反都会让其中一条变红。
+        assertTrue(GunState.ReserveMode.PROTOTYPE.infiniteReserve(), "PROTOTYPE = 无限");
+        assertFalse(GunState.ReserveMode.SURVIVAL.infiniteReserve(), "SURVIVAL = 有限");
     }
 
     /** 无限后备：换弹把弹匣补满，背包里的弹药一个数都不动。 */
     @Test
     void infiniteReserveFillsTheMagazineAndLeavesTheInventoryUntouched() {
         Inventory inv = inventoryWithAmmo(7);
-        GunState gun = GunState.forPistol();
+        GunState gun = new GunState(ItemRegistry.pistol(), true);
         gun.setMagazineAmmo(1);
 
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
@@ -323,7 +377,7 @@ class CombatCoreTest {
     @Test
     void infiniteReserveMakesNoReserveUnreachable() {
         Inventory empty = new Inventory();
-        GunState gun = GunState.forPistol();
+        GunState gun = new GunState(ItemRegistry.pistol(), true);
         gun.setMagazineAmmo(3);
 
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(empty),
@@ -363,7 +417,7 @@ class CombatCoreTest {
     @Test
     void reloadRunsToCompletionOnAFixedStepClock() {
         Inventory inv = inventoryWithAmmo(12);
-        GunState gun = GunState.forPistol();
+        GunState gun = new GunState(ItemRegistry.pistol(), true);
         gun.setMagazineAmmo(3);
 
         assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
@@ -385,7 +439,7 @@ class CombatCoreTest {
         assertFalse(gun.isReloading(), "第 72~73 步之内换弹必须完成（1.2 s = 72 步）");
         assertEquals(12, gun.magazineAmmo(), "完成后补满 12");
         assertEquals(12, inv.countOfItem(AMMO),
-                "M2.1 无限后备：换弹只读后备、不写背包，12 发一发不少");
+                "PROTOTYPE 无限后备：换弹只读后备、不写背包，12 发一发不少");
         assertEquals(1, gun.reloadsCompleted());
     }
 
@@ -393,7 +447,7 @@ class CombatCoreTest {
     @Test
     void cannotFireWhileReloading() {
         Inventory inv = inventoryWithAmmo(12);
-        GunState gun = GunState.forPistol();
+        GunState gun = new GunState(ItemRegistry.pistol(), true);
         gun.setMagazineAmmo(2);
         gun.tryStartReload(inv);
 
@@ -404,7 +458,7 @@ class CombatCoreTest {
     @Test
     void dryFireIsReportedAndDoesNotConsumeAnything() {
         Inventory inv = inventoryWithAmmo(5);
-        GunState gun = GunState.forPistol();   // 弹匣为空
+        GunState gun = new GunState(ItemRegistry.pistol(), true);   // 弹匣为空
 
         assertEquals(GunState.ShotOutcome.NO_AMMO, gun.tryFire());
         assertEquals(1, gun.dryFires(), "空枪必须被计数，HUD 据此提示「弹药不足」");
@@ -415,7 +469,7 @@ class CombatCoreTest {
     @Test
     void fireRateThrottlesToFourShotsPerSecond() {
         Inventory inv = inventoryWithAmmo(12);
-        GunState gun = GunState.forPistol();
+        GunState gun = new GunState(ItemRegistry.pistol(), true);
         gun.setMagazineAmmo(2);
 
         assertEquals(GunState.ShotOutcome.FIRED, gun.tryFire());
@@ -432,7 +486,7 @@ class CombatCoreTest {
     @Test
     void gunStateRejectsNonGunItems() {
         try {
-            new GunState(ItemRegistry.coal());   // 煤炭不是枪械
+            new GunState(ItemRegistry.coal(), true);   // 煤炭不是枪械
             org.junit.jupiter.api.Assertions.fail("非枪械物品不得构造 GunState");
         } catch (IllegalArgumentException expected) {
             assertTrue(expected.getMessage().contains("枪械"), "异常信息应说明原因");
@@ -449,7 +503,7 @@ class CombatCoreTest {
     @Test
     void reloadProgressIsMonotonic() {
         Inventory inv = inventoryWithAmmo(12);
-        GunState gun = GunState.forPistol();
+        GunState gun = new GunState(ItemRegistry.pistol(), true);
         gun.setMagazineAmmo(0);
         gun.tryStartReload(inv);
 
@@ -463,5 +517,128 @@ class CombatCoreTest {
         assertTrue(p0 < p1 && p1 < p2, "换弹进度必须单调递增");
         assertEquals(0.25, p1, 1e-9, "0.3 秒 / 1.2 秒 = 25%");
         assertEquals(0.5, p2, 1e-9, "累计 0.6 秒 / 1.2 秒 = 50%");
+    }
+
+    // ============================================================ SMG 换弹（v2 §12 / §14.4）
+    //
+    // v2 §12 的四条换弹规则必须对<b>两把枪都成立</b>。GunState 已完全数据驱动
+    // （读 spec.magazineSize / reloadSeconds / shotInterval），因此这里逐条对 SMG 复验：
+    // 若哪天有人把某个值硬编码回手枪，这些用例会变红。
+    //
+    // 口径都写成显式实参（true = 原型无限 / false = Survival 有限），
+    // 不依赖任何默认值 —— 这样"某条用例到底在验哪种口径"从调用点一眼可见。
+
+    /**
+     * SMG 的换弹耗时是它自己的 1.5 秒，不是手枪的 1.2 秒。
+     *
+     * <p>口径显式取无限（PROTOTYPE），理由同手枪那条：
+     * "验换弹时长"与"正式口径是什么"必须解耦。
+     */
+    @Test
+    void smgReloadTakesItsOwnOnePointFiveSeconds() {
+        assertEquals(1.5, ItemRegistry.smg().gun().reloadSeconds(), 1e-9,
+                "v2 §10：SMG 换弹 1.5 秒");
+
+        Inventory inv = inventoryWithAmmo(24);
+        GunState gun = new GunState(ItemRegistry.smg(), true);
+        assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
+
+        // SMG 的换弹是 1.5 秒 = 90 步；1.49 秒时必须仍在换弹
+        gun.tick(1.49, inv);
+        assertTrue(gun.isReloading(), "1.49 秒时 SMG 仍在换弹（1.5 秒还没走满）");
+        assertEquals(0, gun.magazineAmmo(), "完成前不得转移弹药（规则④）");
+
+        gun.tick(0.02, inv);
+        assertFalse(gun.isReloading(), "1.51 秒时必须已完成");
+        assertEquals(24, gun.magazineAmmo(), "补满到 SMG 自己的容量 24");
+    }
+
+    /** 规则①：SMG 满弹匣按 R 无操作。 */
+    @Test
+    void smgReloadingAFullMagazineDoesNothing() {
+        Inventory inv = inventoryWithAmmo(50);
+        GunState gun = new GunState(ItemRegistry.smg(), true);
+        gun.setMagazineAmmo(24);
+
+        assertEquals(GunState.ReloadOutcome.ALREADY_FULL, gun.tryStartReload(inv));
+        assertFalse(gun.isReloading());
+        assertEquals(24, gun.magazineAmmo(), "满弹匣不得被换弹改变");
+        assertEquals(50, inv.countOfItem(AMMO), "满弹匣换弹不得消耗弹药");
+    }
+
+    /** 规则②③：SMG 有限口径下后备不足只能部分填充 —— 证明 SMG 也复用同一条弹药规则。 */
+    @Test
+    void smgPartialReloadFillsExactlyWhatIsAvailable() {
+        Inventory inv = inventoryWithAmmo(10);
+        GunState gun = new GunState(ItemRegistry.smg(), false);
+        gun.setMagazineAmmo(20);
+
+        assertEquals(GunState.ReloadOutcome.STARTED, gun.tryStartReload(inv));
+        gun.tick(1.5, inv);
+
+        assertEquals(24, gun.magazineAmmo(), "20 + min(4, 10) = 24");
+        assertEquals(6, inv.countOfItem(AMMO), "只应取走 4 发");
+    }
+
+    /** 规则②：SMG 有限口径下后备为 0 拒绝换弹。 */
+    @Test
+    void smgReloadWithoutReserveIsRefused() {
+        Inventory empty = new Inventory();
+        GunState gun = new GunState(ItemRegistry.smg(), false);
+        gun.setMagazineAmmo(3);
+
+        assertEquals(GunState.ReloadOutcome.NO_RESERVE, gun.tryStartReload(empty));
+        assertFalse(gun.isReloading());
+    }
+
+    /**
+     * SMG 的射速节流是 0.1 秒（不是手枪的 0.25 秒）。
+     *
+     * <p>它同时证明 v2 §10 的"不同射速"确实由数据驱动，而不是沿用某个写死的间隔。
+     */
+    @Test
+    void smgFireRateThrottlesToTenShotsPerSecond() {
+        Inventory inv = inventoryWithAmmo(24);
+        GunState gun = new GunState(ItemRegistry.smg(), true);
+        gun.setMagazineAmmo(2);
+
+        assertEquals(GunState.ShotOutcome.FIRED, gun.tryFire());
+        assertEquals(1, gun.magazineAmmo());
+        assertEquals(GunState.ShotOutcome.COOLDOWN, gun.tryFire(), "同一瞬间不得连发");
+
+        gun.tick(0.09, inv);
+        assertEquals(GunState.ShotOutcome.COOLDOWN, gun.tryFire(),
+                "0.09 秒还不够 0.1 秒的间隔 → 仍在冷却");
+        gun.tick(0.02, inv);
+        assertEquals(GunState.ShotOutcome.FIRED, gun.tryFire(), "累计 0.11 秒 > 0.1 秒 → 允许第二发");
+        assertEquals(0, gun.magazineAmmo());
+        assertEquals(2, gun.shotsFired());
+    }
+
+    /**
+     * v2 §14.5 反向验证项：<b>ammoId 不存在时，有限备弹路径必须失败，不允许静默 fallback</b>。
+     *
+     * <p>GunState 在<b>构造期</b>校验 {@code spec.ammoId()} 能解析到真实弹药，
+     * 因此这里用一个 ammoId 指向不存在 ID 的 GunSpec 构造，必须立刻抛
+     * {@link IllegalStateException}，而不是在换弹时静默地"打不完的子弹"。
+     *
+     * <p>{@link Item} 的构造器是包内可见，因此这条用例放在 {@code combat} 包里就只能
+     * 从<b>已注册的</b>枪出发去构造 GunSpec。<b>完整的那条（指向不存在 ammoId）在
+     * {@code item.GunStateAmmoResolutionTest} 里</b>（那个包能构造探针 Item）。
+     * 这里守的是另一半：SMG 的 ammoId 必须真能解析，且解析出来的就是手枪弹。
+     *
+     * <p><b>反向验证（TEMP_REVERSE_VERIFY）</b>：把 SMG 的 ammoId 改成
+     * {@code "skyisland:no_such_ammo"}，{@code new GunState(smg, false)} 会抛
+     * {@link IllegalStateException} —— 本用例与
+     * {@link #smgReloadTakesItsOwnOnePointFiveSeconds()} 一起变红。
+     */
+    @Test
+    void smgAmmoIdResolvesToARealRegisteredItem() {
+        assertNotNull(ItemRegistry.byName(ItemRegistry.smg().gun().ammoId()),
+                "SMG 的 ammoId 必须能解析到真实弹药 Item（v2 §14.5：禁止静默 fallback）");
+        assertEquals(ItemRegistry.pistolAmmo(), ItemRegistry.byName(ItemRegistry.smg().gun().ammoId()),
+                "SMG 的 ammoId 指的就是手枪弹（v2 §6.1：两把枪共用一种弹药）");
+        // 构造必须成功 —— 若 ammoId 不存在，这一行会抛 IllegalStateException
+        assertNotNull(new GunState(ItemRegistry.smg(), false));
     }
 }

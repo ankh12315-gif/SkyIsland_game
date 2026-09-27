@@ -2,6 +2,7 @@ package com.skyisland.combat;
 
 import com.skyisland.entity.Entity;
 import com.skyisland.entity.EntityManager;
+import com.skyisland.item.FireMode;
 import com.skyisland.item.GunSpec;
 import com.skyisland.item.Item;
 import com.skyisland.item.ItemRegistry;
@@ -155,6 +156,47 @@ public final class CombatController {
      */
     private final Map<Integer, GunState> gunStates = new HashMap<>();
 
+    /**
+     * 本局的后备弹药口径（v2 §5.3：由上层显式传入的 Combat Rule / Run Mode 配置）。
+     *
+     * <h2>为什么这个开关在控制器上，而不是在 {@link GunState} 里留一个默认值</h2>
+     * M2.1 把"无限后备"做成了 {@code GunState} 的全局默认常量。那样一来，
+     * "正式玩法是什么口径"这件事只能有一个取值 —— 而 M3 要求<b>两种口径同时存在</b>：
+     * 正式 Survival 有限（v2 §19-6）、战斗原型 / 调试无限（v2 §19-7）。
+     * 于是本类把口径收成一个字段：{@link #gunFor} 建枪状态时按<b>当前口径</b>传入，
+     * Debug 模式只需要在装配期把它换成 {@link GunState.ReserveMode#PROTOTYPE}。
+     *
+     * <p><b>默认值是 {@link GunState.ReserveMode#SURVIVAL}（有限）</b>：
+     * 这是 M3 的正式游戏口径 —— 不显式配置就是正式玩法，而不是"不配置就送无限炮弹"。
+     * 想拿无限，必须像 {@code M2CombatSelfTest} 那样<b>显式声明自己是原型</b>。
+     */
+    private GunState.ReserveMode reserveMode = GunState.ReserveMode.SURVIVAL;
+
+    /**
+     * 设定本局的后备弹药口径，并<b>丢弃已建出的枪状态</b>。
+     *
+     * <p><b>为什么必须同时清状态：</b>{@code GunState.reserveMode} 是 {@code final}
+     * （一次会话里口径只能有一个答案，见 {@code GunState} 类注释），
+     * 已建出的状态不会跟着改。若只改字段不清状态，症状会是
+     * "装配期设了口径、玩家手里那把枪却仍是旧口径" —— 一个只在时序上看得出来、
+     * 靠读代码几乎看不出的失效。清掉之后，下一次 {@link #gunFor} 会用新口径重建。
+     *
+     * <p>它在装配期被调用（{@code SkyIslandGame} 在自测对象建好之后、主循环之前），
+     * 那时还没有任何枪状态，因此"清空"是无副作用的。
+     */
+    public void setReserveMode(GunState.ReserveMode mode) {
+        if (mode == null) {
+            throw new IllegalArgumentException("后备弹药口径不得为 null（v2 §5.3：必须显式指定）");
+        }
+        this.reserveMode = mode;
+        gunStates.clear();
+    }
+
+    /** 当前后备弹药口径（自测 / 测试据此断言"正式口径是有限、Debug 口径是无限"）。 */
+    public GunState.ReserveMode reserveMode() {
+        return reserveMode;
+    }
+
     // ---- 统计（自测断言用：只能由"真的发生了"来推进） ----
     private int shotsFired;
     private int dryFires;
@@ -210,8 +252,16 @@ public final class CombatController {
             }
         }
 
-        // ③ 开火：左键按住即持续开火，射速由 GunState 节流（PRD 5.4.1：4 发/秒）
-        if (!intent.attackHeld()) {
+        // ③ 开火：按当前枪的开火模式取"这一次是否要尝试击发"（v2 §7.1 / §7.2）
+        //
+        // M2 只有手枪（SINGLE），当时这里读的是 attackHeld（按住即持续开火），
+        // 射速由 GunState 节流。v2 §7.1 明确改写：SINGLE 必须消费"按下沿" attackPressed ——
+        // 长按左键只会按射速反复走"新一次开火"，那是连发而不是半自动。
+        // AUTO（SMG）保留原来的 attackHeld 语义：按住按 fireRate 连发。
+        //
+        // 分派依据是**当前枪的数据**（spec.fireMode），因此本类对"是不是手枪"零感知：
+        // 再加第三把枪时这里一行都不用改。
+        if (!fireRequested(intent, gun)) {
             return;
         }
         GunState.ShotOutcome shot = gun.tryFire();
@@ -225,6 +275,30 @@ public final class CombatController {
             case COOLDOWN -> { /* 节流中：不是玩家可感知的事件，不产生任何反馈 */ }
             case RELOADING -> listener.onMessage(Localization.MSG_RELOAD_BLOCKS_FIRE);
         }
+    }
+
+    /**
+     * 本逻辑步"是否要尝试开火"，由当前枪的 {@link GunSpec#fireMode()} 决定。
+     *
+     * <ul>
+     *   <li>{@link FireMode#SINGLE} —— 只认<b>按下沿</b> {@link PlayerIntent#attackPressed()}：
+     *       一次点击最多一发，长按不会连发（v2 §7.1）；</li>
+     *   <li>{@link FireMode#AUTO} —— 认<b>电平</b> {@link PlayerIntent#attackHeld()}：
+     *       按住即持续尝试，实际节奏由 {@code GunState} 按 {@code fireRate} 节流（v2 §7.2）。</li>
+     * </ul>
+     *
+     * <p><b>为什么按下沿必须来自 intent 而不是在这里自己记边沿：</b>
+     * 逻辑步与渲染帧的粒度不匹配（一帧可能 0 个或多个逻辑步）。
+     * 在本类里记"上一逻辑步按没按"会把"一帧多逻辑步"变成"只发一发"、
+     * 把"0 逻辑步的帧"变成"整次点击被丢掉"。按下沿的正确来源是帧级 latch
+     * （{@code FrameInputQuantities}），它保证"一个物理点击最多发放一次、
+     * 不因 0 逻辑步的帧丢失、不因一帧多逻辑步重复发放"（v2 §7.3）。
+     */
+    private static boolean fireRequested(PlayerIntent intent, GunState gun) {
+        return switch (gun.spec().fireMode()) {
+            case SINGLE -> intent.attackPressed();
+            case AUTO -> intent.attackHeld();
+        };
     }
 
     /**
@@ -281,6 +355,11 @@ public final class CombatController {
      *
      * <p>枪的运行时状态<b>随手持物惰性创建</b>：不做"开局给所有枪建状态"，
      * 因为那样会让"玩家还没拿到枪就先有一份弹匣状态"这种中间状态存在。
+     *
+     * <p><b>M3 Story 8：建状态时按本局口径传入 {@link #reserveMode}。</b>
+     * 这一行就是"正式玩法是有限后备、Debug 是无限后备"的落地点 ——
+     * 它不再读 {@code GunState} 的全局默认值，而是读本控制器显式配置的口径，
+     * 因此两条口径可以同时存在于同一个进程里（自测走无限、正式玩法走有限）。
      */
     public GunState gunFor(Player player) {
         if (player == null || player.isDead()) {
@@ -293,7 +372,7 @@ public final class CombatController {
         if (item == null || !item.isGun()) {
             return null;
         }
-        return gunStates.computeIfAbsent(runtimeId, id -> new GunState(item));
+        return gunStates.computeIfAbsent(runtimeId, id -> new GunState(item, reserveMode));
     }
 
     /**

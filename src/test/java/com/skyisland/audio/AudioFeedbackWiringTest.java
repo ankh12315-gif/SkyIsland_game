@@ -45,8 +45,15 @@ class AudioFeedbackWiringTest {
 
     private static final PlayerIntent RELOAD_KEY =
             PlayerIntent.combat(0, 0, false, 0, 0, false, false, true);
+    /**
+     * 手枪的一次开火按键：v2 §7.1 起 SINGLE 消费"按下沿"，因此必须带 {@code attackPressed}。
+     *
+     * <p>同时保留 {@code attackHeld}（模拟手按在键上），与真实帧级 latch 的发放形态一致 ——
+     * 若只给电平，手枪（SINGLE）不会开火，本类所有"打一枪听声音"的用例都会变成
+     * "什么都没发生"，症状是音频计数恒为 0。
+     */
     private static final PlayerIntent FIRE_KEY =
-            PlayerIntent.combat(0, 0, false, 0, 0, true, false, false);
+            PlayerIntent.combat(0, 0, false, 0, 0, true, false, false).withAttackPressed(true);
     private static final PlayerIntent IDLE =
             PlayerIntent.combat(0, 0, false, 0, 0, false, false, false);
 

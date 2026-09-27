@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -159,6 +160,127 @@ class ViewmodelRendererTest {
         assertEquals(ViewmodelKind.BLOCK,
                 ViewmodelKind.of(ItemRegistry.byRuntimeId(BlockRegistry.stone().runtimeId())));
         assertEquals(ViewmodelKind.EMPTY, ViewmodelKind.of(null));
+    }
+
+    // ============================================================ 手枪 vs SMG 轮廓（v2 §4.2 第①项）
+
+    /**
+     * SMG 的轮廓必须与手枪<b>明显不同</b>（v2 §4.2 第①项）。
+     *
+     * <p>判据：同一个 {@link ViewmodelKind#GUN} 形态下，顶点数组不得相等。
+     * 它拦掉的正是 v2 §4.2 点名禁止的那种实现 —— "逻辑上是 SMG，右手仍是一模一样的手枪模型"。
+     */
+    @Test
+    void thePistolAndTheSmgHaveDifferentViewmodelSilhouettes() {
+        ViewmodelModel pistol = gunModel("pistol");
+        ViewmodelModel smg = gunModel("smg");
+        assertEquals("pistol", pistol.gunViewmodelId);
+        assertEquals("smg", smg.gunViewmodelId);
+
+        float[] outPistol = new float[ViewmodelGeometry.MAX_BOXES * FLOATS_PER_BOX];
+        float[] outSmg = new float[outPistol.length];
+
+        ViewmodelPose p1 = new ViewmodelPose();
+        ViewmodelPose p2 = new ViewmodelPose();
+        p1.update(pistol, 0);
+        p2.update(smg, 0);
+
+        int pistolFloats = write(pistol, p1, outPistol);
+        int smgFloats = write(smg, p2, outSmg);
+
+        assertTrue(pistolFloats > 0 && smgFloats > 0, "两把枪都必须画出东西");
+        assertTrue(!java.util.Arrays.equals(outPistol, outSmg),
+                "两把枪的 Viewmodel 顶点完全一致 —— 玩家分不出自己拿的是哪把枪"
+                        + "（v2 §4.2 明令禁止）");
+    }
+
+    /** {@code apply} 必须把枪的 presentation().viewmodelId() 记下来，非枪置 null。 */
+    @Test
+    void applyCarriesTheGunViewmodelKeyAndClearsItForNonGuns() {
+        ViewmodelModel m = new ViewmodelModel();
+        m.apply(ItemStack.of(ItemRegistry.smg().runtimeId(), 1), 1);
+        assertEquals(ViewmodelKind.GUN, m.kind);
+        assertEquals(ItemRegistry.SMG_VIEWMODEL_ID, m.gunViewmodelId,
+                "枪械轮廓键必须来自 presentation().viewmodelId()（表现资源统一由它指路）");
+
+        m.apply(ItemStack.of(BlockRegistry.stone().runtimeId(), 1), 0);
+        assertEquals(ViewmodelKind.BLOCK, m.kind);
+        assertNull(m.gunViewmodelId, "换成方块后必须清掉枪械轮廓键，否则会留下陈旧的键");
+
+        m.apply(ItemStack.EMPTY, 0);
+        assertNull(m.gunViewmodelId, "空手同样不得残留枪械轮廓键");
+    }
+
+    /**
+     * SMG 轮廓同样必须通过两条布局护栏（右半屏 + 不盖准星），且在整个动画包络上扫描。
+     *
+     * <p>这是"轮廓不是随便放大就行"的可执行约束：SMG 更长更宽的剪影最容易在 ADS
+     * 收拢时越过屏幕中线、或长枪管顶进准星。
+     */
+    @Test
+    void theSmgSilhouetteStaysOnTheRightHalfAndClearOfTheCrosshair() {
+        float[] out = new float[ViewmodelGeometry.MAX_BOXES * FLOATS_PER_BOX];
+        float[] ndc = new float[2];
+
+        for (boolean aiming : new boolean[]{false, true}) {
+            for (boolean reloading : new boolean[]{false, true}) {
+                for (double reloadProgress : new double[]{0.0, 0.5, 1.0}) {
+                    for (double move : new double[]{0.0, 1.0}) {
+                        for (double time : new double[]{0.0, 0.17, 0.41, 0.63}) {
+                            ViewmodelModel m = gunModel("smg");
+                            m.aiming = aiming;
+                            m.reloading = reloading;
+                            m.reloadProgress01 = reloadProgress;
+                            m.moveSpeed01 = move;
+                            m.timeSeconds = time;
+                            m.shotCount = 1;          // 最坏情况：正在后坐 + 枪口闪光
+                            m.colorR = 0.5f;
+                            m.colorG = 0.5f;
+                            m.colorB = 0.5f;
+
+                            ViewmodelPose pose = new ViewmodelPose();
+                            pose.update(m, 0.0);
+                            settle(m, pose, 60);
+
+                            int floats = write(m, pose, out);
+                            assertTrue(floats > 0);
+                            for (int i = 0; i < floats; i += FLOATS_PER_VERTEX) {
+                                ViewmodelGeometry.toNdc(out[i], out[i + 1], out[i + 2], ASPECT, ndc);
+                                String where = "SMG aim=" + aiming + " reload=" + reloadProgress
+                                        + " move=" + move + " t=" + time;
+                                assertTrue(ndc[0] > 0.0,
+                                        "SMG 必须留在右半屏（" + where + " 处 NDC x = " + ndc[0] + "）");
+                                boolean inCrosshairZone =
+                                        Math.abs(ndc[0]) < CROSSHAIR_EXCLUSION
+                                                && Math.abs(ndc[1]) < CROSSHAIR_EXCLUSION;
+                                assertTrue(!inCrosshairZone,
+                                        "SMG 不得盖住准星（" + where + " 处 NDC = ("
+                                                + ndc[0] + ", " + ndc[1] + ")）");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** 造一个"手持指定枪"的模型（走 {@code apply}，因此键来自 presentation）。 */
+    private static ViewmodelModel gunModel(String viewmodelId) {
+        if ("smg".equals(viewmodelId)) {
+            return model(ViewmodelKind.GUN, ItemRegistry.smg().runtimeId(), ItemRegistry.SMG_VIEWMODEL_ID);
+        }
+        return model(ViewmodelKind.GUN, ItemRegistry.pistol().runtimeId(),
+                ItemRegistry.PISTOL_VIEWMODEL_ID);
+    }
+
+    private static ViewmodelModel model(ViewmodelKind kind, int itemRuntimeId, String gunViewmodelId) {
+        ViewmodelModel m = new ViewmodelModel();
+        m.apply(ItemStack.of(itemRuntimeId, 1), 0);
+        m.kind = kind;
+        m.gunViewmodelId = gunViewmodelId;
+        m.visible = true;
+        m.timeSeconds = 0.0;
+        return m;
     }
 
     // ============================================================ 布局护栏

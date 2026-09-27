@@ -125,6 +125,81 @@ class ItemIconTest {
                 "弹药最长的图元必须是竖长条（实际 " + ammo.w() + " × " + ammo.h() + "）");
     }
 
+    // ============================================================ 手枪 vs SMG（v2 §4.2 第②项）
+
+    /**
+     * 两把枪的图标必须<b>肉眼可分</b>（v2 §4.2 第②项）。
+     *
+     * <p>判据与"五种物品可区分"同口径：图元签名（数量 + 每个图元的几何与颜色）不得相等。
+     * 它拦掉的是最容易发生的实现错误 —— 给 SMG 注册了 item、也配了 {@code iconId}，
+     * 但 {@code ItemIcon} 仍然所有枪走同一段 {@code gunParts}，
+     * 于是快捷栏里出现两个一模一样的手枪图标。
+     */
+    @Test
+    void thePistolAndTheSmgHaveVisiblyDifferentIcons() {
+        List<ItemIcon.IconPart> pistol =
+                ItemIcon.parts(runtimeId(ItemRegistry.PISTOL_ID), 0f, 0f, SIZE);
+        List<ItemIcon.IconPart> smg = ItemIcon.parts(runtimeId(ItemRegistry.SMG_ID), 0f, 0f, SIZE);
+
+        assertTrue(!pistol.isEmpty(), "手枪的图标不得为空");
+        assertTrue(!smg.isEmpty(), "SMG 的图标不得为空（v2 §4.2：不能只有一把枪有图标）");
+        assertNotEquals(signature(pistol), signature(smg),
+                "手枪与 SMG 的图标完全一致 —— 玩家在快捷栏里看不出自己选的是哪把枪");
+    }
+
+    /**
+     * 两把枪的图标差异必须<b>同时</b>体现在形状与颜色上，而不是只有其中一处。
+     *
+     * <p>只差颜色 → 色觉障碍玩家分不出；只差形状 → 在小图标下（快捷栏 14px）差异被吃掉。
+     * 两条一起看才说明"换枪这件事在 UI 上是可读的"。
+     */
+    @Test
+    void theTwoGunIconsDifferInBothShapeAndColour() {
+        List<ItemIcon.IconPart> pistol =
+                ItemIcon.parts(runtimeId(ItemRegistry.PISTOL_ID), 0f, 0f, SIZE);
+        List<ItemIcon.IconPart> smg = ItemIcon.parts(runtimeId(ItemRegistry.SMG_ID), 0f, 0f, SIZE);
+
+        assertNotEquals(pistol.size(), smg.size(),
+                "两把枪的图元数量不同（SMG 多一个弹匣部件）—— 形状差异的第一层证据");
+        assertNotEquals(signatureGeometryOnly(pistol), signatureGeometryOnly(smg),
+                "两把枪的图元几何必须不同，而不是只换了颜色");
+
+        float[] pistolBase = ItemIcon.baseColor(runtimeId(ItemRegistry.PISTOL_ID));
+        float[] smgBase = ItemIcon.baseColor(runtimeId(ItemRegistry.SMG_ID));
+        assertTrue(Math.abs(pistolBase[0] - smgBase[0]) > 1e-3
+                        || Math.abs(pistolBase[1] - smgBase[1]) > 1e-3
+                        || Math.abs(pistolBase[2] - smgBase[2]) > 1e-3,
+                "两把枪的主色必须不同（GUN 分支也要按枪分派，不能都返回同一个灰）");
+    }
+
+    /** 只含几何（不含颜色）的签名 —— 用来证明"形状也真的变了"。 */
+    private static String signatureGeometryOnly(List<ItemIcon.IconPart> parts) {
+        StringBuilder sb = new StringBuilder();
+        for (ItemIcon.IconPart p : parts) {
+            sb.append(String.format(Locale.ROOT, "%.4f,%.4f,%.4f,%.4f;", p.x(), p.y(), p.w(), p.h()));
+        }
+        return sb.toString();
+    }
+
+    /** SMG 的图标同样必须落在自己的方框内、且颜色分量合法。 */
+    @Test
+    void theSmgIconStaysInsideItsBoxWithValidColours() {
+        float x = 7f;
+        float y = 13f;
+        List<ItemIcon.IconPart> parts = ItemIcon.parts(runtimeId(ItemRegistry.SMG_ID), x, y, SIZE);
+        assertTrue(!parts.isEmpty());
+        for (ItemIcon.IconPart p : parts) {
+            assertTrue(p.w() > 0f && p.h() > 0f, "SMG 的图元必须有正的宽高");
+            assertTrue(p.x() >= x - 1e-4 && p.x() + p.w() <= x + SIZE + 1e-4,
+                    "SMG 的图元横向越界: x=" + p.x() + " w=" + p.w());
+            assertTrue(p.y() >= y - 1e-4 && p.y() + p.h() <= y + SIZE + 1e-4,
+                    "SMG 的图元纵向越界: y=" + p.y() + " h=" + p.h());
+            assertTrue(p.r() >= 0f && p.r() <= 1f && p.g() >= 0f && p.g() <= 1f
+                            && p.b() >= 0f && p.b() <= 1f && p.a() >= 0f && p.a() <= 1f,
+                    "SMG 的颜色分量必须落在 0..1");
+        }
+    }
+
     private static ItemIcon.IconPart widest(List<ItemIcon.IconPart> parts) {
         ItemIcon.IconPart best = parts.get(0);
         for (ItemIcon.IconPart p : parts) {

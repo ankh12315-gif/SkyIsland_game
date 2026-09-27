@@ -111,6 +111,107 @@ class ItemRegistryTest {
         assertEquals(1, ItemRegistry.pistol().maxStack(), "枪械不可堆叠");
     }
 
+    /**
+     * 手枪的 runtimeId 必须稳定（WEAPON-DOC-001 v2 §2.4 / §11.2）。
+     *
+     * <p>M3 给手枪挂上了 {@code GunPresentationSpec}，这属于"改物品的构造"，很容易被
+     * 顺手改成"重新排一遍注册顺序"。runtimeId 一旦位移，所有把 runtimeId 写进
+     * 存档/顶点缓存的地方都会静默错位。因此这里把它的值钉死：15（方块 0..14 之后，
+     * 煤炭 15 / 手枪弹 16 / 手枪 17 中的最后一个）。
+     */
+    @Test
+    void pistolRuntimeIdIsStable() {
+        assertEquals(17, ItemRegistry.pistol().runtimeId(),
+                "手枪 runtimeId 必须保持 17 —— 挂上 presentation 不得改变注册顺序");
+    }
+
+    // ============================================================ SMG（v2 §10 / §11.1 / §11.2）
+
+    /**
+     * SMG 必须存在、是枪、且逐字段等于 v2 §10 武器表（★ 值照抄，不在此处微调）。
+     *
+     * <p>这条断言是"武器表被写进代码"的可执行形式：伤害改变了、弹匣变成 30 发、
+     * 射速写成 6.0 —— 任何一处都说明代码与冻结的武器表脱钩，必须立刻变红。
+     */
+    @Test
+    void smgMatchesTheV2WeaponTable() {
+        Item smg = ItemRegistry.smg();
+        assertNotNull(smg, "SMG 必须在物品注册表中（v2 §10 / §17 Story 6）");
+        assertEquals(ItemRegistry.SMG_ID, smg.id());
+        assertEquals("skyisland:smg", smg.id(), "stable ID 是 v2 冻结的存档权威标识");
+        assertTrue(smg.isGun(), "SMG 必须是 GUN 类物品");
+        assertFalse(smg.isBlock(), "SMG 没有对应方块，不可放置");
+        assertEquals(1, smg.maxStack(), "枪械不可堆叠");
+
+        GunSpec spec = smg.gun();
+        assertEquals(FireMode.AUTO, spec.fireMode(), "v2 §10：SMG 是 AUTO（按住连发）");
+        assertEquals(5, spec.damage(), "v2 §10：SMG 单发伤害 5");
+        assertEquals(24, spec.magazineSize(), "v2 §10：SMG 弹匣容量 24");
+        assertEquals(10.0, spec.fireRate(), 1e-9, "v2 §10：SMG 射速 10.0 发/秒");
+        assertEquals(24, spec.range(), "v2 §10：SMG 有效射程 24 格");
+        assertEquals(1.5, spec.reloadSeconds(), 1e-9, "v2 §10：SMG 换弹 1.5 秒");
+        assertEquals(1, spec.pelletCount(), "v2 §8.1：M3 两把枪均为单弹丸");
+        assertEquals(0.0, spec.spreadRad(), 1e-9, "v2 §8.1：M3 两把枪散布均为 0");
+        assertEquals(48.0, spec.aimFovDeg(), 1e-9, "v2 §9.2 / §10：SMG ADS 48°");
+        assertEquals(0.65, spec.aimMoveSpeedMult(), 1e-9, "v2 §9.2 / §10：SMG ADS 移速 ×0.65");
+        // v2 §10 武器表未给 SMG 单独的衰减值 → 沿用与手枪一致的口径（见注册处注释）
+        assertEquals(0.90, spec.falloffPerUnit(), 1e-9);
+        assertEquals(0.20, spec.falloffFloor(), 1e-9);
+        assertEquals(ItemRegistry.PISTOL_AMMO_ID, spec.ammoId(),
+                "v2 §6.1：手枪与 SMG 共用 skyisland:pistol_ammo —— 不新增弹药 Item");
+    }
+
+    /** SMG 的射速 10 发/秒 → 每发间隔 0.1 秒（与手枪的 0.25 秒不同，这是可感差异之一）。 */
+    @Test
+    void smgShotIntervalFollowsItsFireRate() {
+        assertEquals(0.1, ItemRegistry.smg().gun().shotInterval(), 1e-9,
+                "射速 10.0 发/秒 → 每发间隔 0.1 秒");
+        assertEquals(0.25, ItemRegistry.pistol().gun().shotInterval(), 1e-9,
+                "手枪仍是 0.25 秒 —— SMG 的加入不得改变它");
+    }
+
+    /**
+     * v2 §11.2：{@code smg.runtimeId > pistol.runtimeId}，且手枪的 runtimeId 逐值不变。
+     *
+     * <p><b>为什么这条不是形式主义：</b>把 SMG 插在手枪<b>前面</b>（例如"两把枪放一起更好读"）
+     * 会让手枪从 17 变成 18。runtimeId 被写进存档与顶点缓存，位移一次就是
+     * "老存档里的手枪变成别的东西"——而不会有任何异常抛出。
+     */
+    @Test
+    void smgIsAppendedAfterThePistolWithoutShiftingIt() {
+        assertEquals(17, ItemRegistry.pistol().runtimeId(),
+                "手枪 runtimeId 必须逐值不变（v2 §11.2）");
+        assertEquals(18, ItemRegistry.smg().runtimeId(),
+                "SMG 必须紧接在手枪之后（表尾追加，v2 §11.1「只追加，不插队」）");
+        assertTrue(ItemRegistry.smg().runtimeId() > ItemRegistry.pistol().runtimeId(),
+                "SMG 的 runtimeId 必须大于手枪");
+    }
+
+    /**
+     * v2 §11.2：{@code runtimeId == BY_RUNTIME_ID 下标}，且 registry size 只增加预期数量（+1）。
+     *
+     * <p>M3 之前的物品表长度是 18（空槽 1 + 方块 13 + 煤炭 1 + 弹药 1 + 手枪 1 + ... 见下），
+     * 新增 SMG 后只 +1。写成字面量 19 而不是 {@code size()-1}，是为了让"有人又悄悄多注册一件物品"
+     * 也必然变红 —— 那是本 Story 明确禁止的（v2 §18：禁止第 3 把枪）。
+     */
+    @Test
+    void registryGrewByExactlyOneItemAndRuntimeIdsStillMatchTheirIndex() {
+        assertEquals(19, ItemRegistry.size(),
+                "M3 只允许新增 SMG 一件物品（18 → 19）；多一件即违反 v2 §18 的扩枪禁令");
+        for (int i = 0; i < ItemRegistry.size(); i++) {
+            assertEquals(i, ItemRegistry.byRuntimeId(i).runtimeId(),
+                    "runtimeId 必须等于注册下标（v2 §11.2；index=" + i + "）");
+        }
+        assertSame(ItemRegistry.smg(), ItemRegistry.byName(ItemRegistry.SMG_ID),
+                "按 stable ID 必须能取回同一件物品（存档读回走这条路径）");
+    }
+
+    /** SMG 不接受非枪的堆叠口径：它和手枪一样是每格 1 件的装备。 */
+    @Test
+    void smgIsNotStackable() {
+        assertEquals(1, ItemRegistry.smg().maxStack());
+    }
+
     // ============================================================ 弹药（PRD 5.4.2）
 
     @Test

@@ -91,6 +91,10 @@ public final class InputMapper {
 
         boolean jump = actionHeld(in, bindings, Action.JUMP);
         boolean attackHeld = actionHeld(in, bindings, Action.PRIMARY_ACTION);
+        // v2 §7.3：左键同时要"电平"（AUTO 持续开火）与"按下沿"（SINGLE 半自动开火）。
+        // 同一个动作查两次是刻意的 —— 两个消费者要的是同一次按键的不同时间切片，
+        // 与 usePressed / useHeld 的先例完全一致（见 PlayerIntent#attackPressed）。
+        boolean attackPressed = actionPressed(in, bindings, Action.PRIMARY_ACTION);
         boolean usePressed = actionPressed(in, bindings, Action.SECONDARY_ACTION);
         // M2：右键同时要"电平"（持枪瞄准）与"按下沿"（放置）。
         // 同一个动作查两次是刻意的 —— 两个消费者要的是同一次按键的不同时间切片，
@@ -115,7 +119,7 @@ public final class InputMapper {
 
         return new PlayerIntent(forward, strafe, jump,
                 look[0], look[1],
-                attackHeld, usePressed, useHeld, reloadPressed, respawnPressed,
+                attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
                 toggleDebug, savePressed, screenshotPressed,
                 scrollSteps, slot);
     }

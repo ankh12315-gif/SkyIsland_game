@@ -34,7 +34,7 @@ public final class ViewmodelGeometry {
     /** 手持物专用投影的垂直 FOV（度）。比世界 FOV 窄，透视更平。 */
     public static final double FOV_DEG = 50.0;
 
-    /** 盒体容量：枪 6 个（含枪口闪光）、方块 2 个、空手 2 个，取 8 留余量。 */
+    /** 盒体容量：SMG 6 个（含枪口闪光）、手枪 6 个、方块 2 个、空手 2 个，取 8 留余量。 */
     public static final int MAX_BOXES = 8;
 
     // ---- 锚点（视图空间，米）----
@@ -69,6 +69,10 @@ public final class ViewmodelGeometry {
     private static final int P_HAND_DARK = 5;
     private static final int P_FLASH = 6;
     private static final int P_ITEM = 7;      // 取 ViewmodelModel 传进来的颜色
+    /** SMG 机匣：偏冷的暗橄榄绿 —— 与手枪的冷灰拉开色相（v2 §4.2 第①项的配色一半）。 */
+    private static final int P_SMG_BODY = 8;
+    /** SMG 枪管：更暗的绿灰。 */
+    private static final int P_SMG_BARREL = 9;
 
     private static final float[][] PALETTE = {
             {0.26f, 0.28f, 0.32f},   // 枪身：冷灰
@@ -79,6 +83,8 @@ public final class ViewmodelGeometry {
             {0.52f, 0.37f, 0.28f},   // 手的暗部
             {1.00f, 0.88f, 0.48f},   // 枪口闪光
             {1.00f, 1.00f, 1.00f},   // 占位（实际取模型色）
+            {0.24f, 0.29f, 0.26f},   // SMG 机匣：暗橄榄绿
+            {0.16f, 0.20f, 0.18f},   // SMG 枪管：更暗的绿灰
     };
 
     /**
@@ -99,6 +105,46 @@ public final class ViewmodelGeometry {
             // 枪口闪光：只在开火后的一瞬间画（见 write）
             -0.038, -0.010, -0.265, 0.038, 0.046, -0.215, P_FLASH,
     };
+
+    /**
+     * SMG 的轮廓（v2 §4.2 第①项：与手枪的 Viewmodel 必须明显不同）。
+     *
+     * <p>相对 {@link #GUN_PARTS} 的差异（用户一眼可辨"我换枪了"）：
+     * <ul>
+     *   <li><b>更长的枪管</b>（到 −0.270，手枪是 −0.215）—— SMG 的第一识别特征；</li>
+     *   <li><b>更宽更长更低的机匣</b>（0.082 × 0.062，手枪是 0.060 × 0.050）——
+     *       剪影更"方砖"，不是手枪那种"小方块 + 细管"；</li>
+     *   <li><b>向下的弹匣</b>（−0.190..−0.020）—— 手枪完全没有这个部件，
+     *       它单独就把两个轮廓分开了；</li>
+     *   <li><b>折叠枪托</b>（向后伸出）—— 连发枪的又一处独有剪影；</li>
+     *   <li>配色改用 {@link #PALETTE} 里 SMG 专属的一组冷绿灰（见下面 PALETTE 注释）。</li>
+     * </ul>
+     *
+     * <p><b>为什么这些尺寸是"贴着上界"取的（而非随便放大）：</b>
+     * {@code ViewmodelRendererTest} 有两条硬约束 —— 所有顶点恒在右半屏（NDC x &gt; 0）、
+     * 且不得落进准星禁区。轮廓越大越靠左，越容易撞上这两条。
+     * 这组尺寸是在满足两条约束的前提下能做到的最大差异（由单测在整个动画包络上扫描验证）。
+     */
+    private static final double[] SMG_PARTS = {
+            // 机匣：比手枪更宽更长，且整体更低（暗橄榄绿，与手枪的冷灰不同色）
+            -0.041, -0.022, -0.145, 0.041, 0.020, 0.050, P_SMG_BODY,
+            // 枪管：明显更长（−0.270），是 SMG 的识别特征
+            -0.022, -0.017, -0.270, 0.022, 0.014, -0.130, P_SMG_BARREL,
+            // 弹匣：从机匣向<b>下</b>凸出 —— 手枪没有这个部件
+            -0.020, -0.175, -0.060, 0.020, -0.030, 0.000, P_GUN_GRIP,
+            // 枪托：从机匣向<b>后</b>伸出的一截
+            -0.020, -0.016, 0.040, 0.020, 0.014, 0.105, P_SMG_BARREL,
+            // 握枪的手
+            -0.040, -0.130, 0.030, 0.040, -0.040, 0.125, P_HAND,
+            // 枪口闪光：位置随更长的枪管前移（−0.320..−0.270）
+            -0.038, -0.024, -0.320, 0.038, 0.032, -0.270, P_FLASH,
+    };
+
+    /** 手枪轮廓键 = 手枪的 {@code presentation().viewmodelId()}（{@code ItemRegistry.PISTOL_VIEWMODEL_ID}）。 */
+    private static final String PISTOL_VIEWMODEL_KEY = "pistol";
+
+    /** SMG 轮廓键 = SMG 的 {@code presentation().viewmodelId()}（{@code ItemRegistry.SMG_VIEWMODEL_ID}）。 */
+    private static final String SMG_VIEWMODEL_KEY = "smg";
 
     private static final double[] BLOCK_PARTS = {
             // 方块本体：一个 0.115 的立方体
@@ -130,13 +176,37 @@ public final class ViewmodelGeometry {
     }
 
     /**
+     * 某个枪械轮廓键在"不开火"时的 part 数（枪口闪光不计入）。
+     *
+     * <p>与 {@link #partCount(ViewmodelKind)} 并存：后者是"不指定具体枪"时的口径
+     * （面向 GUN 形态的通用问法，等价于手枪轮廓，因为 M2 的 {@code GUN_PARTS} 就是手枪）。
+     * 本方法则按键回答，供"SMG 有几个盒体"这类断言使用。
+     */
+    public static int gunPartCount(String gunViewmodelId) {
+        return gunParts(gunViewmodelId).length / DOUBLES_PER_PART - 1;
+    }
+
+    /**
+     * 按轮廓键选零件数组。
+     *
+     * <p><b>未知键兜底走手枪轮廓</b>：宁可画成手枪，也不要画出一片空白 ——
+     * 空白会被读成"手里没东西"，比"画错一把枪"更难诊断。键的正确性由
+     * {@code ItemRegistry} 的常量与测试保证，兜底只是防御性的一层。
+     */
+    private static double[] gunParts(String gunViewmodelId) {
+        return SMG_VIEWMODEL_KEY.equals(gunViewmodelId) ? SMG_PARTS : GUN_PARTS;
+    }
+
+    /**
      * 写顶点。
      *
      * @return 写入的 float 个数（0 表示这一帧不画 —— 例如空手且开关关着）
      */
     public static int write(float[] out, int start, ViewmodelModel model, ViewmodelPose pose) {
         double[] parts = switch (model.kind) {
-            case GUN -> GUN_PARTS;
+            // GUN 按"是哪把枪"选轮廓（v2 §4.2 第①项）。
+            // PISTOL_VIEWMODEL_KEY 与未知键都走 GUN_PARTS，因此手枪逐顶点不变。
+            case GUN -> gunParts(model.gunViewmodelId);
             case BLOCK -> BLOCK_PARTS;
             case EMPTY -> EMPTY_PARTS;
         };
