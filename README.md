@@ -218,7 +218,14 @@ run-m1.bat -Dskyisland.measureSeconds=8 -Dskyisland.noSave=true   :: 真实输�
 里面**没有 SMG**，且那时的后备弹药是无限的。读旧档不会补发开局装备，你只会看到一把手枪，
 并很容易因此得出"SMG 没做出来"的错误结论。`play-m3.bat` 检测到旧存档时会**显式警告**，不会假装正常。
 
-M3 口径变化：后备弹药**有限**（Survival 为默认；开局 24 发，打光按 `F6`）。
+**后备弹药口径（可切换）**：`play-m3.bat` **默认无限后备**（Debug / Prototype 口径，v2 §19-7）——
+换弹补满弹匣而不动背包，方便连着试射速与换弹时间。产品默认仍是**有限**的 Survival 口径
+（v2 §19-6：换弹真实从背包里扣，开局 24 发）；把启动器 `java` 行里的
+`-Dskyisland.infiniteReserve=true` 删掉（或改成 `false`）就是正式口径。
+开关解析很严：**只有显式 `true`** 才算数，`=1` / `=yes` / 拼错一律留在有限的**安全侧**（错字不该改变玩法口径）。
+启动时会打印本局生效的口径（`后备弹药口径 : 无限（PROTOTYPE …）` / `有限（SURVIVAL …）`），
+所以"为什么弹药不扣"永远不需要靠猜。
+
 注意 `F6` 走的是 `grantStartingGear`，会**整套重发**，因此每按一次会再多一把手枪和一把冲锋枪
 （既有行为，已登记在 `docs/testing/M3_WEAPON_S10_PLAYTEST.md` §6）。
 

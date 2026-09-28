@@ -4,6 +4,7 @@ import com.skyisland.audio.AudioEvent;
 import com.skyisland.audio.AudioFeedback;
 import com.skyisland.audio.AudioManager;
 import com.skyisland.combat.CombatController;
+import com.skyisland.combat.GunState;
 import com.skyisland.entity.Entity;
 import com.skyisland.entity.EntityManager;
 import com.skyisland.entity.MeleeMonster;
@@ -285,8 +286,25 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             boolean saveEnabled,
             boolean uiSelfTest,
             boolean combatSelfTest,
+            boolean infiniteReserve,
             String startState
     ) {
+        /**
+         * 后备弹药口径开关的解析（GL-free 静态纯函数，便于单测）。
+         *
+         * <p><b>只有显式写 {@code true}（忽略大小写、允许首尾空白）才切无限后备。</b>
+         * {@code null}（属性没给）、{@code "false"}、以及任何其它值一律留在正式口径（有限）。
+         *
+         * <p>为什么不做成"非 false 即无限"：那样一次拼写手滑（{@code =1}、{@code =yes}、
+         * {@code =ture}）就会把口径静默翻成无限，而"弹药到底扣不扣"是玩家<b>立刻能感觉到</b>
+         * 的东西 —— 它不该由一个错字决定。宁可对错字保持"留在有限"这个安全侧，
+         * 并且把最终生效的口径打进启动日志（见 {@code logRuntimeProfile}），
+         * 让"为什么弹药不扣"永远不需要靠猜。
+         */
+        static boolean parseInfiniteReserve(String raw) {
+            return raw != null && "true".equalsIgnoreCase(raw.trim());
+        }
+
         static M1Config fromSystemProperties() {
             Path saveRoot = SaveFormat.resolveSaveRoot();
             return new M1Config(
@@ -308,6 +326,12 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                     // ★ M2：独立的战斗自测开关，刻意<b>不</b>复用 skyisland.selfTest ——
                     //   见 start() 里的互斥检查。
                     Boolean.getBoolean("skyisland.combatSelfTest"),
+                    // ★ M3 Story 10：后备弹药口径的**玩家可见开关**。
+                    //   默认 false = 保持正式口径 SURVIVAL（有限、真实扣 Inventory，v2 §19-6）。
+                    //   这是 v2 §19-7「Debug 模式仍可无限备弹」的玩家入口 ——
+                    //   Story 8 之后这个能力只以枚举形式存在，玩家侧一直没有入口
+                    //   （唯一设成 PROTOTYPE 的地方是战斗自测路径）。
+                    parseInfiniteReserve(System.getProperty("skyisland.infiniteReserve")),
                     System.getProperty("skyisland.startState", "")
             );
         }
@@ -956,6 +980,19 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         combat = new CombatController(entities);
         combatFx = new CombatFxModel();
 
+        // ---- M3 Story 10：后备弹药口径（Run Mode 配置）----
+        // 正式口径是 SURVIVAL（有限后备、换弹真实从 Inventory 扣减，v2 §19-6），
+        // 这是 CombatController 的字段初值，本行在默认情况下不改变任何东西。
+        // 只有显式 -Dskyisland.infiniteReserve=true 才切 PROTOTYPE（无限，v2 §19-7 Debug 口径）。
+        //
+        // 为什么把开关放在**装配期**、而不是让 GunState 或 HUD 在运行时判断：
+        //   口径是"本局怎么玩"的配置，一次会话内不该漂移；换口径还会丢弃已建的 GunState
+        //   （见 CombatController#setReserveMode 的说明），放到运行时就等于允许"打到一半
+        //   弹药突然不再扣了"。装配期一次定死，读的人只需要看这一行。
+        //   自测路径（下面 §7）会在之后把它强制成 PROTOTYPE —— 那是自测自己的口径声明，
+        //   与本开关无关，两者不冲突。
+        combat.setReserveMode(GunState.ReserveMode.of(config.infiniteReserve()));
+
         // ---- M2.1：音频链 ----
         // ① open()：失败不是故障。机器没有声卡、原生库没链上、设备被占用，
         //    三种情形走同一条降级路径 —— 播放侧摘掉，事件照常记进 audit sink。
@@ -1024,7 +1061,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             //   靠一个全局默认值表达不了；靠"自测时偷偷把默认值改回无限"则会让
             //   "正式玩法到底消耗不消耗弹药"重新变成一件看不出来的事。
             //   显式设定 → 这条选择在代码里可见、可被测试断言，正式玩法一个字都不受影响。
-            combat.setReserveMode(com.skyisland.combat.GunState.ReserveMode.PROTOTYPE);
+            combat.setReserveMode(GunState.ReserveMode.PROTOTYPE);
         }
 
         loop = new GameLoop(/* frameRateCapFps = */ 0);   // 0 = 不限速，测量真实吞吐
@@ -1214,6 +1251,13 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         Log.info("设置文件            : %s", SettingsStore.resolvePath());
         Log.info("截图目录            : %s", Path.of(config.screenshotDir()).toAbsolutePath());
         Log.info("存档开关            : %s", config.saveEnabled() ? "开启" : "关闭（skyisland.noSave=true）");
+        // ★ M3 Story 10：把最终生效的弹药口径打进启动日志。
+        // 为什么这行不是可有可无的装饰：口径有两处来源（配置开关 / 自测路径强制 PROTOTYPE），
+        // 而"弹药不扣"在体感上与"弹药被扣了但我没注意"完全不同 —— 没有这行日志时，
+        // 判断口径只能靠翻代码。启动即声明，读日志的人 3 秒就能定性。
+        Log.info("后备弹药口径        : %s", config.infiniteReserve()
+                ? "无限（PROTOTYPE —— -Dskyisland.infiniteReserve=true，v2 §19-7 Debug 口径）"
+                : "有限（SURVIVAL —— 换弹真实扣 Inventory，v2 §19-6 正式口径）");
         Log.info("输入来源            : %s", config.selfTest() || config.combatSelfTest()
                 ? "进程内脚本化意图（TR7：本机无法注入合成键盘输入）"
                 : "GLFW 真实键鼠");

@@ -6,7 +6,7 @@
 | 内容 | 手枪/SMG 切换、换弹、资源消耗、战斗手感 |
 | 出口判据 | **PASS / PASS WITH TODO** |
 | 日期 | 2026-09-28 |
-| 自动化部分 | **PASS**：单测 1024 / 0 / 0；三条门禁全绿（见 §3） |
+| 自动化部分 | **PASS**：单测 1029 / 0 / 0；三条门禁全绿（见 §3 / §8.5） |
 | 需要人做的 | **A–H 共 8 组**（§4）。未做之前本 Story **不能判 PASS** |
 
 ---
@@ -77,7 +77,7 @@ SMG 进了开局装备之后，这套夹具不但多余，而且**有害**：
 | 4 | SMG 按住全自动 | 机器 | 30 秒阶段：击发 180 发、干枪 1、换弹 8 次 | ✅ |
 | 5 | 移动**不**打断换弹 | 机器 | `RELOAD_WHILE_WALKING` 阶段（M2.2 `b487188` 口径，Story 1 已把文档对齐到代码） | ✅ |
 | 6 | Survival 弹药有限并真实消耗 | 机器 + **人** | `ReserveMode.SURVIVAL` 为默认；`SurvivalAmmoTest` | 机器 ✅ / 资源压力待 §4-F |
-| 7 | Debug 模式仍可无限备弹 | 机器 | `ReserveMode.PROTOTYPE`（仅自测路径使用） | ✅ |
+| 7 | Debug 模式仍可无限备弹 | 机器 | `ReserveMode.PROTOTYPE` + **玩家入口 `-Dskyisland.infiniteReserve=true`**（play-m3.bat 默认开启）；`InfiniteReserveWiringTest` 5 条用例钉住「属性 → M1Config → 装配期 → 启动器」整条接线 | ✅ |
 | 8 | 两把枪 Viewmodel / 图标 / 枪口位置有明显差异 | **人** | 数值确实不同（muzzle 0.55/0.20/0.12 vs 0.72/0.24/0.15；`GUN_PARTS` vs `SMG_PARTS`），但"**明显**"只能人判 | 待 §4-D |
 | 9 | HUD 不硬编码手枪 | 机器 | `HudAmmoDataSourceTest`（含 `TestGuns` probe gun 指向另一个 ammoId） | ✅ |
 | 10 | ammoId 不硬编码手枪弹 | 机器 | `GunStateAmmoResolutionTest` | ✅ |
@@ -132,6 +132,10 @@ SMG 进了开局装备之后，这套夹具不但多余，而且**有害**：
 4. 判定：☐ PASS ☐ FAIL ☐ TODO ______（建议值：______）
 
 ### F. 资源消耗压力（对应 §19-6）
+> ⚠️ **本组要验的是「正式有限口径」。`play-m3.bat` 默认开的是无限后备（Debug 口径，v2 §19-7），
+> 所以做 F 组之前必须先关掉它**：把启动器 `java` 行里的 `-Dskyisland.infiniteReserve=true`
+> 删掉（或改成 `false`）再跑。启动日志会打印本局生效的口径，先确认那行写的是
+> `后备弹药口径 : 有限（SURVIVAL …）` 再开始。
 1. 开局只有 **24 发**手枪弹，两把枪**共用同一种弹药**。
 2. 把两把枪都打空 → **期望**后备弹药真实减少，HUD 后备读数跟着降。
 3. 打到 **0 发**后开火：**期望**空枪（有反馈），不再扣成负数。
@@ -204,6 +208,94 @@ SMG 进了开局装备之后，这套夹具不但多余，而且**有害**：
 | 字模 | 重烤后 1529 字，空白字形 0（"冲锋"二字形已覆盖） |
 
 证据目录：`tmp/gate-runs/20260928-092333/`（最终一轮；上一轮 `20260928-091631` 结果逐项一致）
+
+---
+
+## 8. 补充改动：后备弹药口径的玩家入口（`-Dskyisland.infiniteReserve`）
+
+### 8.1 缺口的形态
+
+Story 8 把口径做成了 Run Mode 配置（`CombatController.reserveMode`，默认 `SURVIVAL` 有限），
+但**玩家侧一个入口都没有**：唯一把口径设成 `PROTOTYPE`（无限）的地方是战斗自测路径。
+于是 v2 §19-7「Debug 模式仍可无限备弹」在纸面上"通过"，实际是一句**只有测试代码能兑现**的话 ——
+与 §1 里 SMG「完整存在却拿不到」是同一类缺口，只是这次缺的是**开关**而不是枪。
+
+### 8.2 裁决
+
+主理人 2026-09-27 裁决（选项："加开关，play-m3 默认无限"）：
+**加玩家可见开关，`play-m3.bat` 默认开启无限；产品默认仍是有限**（v2 §19-6 不动）。
+
+### 8.3 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `SkyIslandGame.M1Config` | 新增 `boolean infiniteReserve` 分量 + `parseInfiniteReserve(String)`（GL-free 纯函数） |
+| `SkyIslandGame.fromSystemProperties()` | 接 `parseInfiniteReserve(System.getProperty("skyisland.infiniteReserve"))` |
+| `SkyIslandGame.start()` | 装配期 `combat.setReserveMode(GunState.ReserveMode.of(config.infiniteReserve()))` |
+| `SkyIslandGame.logRuntimeProfile()` | 启动日志新增「后备弹药口径 : 无限（PROTOTYPE …）/ 有限（SURVIVAL …）」 |
+| `tmp/gen_play_m3_bat.js` → `play-m3.bat` | java 行加 `-Dskyisland.infiniteReserve=true`；文件头第 2 条改写为「本启动器默认无限 + 如何切回正式口径」 |
+| `README.md` | 「手动游玩（M3…）」一节同步口径说明 |
+| `InfiniteReserveWiringTest`（新增，5 用例） | 钉住「属性 → M1Config → 装配期 → 启动器」整条接线 |
+
+### 8.4 为什么解析必须"严"
+
+**只有显式 `true` 才切无限**（忽略大小写、允许首尾空白），`=1` / `=yes` / `ture` / 空值一律留在有限侧。
+理由是两种错法的代价不对称：手滑成 `=1` 而仍有限，行为**与默认完全一致**、无需排查；
+反过来若写"除了 false 都当无限"，一次手滑就会让"打完就没了"这条玩法规则**静默消失**，
+而它在日志里只表现为"弹药怎么不扣"。所以错字留在**安全侧**，并把生效口径打进启动日志。
+
+### 8.5 机器侧取证
+
+| 项 | 结果 |
+|---|---|
+| `mvn clean package` | **1029 用例 / 0 失败 / 0 错误 / BUILD SUCCESS**（1024 + 新增 5） |
+| 新增测试 | `InfiniteReserveWiringTest`：解析严格性 / 属性→配置 / 配置→枚举 / **装配期源码接线** / **启动器传参 + 纯 ASCII** |
+| gate-m1 | exit=0，**58 PASS· / 0 FAIL·** |
+| gate-ui | exit=0，**150 PASS· / 0 FAIL·** |
+| gate-m2 | exit=0，**354 PASS·**（= 177 条断言）/ **0 FAIL·**；`m2_selftest_assertions=177`、`m2_selftest_failures=0`、`m2_combat_closure=true`、`m2_selftest_scope=full` |
+| 字模 | **1529 → 1531 字**：`withoutLineComments` 的说明里新增「洁癖」二字，首次全量构建时 `CjkFontTest` **精确判红**（典型"新增中文"路径）→ 重烤后 1531 字、空白字形 0 |
+| **真实玩法三点取证** | `tmp/verify_infinite_reserve.ps1`：**A**（不传开关）→ `有限（SURVIVAL`；**B**（`=true`）→ `无限（PROTOTYPE`；**C**（`=1` 错字）→ `有限（SURVIVAL`。三次 exit=0，三次都发开局装备（各自新世界） |
+
+**为什么三点而不是两点：** 只跑 B 无法排除"这一局本来就打印无限"；只跑 A 无法排除"那行是写死的"；
+C 则是 §8.4 那条"错字留在安全侧"的产品规则在真实启动路径上的落地证据。
+
+证据：`tmp/m3_infinite_reserve_verify.log`、`tmp/gate-runs/20260928-164241/`（**最终轮**；
+同日早先两轮 `20260928-162622` / `20260928-092333` 读数逐项一致）、`tmp/m2_gate-{m1,ui,m2}.stdout.txt`。
+
+### 8.6 本次新踩到的环境陷阱（已记入项目记忆）
+
+**PowerShell 5.1 把无 BOM 的 `.ps1` 按 GBK 读。** 中文**注释**无碍（注释不输出），
+但中文**字符串字面量**一旦 `Out-File` 进日志就成乱码 ——
+实测「后备弹药口径」写成日志后是「鍚庡寮硅嵂鍙ｅ緞」。
+所以脚本里**写进日志的标签一律用 ASCII**；游戏自己输出（java，UTF-8）的行不受影响。
+这与 `.bat` 必须纯 ASCII 是同一条纪律的另一个面。
+
+### 8.7 反向验证（v2 §14.8）—— 本轮抓到一个"会被注释满足的假接线断言"
+
+两处注入，各对应一条断言：
+
+| # | 注入 | 期望变红的断言 | 结果 |
+|---|---|---|---|
+| 1 | 把 `start()` 里 `combat.setReserveMode(GunState.ReserveMode.of(config.infiniteReserve()))` **注释掉**、替成 `of(false)` | `theAssemblyLineActuallyConsumesTheParsedFlag` | ✅ 红 |
+| 2 | 把 `play-m3.bat` **启动行**上的 `-Dskyisland.infiniteReserve=true` 删掉（文件头 `REM` 里的说明原样保留） | `thePlayLauncherPassesTheSwitchAndStaysPureAscii` | ✅ 红 |
+
+`Tests run: 5, Failures: 2` —— **恰好**是这两条，另外三条不受影响（判据精确，没有连坐）。
+
+**第一版断言在这里全部漏过 —— 这是本轮最值得留下的一条：**
+
+- 装配期那条用 `source.contains("combat.setReserveMode(...)")`。把调用**注释掉**之后，
+  被注释的那一行里原样文本还在，`contains` 依然成立 → 测试**照旧全绿**。
+- 启动器那条用全文件 `contains`。而启动器文件头为了让玩家知道怎么切回正式口径，
+  **明文写过** `-Dskyisland.infiniteReserve=true`（在 `REM` 里）—— 这段说明文字把断言满足了。
+
+也就是说，两条断言**恰好漏掉了最可能的那两种失效方式**（有人把这一行注释掉 / 删掉），
+而它们还会带着"已反向验证"的说法继续活着。修法：
+① 扫描前去掉整行注释（`withoutLineComments` helper）；
+② 启动器判据锚定到**真正的启动行**（同时含 `java.exe` 与 `-jar` 的那一行），而不是全文件。
+
+恢复后复跑 `Tests run: 5, Failures: 0`；两个被动过的文件与注入前**逐字节一致**
+（sha256：`SkyIslandGame.java` = `9c28a36c…f26177`、`play-m3.bat` = `607b9e21…c1064e`），
+因此早先那次构建 / 门禁证据仍然指向同一份源码。`src/main/java` 内 `TEMP_REVERSE_VERIFY` 残留 = **0**。
 
 ---
 

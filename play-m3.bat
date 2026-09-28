@@ -9,9 +9,17 @@ REM         hotbar 1 = PISTOL  SINGLE  8 dmg  12-round mag  1.2 s reload
 REM         hotbar 2 = PISTOL AMMO x24  (shared by BOTH guns)
 REM         hotbar 3 = SMG     AUTO    5 dmg  24-round mag  1.5 s reload
 REM       Same ammo item, two guns. Switching is just the number keys.
-REM    2) FINITE AMMO IS BACK. M2.1 ran on an infinite reserve; M3 Survival
-REM       spends real rounds out of your inventory. You start with 24 and
-REM       they are shared, so the SMG empties the reserve fast. F6 resupplies.
+REM    2) RESERVE AMMO IS INFINITE IN THIS LAUNCHER (by default). This is the
+REM       Debug / Prototype caliber (v2 sec 19-7): reloading never drains the
+REM       reserve, so you can test fire modes and reload timings back to back
+REM       without ever running dry. The startup log prints which caliber is
+REM       active, so this is never a guess.
+REM       The FORMAL M3 Survival caliber is the opposite - FINITE reserve that
+REM       really spends rounds out of your inventory (v2 sec 19-6) - and it is
+REM       still the product default. This launcher only flips the switch for
+REM       convenience. To play the formal caliber, either delete
+REM           -Dskyisland.infiniteReserve=true
+REM       from the java line near the bottom, or set it to false.
 REM    3) RELOAD IS NOT INTERRUPTED BY MOVEMENT. Walk while reloading and the
 REM       reload still finishes (this is deliberate, not a bug).
 REM    4) AIMING DIFFERS: hold RMB -> pistol FOV 45 / move speed x0.60,
@@ -102,10 +110,14 @@ echo [INFO] World    : %WORLD%
 echo [INFO] Save dir : %SAVE%
 echo.
 echo [INFO] Starting gear: 1=pistol  2=pistol ammo x24  3=SMG
+echo [INFO] Reserve    : INFINITE (Debug caliber, v2 sec 19-7)
 echo [INFO] Check first:  press 3  then  compare one-click vs hold-LMB
 echo.
 
-"%JDK_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED %* -Dskyisland.worldName=%WORLD% -Dskyisland.settingsFile=tmp\m3-play-settings.json -Dskyisland.saveDir="%SAVE%" -jar "%JAR%"
+REM  -Dskyisland.infiniteReserve=true  -> infinite reserve for THIS launcher
+REM  (Debug / Prototype caliber). Remove it (or set false) for the formal
+REM  finite Survival caliber. See the REM header item 2 for why.
+"%JDK_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED %* -Dskyisland.worldName=%WORLD% -Dskyisland.settingsFile=tmp\m3-play-settings.json -Dskyisland.saveDir="%SAVE%" -Dskyisland.infiniteReserve=true -jar "%JAR%"
 set "RC=%ERRORLEVEL%"
 
 echo.
