@@ -185,7 +185,7 @@ public final class Localization {
         TEXT.put(MSG_MAGAZINE_FULL, "弹匣已满");
         TEXT.put(MSG_NO_RESERVE, "没有后备弹药");
         TEXT.put(MSG_RELOAD_BLOCKS_FIRE, "换弹中，无法开火");
-        TEXT.put(MSG_GEAR_GRANTED, "已获得 手枪 + 手枪弹 ×%d");
+        TEXT.put(MSG_GEAR_GRANTED, "已获得 手枪 + 冲锋枪 + 手枪弹 ×%d");
         TEXT.put(MSG_HIT_ENTITY, "击中 %s：%.1f 格，伤害 %d");
     TEXT.put(MSG_SAVE_OK, "已保存");
     TEXT.put(MSG_SAVE_FAILED, "保存失败");

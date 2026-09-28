@@ -4,7 +4,7 @@ package com.skyisland.render.ui;
  * 简体中文点阵字模（12×12，1 bit/像素）。
  *
  * <p>本文件由 {@code tools/fontgen/GenCjkFont.java} <b>自动生成，请勿手工编辑</b>。
- * <p>源字体：Microsoft YaHei 12px（Microsoft YaHei 1523 / Segoe UI Symbol 6）；生成日期：2026-09-27；字形数：1529。
+ * <p>源字体：Microsoft YaHei 12px（Microsoft YaHei 1523 / Segoe UI Symbol 6）；生成日期：2026-09-28；字形数：1529。
  * <p>字符集来自扫描 {@code src/main/java} 与 {@code src/test/java} 下全部 {@code .java} 文件得到的
  * 非 ASCII 字符全集 —— {@code <b>新增中文文案后必须重新运行生成器</b>}，
  * 否则新字会渲染成空白（{@link #has(char)} 为 false 时不回落 {@code '?'}，

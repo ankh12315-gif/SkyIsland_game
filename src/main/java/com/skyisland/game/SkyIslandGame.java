@@ -1039,11 +1039,19 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     }
 
     /**
-     * 发放 M2 开局装备：手枪 ×1 + 手枪弹 ×24（PRD 5.4.1 / 初始物资表）。
+     * 发放 M3 开局装备：手枪 ×1 + 冲锋枪 ×1 + 手枪弹 ×24（PRD 5.4.1 初始物资表 + v2 §10 武器表）。
      *
      * <p>24 发不是随手取的数：弹匣容量 12，PRD 明文写"2 个满弹匣"。
      * 写成 {@code 2 * magazineSize} 而不是字面量 24，是为了让"改弹匣容量"这件事
      * 只改一处 —— 否则数值一改，这条初始物资就悄悄变得不是"两个满弹匣"了。
+     *
+     * <p><b>为什么 M3 起开局就发两把枪（主理人 2026-09-27 裁决）：</b>
+     * v2 §19 通过标准第 2 条写的是「SMG 可正常<b>获得</b>/持有/显示/射击/换弹/存档」，
+     * 第 14 条写的是「真人试玩能明确感知两把枪的差异」。而 SMG 此前<b>只存在于
+     * {@code ItemRegistry} 内部</b> —— 玩家在任何正常玩法路径上都拿不到它，
+     * 这两条在事实上都不成立。合成配方在 M3 之外（见 :1226 附近注释，合成属 M4），
+     * 所以在 M3 里唯一站得住的获取路径就是<b>开局装备</b>（F6 调试补给复用本方法，
+     * 因此同步生效）。两把枪共用 {@code skyisland:pistol_ammo}（v2 §6.1：M3 只需要一种实际弹药）。
      *
      * <p>发完<b>不主动切换选中槽</b>：手枪会落进第一个空槽（新世界即第 1 格），
      * 玩家开局手里就是枪，这符合"开局装备"的直觉。
@@ -1056,14 +1064,17 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                 ItemRegistry.runtimeIdOf(ItemRegistry.PISTOL_ID), 1);
         int leftoverAmmo = player.inventory().add(
                 ItemRegistry.runtimeIdOf(ItemRegistry.PISTOL_AMMO_ID), ammo);
-        if (leftoverGun != 0 || leftoverAmmo != 0) {
+        int smgRuntimeId = ItemRegistry.runtimeIdOf(ItemRegistry.SMG_ID);
+        int leftoverSmg = smgRuntimeId > 0 ? player.inventory().add(smgRuntimeId, 1) : 0;
+        if (leftoverGun != 0 || leftoverAmmo != 0 || leftoverSmg != 0) {
             // 快捷栏只有 9 格，装不下就是真的装不下 —— 必须说出来，
             // 否则症状是"开局没枪"，而原因看起来像是掉落了。
-            Log.noteWarning("战斗", "开局装备未能全部放入快捷栏（枪余 " + leftoverGun
-                    + " / 弹药余 " + leftoverAmmo + "），请检查快捷栏容量。");
+            Log.noteWarning("战斗", "开局装备未能全部放入快捷栏（手枪余 " + leftoverGun
+                    + " / 弹药余 " + leftoverAmmo + " / 冲锋枪余 " + leftoverSmg
+                    + "），请检查快捷栏容量。");
         }
         showEvent(Localization.text(Localization.MSG_GEAR_GRANTED, ammo), 4.0);
-        Log.info("[战斗] %s：手枪 ×1、手枪弹 ×%d（弹匣容量 %d）",
+        Log.info("[战斗] %s：手枪 ×1、冲锋枪 ×1、手枪弹 ×%d（弹匣容量 %d）",
                 reason, ammo, ItemRegistry.pistol().gun().magazineSize());
     }
 
@@ -3283,11 +3294,15 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
 
         @Override
         public int grantSmgForSustain() {
-            // M3 Story 9：把 SMG 放进背包并切到手上，作为"连续按住 30 秒"阶段的前提。
+            // M3 Story 10：SMG 已进开局装备，本方法因此<b>不再发放</b>，只负责"找到并选中"。
             //
-            // 为什么不复用 grantStartingGear：它只发开局装备（手枪 + 手枪弹，PRD 5.4.1），
-            // SMG 是 v2 §10 的第二把验证枪，不在开局装备表里。这里显式发一把并选中，
-            // 让该阶段的前提只有一句可说清的话。
+            // 为什么改成"只选中"（这是一次有意的口径收紧）：
+            //   Story 9 里 SMG 不在开局装备表内，本阶段只能自己发一把，于是阶段末必须
+            //   再删掉它（releaseSmgAfterSustain）—— 否则退出自动存档会多出一把 SMG，
+            //   与存档阶段快照不一致，把"夹具污染"伪装成"逐格不一致"的产品缺陷。
+            //   SMG 进开局装备之后，"发一把再删一把"这套夹具不再必要，而且更危险：
+            //   它会把玩家本来就有的那把一起删掉。现在本阶段的唯一前提是
+            //   「开局装备给了 SMG」—— 这一点不成立，本阶段就该红。
             int smgId = ItemRegistry.runtimeIdOf(ItemRegistry.SMG_ID);
             if (smgId <= 0) {
                 // 注册表里没有 SMG（理论上不会发生 —— ItemRegistryTest 会挡住）：
@@ -3295,45 +3310,32 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                 Log.noteWarning("战斗", "SMG 未在 ItemRegistry 中注册，SMG 稳定性阶段无法前置装备");
                 return -1;
             }
-            int leftover = player.inventory().add(smgId, 1);
-            if (leftover != 0) {
-                Log.noteWarning("战斗", "SMG 未能放入快捷栏（余 " + leftover + "），请检查快捷栏容量。");
-                return -1;
-            }
             // 找到 SMG 落在快捷栏的哪一格并选中它 —— 不假定它一定落在某个固定槽。
             for (int i = 0; i < Inventory.HOTBAR_SIZE; i++) {
                 if (player.inventory().hotbarSlot(i).itemRuntimeId() == smgId) {
                     player.inventory().selectSlot(i);
-                    break;
+                    Log.info("[战斗] SMG 稳定性阶段装备：选中槽=%d，手持=%s",
+                            player.inventory().selectedSlot(), player.inventory().selectedStack().item().id());
+                    return smgId;
                 }
             }
-            Log.info("[战斗] SMG 稳定性阶段装备：SMG ×1，选中槽=%d，手持=%s",
-                    player.inventory().selectedSlot(), player.inventory().selectedStack().item().id());
-            return smgId;
+            // 开局装备没给 SMG：本阶段的前提不成立。返回 -1 让自测把它变成红断言，
+            // 而不是在这里偷偷补一把 —— 那会把"玩家拿不到 SMG"这个真问题藏起来。
+            Log.noteWarning("战斗", "快捷栏里找不到 SMG（开局装备未发放？），SMG 稳定性阶段无法前置装备");
+            return -1;
         }
 
         @Override
         public void releaseSmgAfterSustain(int restoreSelectedSlot) {
-            // M3 Story 9：还原 SMG 稳定性阶段的夹具。
+            // M3 Story 10：只还原"选中槽位"，不再动背包内容。
             //
-            // 为什么要还原（不是可选的客气动作）：
-            //   本阶段在"存档阶段"之后运行，而退出时的自动存档（shutdown 的"退出即保存"）
-            //   会把当前背包原样写盘。那把 SMG 若一直留着，就会被写进退出存档，
-            //   而循环外的读档校验比对的正是"存档阶段快照 vs 退出存档"——
-            //   于是多出来的 SMG 会让"逐格一致"这条断言变红。那是夹具污染，不是产品缺陷。
-            //
-            // 两步：① 删掉背包里所有该枪的槽位；② 把选中槽位还原到阶段开始前那一格。
-            // 只删 SMG 这一种物品，绝不动手枪 / 弹药 / 泥土 —— 那些是其它阶段的证据。
-            int smgId = ItemRegistry.runtimeIdOf(ItemRegistry.SMG_ID);
-            if (smgId > 0) {
-                for (int i = 0; i < player.inventory().size(); i++) {
-                    if (player.inventory().slot(i).itemRuntimeId() == smgId) {
-                        player.inventory().setSlot(i, ItemStack.EMPTY);
-                    }
-                }
-            }
+            // 为什么删掉了原来那段"清空所有 SMG 槽位"：SMG 现在是开局装备的一部分，
+            // 它本来就该留在背包里，也本就该被写进退出存档 —— 存档阶段的快照里也有它，
+            // 两者一致才是正确的产品行为。再去删它反而会造成不一致（夹具污染）。
+            // 唯一还需要还原的是"选中了哪一格"：存档快照记录的是阶段前的选中槽。
             player.inventory().selectSlot(restoreSelectedSlot);
-            Log.info("[战斗] SMG 稳定性阶段夹具已还原：移除 SMG，选中槽位恢复为 %d", restoreSelectedSlot);
+            Log.info("[战斗] SMG 稳定性阶段夹具已还原：背包内容保持原样，选中槽位恢复为 %d",
+                    restoreSelectedSlot);
         }
     }
 

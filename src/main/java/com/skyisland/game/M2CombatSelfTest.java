@@ -146,27 +146,30 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         void grantDebugSupply();
 
         /**
-         * M3 Story 9：发放并把第二把枪（SMG）切到手上，用于"连续按住 30 秒"的稳定性阶段。
+         * M3 Story 10：在快捷栏里找到第二把枪（SMG）并切到手上，
+         * 用于"连续按住 30 秒"的稳定性阶段。
          *
-         * <p><b>为什么单开一条宿主入口，而不是复用 F6：</b>F6 只给手枪 + 手枪弹
-         * （PRD 5.4.1 开局装备表）。SMG 是 v2 §10 的第二把验证枪，它不在开局装备里 ——
-         * 若让本阶段去翻背包找 SMG，就会把"SMG 到时在不在快捷栏"变成一个隐含前提。
-         * 由宿主显式发一把并切到手，本阶段的前提就只有一句可说清的话。
+         * <p><b>为什么它只"选中"、不"发放"：</b>Story 9 时 SMG 不在开局装备里，本阶段
+         * 只能自己发一把、末了再删一把（{@code releaseSmgAfterSustain}）。
+         * Story 10 按主理人裁决把 SMG 放进了开局装备（v2 §19-2「SMG 可正常获得」），
+         * 于是"发一把再删一把"这套夹具不但多余，还会把玩家本来就有的那把一起删掉。
+         * 现在本阶段的<b>唯一前提</b>就是「开局装备给了 SMG」—— 这条前提不成立时，
+         * 它应该变成一条会红的断言，而不是被静默补发掩盖。
          *
-         * @return SMG 的 runtimeId；注册表里没有 SMG 时返回 {@code -1}
+         * @return SMG 的 runtimeId；注册表里没有 SMG、或快捷栏里找不到它时返回 {@code -1}
          */
         int grantSmgForSustain();
 
         /**
-         * M3 Story 9：SMG 稳定性阶段结束后，把阶段夹具还原 —— 从背包移除本阶段发放的 SMG，
-         * 并把选中的快捷栏槽位恢复为阶段开始前的那一格。
+         * M3 Story 10：SMG 稳定性阶段结束后，把选中的快捷栏槽位恢复为阶段开始前那一格。
          *
-         * <p><b>为什么必须还原（不是"可选清理"）：</b>本阶段<b>在存档阶段之后</b>运行，
-         * 而那把 SMG 会一直留在背包里直到进程退出 —— 退出时的自动存档
-         * （{@code SkyIslandGame.shutdown()} 的"退出即保存"）会把它写进存档，
-         * 于是循环外的读档校验（{@code verifyReload()} 重放的是<b>退出存档</b>）
-         * 会读到一把存档阶段快照里并不存在的 SMG，报"逐格不一致"。
-         * 这是<b>夹具污染</b>，不是产品缺陷；清理它才能让读档校验继续只检验产品行为。
+         * <p><b>为什么现在不动背包内容：</b>本阶段<b>在存档阶段之后</b>运行，
+         * 而 SMG 作为开局装备本来就应该一直留在背包里、并被写进退出存档 ——
+         * 这与存档阶段快照是一致的，逐格校验不会因为多一把枪而红。
+         * 反过来，若在这里把 SMG 删掉，退出存档就会比快照少一把枪，
+         * 那才是<b>夹具污染</b>（把测试自己的副作用读成产品缺陷）。
+         *
+         * <p>真正需要还原的只有选中槽位：存档快照记录的是阶段前的那一格。
          *
          * @param restoreSelectedSlot 阶段开始前选中的快捷栏相对槽位（{@code 0..8}）
          */
@@ -185,7 +188,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
 
     private enum Stage {
         SETTLE("静置并站稳"),
-        GEAR_CHECK("开局装备（手枪 + 2 个满弹匣）"),
+        GEAR_CHECK("开局装备（手枪 + 冲锋枪 + 2 个满弹匣）"),
         MINE_BLOCKED_WHILE_HOLDING_GUN("持枪时左键是开火不是挖掘"),
         DRY_FIRE("空弹匣空枪"),
         RELOAD_FULL("完整换弹（1.2 秒）"),
@@ -1112,8 +1115,11 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                      * 后备弹药恰好是 0，"弹药仍在"这条断言会退化成 "0 == 0"，验证力接近零。
                      * 补一次后，这条断言才真正检验"弹药 item id + 数量跨存档往返不变"。
                      *
-                     * 副作用如实登记：F6 会把第二把手枪放进下一个空槽（枪的堆叠上限是 1），
-                     * 因此存档里的快捷栏会出现 2 把枪 —— 这是 F6 的既有行为，不是本自测的产物。
+                     * 副作用如实登记：F6 走的是 grantStartingGear，它会把**第二套**开局装备
+                     * 放进后面的空槽（枪的堆叠上限是 1），因此存档里的快捷栏会出现
+                     * 手枪 ×2 + 冲锋枪 ×2 —— 这是 F6 的既有行为，不是本自测的产物，
+                     * 也不是"多跑了一次补给"造成的污染。（Story 10 起开局装备含冲锋枪，
+                     * 所以这里翻倍的是两把枪而不是一把。）
                      */
                     host.grantDebugSupply();
                 }
@@ -1518,10 +1524,11 @@ public final class M2CombatSelfTest implements CombatController.Listener {
 
     private void checkGear() {
         Player player = host.player();
-        // M2.2：开局装备（手枪 + 弹药）经 add() 落在快捷栏绝对索引 27..35，即相对槽 0/1。
-        // 必须用 hotbarSlot 读，不能读 slot(0)/slot(1) —— 后者现在是主背包，会读空。
+        // M3 Story 10：开局装备是"手枪 → 手枪弹 → 冲锋枪"，经 add() 落在快捷栏相对槽 0/1/2。
+        // 必须用 hotbarSlot 读，不能读 slot(0)/slot(1)/slot(2) —— 后者现在是主背包，会读空。
         ItemStack slot0 = player.inventory().hotbarSlot(0);
         ItemStack slot1 = player.inventory().hotbarSlot(1);
+        ItemStack slot2 = player.inventory().hotbarSlot(2);
         int expectedAmmo = 2 * ItemRegistry.pistol().gun().magazineSize();
 
         // 按 item id 比对而不是只比数量：M1 时"物品 id 就是方块 id"，M2 起手枪与弹药
@@ -1536,6 +1543,14 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         record("快捷栏第 2 格弹药数量 = 2 × 弹匣容量", slot1.count() == expectedAmmo,
                 "count=" + slot1.count() + " 期望 " + expectedAmmo
                         + "（弹匣容量 " + ItemRegistry.pistol().gun().magazineSize() + "）");
+        // M3 Story 10：v2 §19 通过标准第 2 条写的是「SMG 可正常**获得**/持有/显示/射击/
+        // 换弹/存档」。此前 SMG 只存在于 ItemRegistry 内部、玩家拿不到，"获得"这一项
+        // 在事实上不成立。主理人裁决后 SMG 进了开局装备，这条断言就是它的物证 ——
+        // 哪天开局装备又只发手枪，这里立刻红，而不是等到真人试玩才发现"没有第二把枪"。
+        record("快捷栏第 3 格是冲锋枪（v2 §19-2：SMG 可正常获得）",
+                ItemRegistry.SMG_ID.equals(slot2.item().id()),
+                "slot2=" + slot2 + " id=" + slot2.item().id());
+        record("快捷栏第 3 格冲锋枪数量 = 1", slot2.count() == 1, "count=" + slot2.count());
         record("开局手持物是枪（左键语义因此是开火）",
                 player.inventory().selectedStack().item().isGun(),
                 "selectedSlot=" + player.inventory().selectedSlot()
@@ -2112,7 +2127,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         int reloadCompletions = eventReloadCompletions - stageStartEventReloadCompletions;
         int reserve = player.inventory().countOfItem(ItemRegistry.PISTOL_AMMO_ID);
 
-        record("SMG 已在手上（宿主发放成功，runtimeId ≥ 0）", smgRuntimeId >= 0,
+        record("SMG 已从开局装备拿到并切到手上（v2 §19-2「SMG 可正常获得」）", smgRuntimeId >= 0,
                 "smgRuntimeId=" + smgRuntimeId + " 手持=" + player.inventory().selectedStack().item().id());
         // 断言 >= SMG_STAGE_STEPS - 1 而不是 == SMG_STAGE_STEPS：
         // onStageEnd()（本方法在其中被调用）是在本阶段最后一步的 nextIntent() 内部、
