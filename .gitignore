@@ -39,6 +39,7 @@ tmp/*
 !tmp/run_frozen_gate.js
 !tmp/run_m2_smoke.js
 !tmp/gen_play_bat.js
+!tmp/gen_play_m3_bat.js
 !tmp/run_gate.js
 !tmp/scan_gate.js
 
