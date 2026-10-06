@@ -51,6 +51,31 @@ tmp/*
 !tmp/run_gate_ps.ps1
 !tmp/verify_m3_play.ps1
 !tmp/verify_infinite_reserve.ps1
+# M4 方块贴图四道守卫 + 统一入口, MUST stay tracked
+# WHY: `docs/art/BLOCK_TEXTURE_SPEC.md` 是**美术侧真相源**、`BlockTextures.java` 是实现侧，
+# 两者分属不同角色却必须**逐档比对色值**。五脚本里只有 extract_spec.py 直接读规格，
+# 另三道都读它产出的 `spec_data.json`，而那是**派生产物、不入库**
+# ⇒ 少任何一个，换个克隆就少一道守卫，而症状是"全绿"
+# （本轮实测：log_top 误用树皮色阶时 audit_spec 与 verify_grids 都报绿，
+#   只有 audit_palette 抓到）。
+#
+# ★★ 写法陷阱（本项目已踩）：`tmp/*` 忽略的是**直接子项**，
+# 所以 `tmp/s3work/` 会被**整体**忽略 —— 一旦如此，
+# 它内部的文件就再也匹配不到任何 `!` 规则（git 不会进入被忽略的目录）。
+# 之前试过的三种写法全部无效，实测均仍被 `tmp/*` 吞掉：
+#   ① `!tmp/s3work/`      → 放行了目录，于是派生产物 spec_data.json 也被放行（更糟：两份真相）
+#   ② `!tmp/s3work/*.py`  → 推不翻已忽略的目录
+#   ③ 逐文件 `!tmp/s3work/x.py` → 同②
+# 正确解法 = **把目录本身从 `tmp/*` 里挖出来**，再在目录内部用
+# `tmp/s3work/*` 忽略、逐个 `!` 放行 py（顺序不可颠倒）。
+tmp/s3work
+!tmp/s3work/
+tmp/s3work/*
+!tmp/s3work/extract_spec.py
+!tmp/s3work/audit_spec.py
+!tmp/s3work/verify_grids.py
+!tmp/s3work/audit_palette.py
+!tmp/s3work/check_all.py
 # --- native launcher build script, MUST stay tracked ---
 # WHY: `/launcher/*.exe` is ignored below (no 300 KB binary diffs per rebuild),
 # so the C source is the ONLY tracked artefact of the Desktop entry point.
