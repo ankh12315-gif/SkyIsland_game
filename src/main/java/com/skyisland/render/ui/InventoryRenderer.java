@@ -1,5 +1,6 @@
 package com.skyisland.render.ui;
 
+import com.skyisland.craft.CraftingPanel;
 import com.skyisland.player.Inventory;
 import com.skyisland.player.ItemStack;
 import com.skyisland.render.shader.ShaderProgram;
@@ -43,10 +44,16 @@ public final class InventoryRenderer {
      * 取得（必要时重算）当前帧缓冲尺寸下的布局。
      *
      * <p><b>输入层必须走这里取布局，不许自己 {@code compute}</b> —— 见类注释。
+     *
+     * @param craftRowCount 合成栏行数；{@code 0} = 本帧不画合成栏。
+     *                      <b>它必须参与"布局是否要重算"的判据</b>：
+     *                      否则从"没有合成栏"切到"有合成栏"时缓存不会失效，
+     *                      命中判定会拿着旧布局去接新画面的点击。
      */
-    public InventoryLayout ensureLayout(int fbWidth, int fbHeight) {
-        if (layout == null || layout.fbWidth() != fbWidth || layout.fbHeight() != fbHeight) {
-            layout = InventoryLayout.compute(fbWidth, fbHeight);
+    public InventoryLayout ensureLayout(int fbWidth, int fbHeight, int craftRowCount) {
+        if (layout == null || layout.fbWidth() != fbWidth || layout.fbHeight() != fbHeight
+                || layout.craftRowCount() != craftRowCount) {
+            layout = InventoryLayout.compute(fbWidth, fbHeight, craftRowCount);
         }
         return layout;
     }
@@ -61,7 +68,8 @@ public final class InventoryRenderer {
         if (model == null || !model.visible) {
             return;
         }
-        InventoryLayout l = ensureLayout(fbWidth, fbHeight);
+        int craftRowCount = model.craftingPanel == null ? 0 : model.craftingPanel.size();
+        InventoryLayout l = ensureLayout(fbWidth, fbHeight, craftRowCount);
         int scale = l.uiScale();
 
         GL11.glDisable(GL11.GL_DEPTH_TEST);
@@ -109,7 +117,12 @@ public final class InventoryRenderer {
         batch.rect(l.panelX() + l.uiScale() * UiMetrics.PANEL_PAD, l.separatorY(),
                 l.panelWidth() - 2 * l.uiScale() * UiMetrics.PANEL_PAD, scale, UiTheme.SEPARATOR);
 
-        // ---- 6) 悬停格的 tooltip ----
+        // ---- 6) 右侧合成栏 ----
+        if (l.hasCraftColumn() && model.craftingPanel != null && inv != null) {
+            drawCraftingColumn(model, l, scale);
+        }
+
+        // ---- 7) 悬停格的 tooltip ----
         if (inv != null && model.hoverSlot >= 0 && model.hoverSlot < Inventory.SLOT_COUNT) {
             ItemStack hovered = inv.slot(model.hoverSlot);
             if (!hovered.isEmpty()) {
@@ -146,7 +159,71 @@ public final class InventoryRenderer {
     }
 
     /**
-     * 悬停格的信息框：中文物品名 + 数量 + 堆叠上限。
+     * 右侧合成栏：一行一条配方，每行 = 产物图标 + 中文名 ×产出数量 + 材料需求 + 状态 / [合成]。
+     *
+     * <p><b>为什么"整行"就是按钮，而不画一个独立的小按钮：</b>
+     * 12×12 点阵下，一条配方的文字已经占满整行；再切出一个几十像素宽的按钮，
+     * 玩家要精确点中它就得瞄准。整行可点让"看得懂的那一行"与"点得到的那一行"
+     * 是同一块区域 —— 而 {@code [合成]} 那两个字仍然画出来，作为"这里能点"的明示。
+     *
+     * <p><b>状态必须看得见：</b>缺料时画的是 {@code 缺少 铁锭 ×3} 而不是灰掉的
+     * {@code [合成]}。裁定第 7 条禁止"点了按钮没反应"，而"没反应"最常见的成因
+     * 恰恰是玩家不知道这一行现在不可合成 —— 把原因写在原地，反应就提前发生了。
+     */
+    private void drawCraftingColumn(InventoryRenderModel model, InventoryLayout l, int scale) {
+        int textScale = UiMetrics.px(UiMetrics.TEXT_SCALE, scale);
+        int lineH = BitmapFont.lineHeight(textScale);
+
+        String title = Localization.text(Localization.CRAFT_SECTION_TITLE);
+        int titleScale = UiMetrics.px(UiMetrics.LABEL_SCALE, scale);
+        batch.text(l.craftX(), l.craftTitleY(), title, titleScale,
+                UiTheme.TITLE[0], UiTheme.TITLE[1], UiTheme.TITLE[2], UiTheme.TITLE[3]);
+
+        CraftingPanel panel = model.craftingPanel;
+        Inventory inv = model.inventory;
+        for (int i = 0; i < panel.size(); i++) {
+            CraftingPanel.Row row = panel.row(i);
+            int rowY = l.craftRowY(i);
+
+            // 悬停行给一条底衬：它是"我会点中这一行"的唯一反馈
+            if (i == model.hoverCraftRow) {
+                batch.rect(l.craftX() - UiMetrics.px(2, scale), rowY,
+                        l.craftWidth() + UiMetrics.px(4, scale), l.craftRowHeight(),
+                        UiTheme.SLOT_HOVER);
+            }
+
+            // ① 产物图标（与背包格子同一套 SlotRenderer，于是"栏里的图标"与
+            //    "合出来拿在手上的图标"是同一个图样）
+            int iconSize = l.slotSize();
+            SlotRenderer.drawSlot(batch, l.craftX(), rowY + (l.craftRowHeight() - iconSize) / 2,
+                    iconSize, scale,
+                    CraftingPanel.outputRuntimeId(row.recipe()), row.recipe().outputCount(),
+                    SlotRenderer.SlotState.NORMAL);
+
+            // ② 文字：产物名 ×数量 + 材料需求 + 状态/按钮
+            int textX = l.craftX() + iconSize + UiMetrics.px(4, scale);
+            int textY = rowY + (l.craftRowHeight() - lineH) / 2;
+
+            String label = CraftingPanel.outputName(row.recipe()) + " ×" + row.recipe().outputCount();
+            String materials = panel.ingredientText(row, inv);
+            String status = panel.statusText(row);
+
+            float x = textX;
+            batch.text(x, textY, label, textScale,
+                    UiTheme.TEXT_PRIMARY[0], UiTheme.TEXT_PRIMARY[1],
+                    UiTheme.TEXT_PRIMARY[2], UiTheme.TEXT_PRIMARY[3]);
+            x += BitmapFont.textWidth(label, textScale) + UiMetrics.px(6, scale);
+            batch.text(x, textY, materials, textScale,
+                    UiTheme.TEXT_DIM[0], UiTheme.TEXT_DIM[1],
+                    UiTheme.TEXT_DIM[2], UiTheme.TEXT_DIM[3]);
+            x += BitmapFont.textWidth(materials, textScale) + UiMetrics.px(6, scale);
+
+            float[] color = row.craftable() ? UiTheme.VALUE : UiTheme.TEXT_WARN;
+            batch.text(x, textY, status, textScale, color[0], color[1], color[2], color[3]);
+        }
+    }
+
+    /** 悬停格的信息框：中文物品名 + 数量 + 堆叠上限。
      *
      * <p><b>为什么显示"上限"：</b>玩家判断"这一格还能不能合并"时，
      * 需要同时看到当前数量与上限。只给数量时，"为什么我拿着的 30 个放不进这格"

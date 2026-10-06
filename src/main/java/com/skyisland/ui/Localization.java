@@ -150,6 +150,22 @@ public final class Localization {
     public static final String MSG_INV_DROPPED_ON_CLOSE = "msg.inv_dropped_on_close";
     public static final String MSG_INV_MOVE_BLOCKED = "msg.inv_move_blocked";
 
+    // ---------------------------------------------------------- 合成
+    // 上一轮（范围裁定：数据层 + 合成逻辑）只登记了缺料那一条，因为那时没有界面、
+    // 其余文案没有绘制点 —— DeadLocalizationKeyTest 会把它们判成死 key。
+    // 2026-10-03 背包内合成区域落地，下面四条现在都有真实消费者：
+    //   · CRAFT_SECTION_TITLE / CRAFT_ACTION —— InventoryRenderer 的画面板与按钮
+    //   · MSG_CRAFT_NO_ROOM                  —— SkyIslandGame 合成失败时的提示
+    // 缺料提示仍由 Crafting.describeMissing() 用 MSG_CRAFT_MISSING 产出，与逻辑同源。
+    /** 合成区标题（背包面板右侧那一栏）。 */
+    public static final String CRAFT_SECTION_TITLE = "craft.section_title";
+    /** 一行的操作按钮文案。 */
+    public static final String CRAFT_ACTION = "craft.action";
+    /** 缺料提示。参数：物品显示名、缺口数量（PRD 6.7 的「缺少 铁锭 ×4」）。 */
+    public static final String MSG_CRAFT_MISSING = "msg.craft_missing";
+    /** 材料齐但背包放不下产物时的提示（原子性：材料不会被扣）。 */
+    public static final String MSG_CRAFT_NO_ROOM = "msg.craft_no_room";
+
     // ---- 底部操作提示 ----
     // 背包不在这里：背包是面板式界面，它的操作提示画在面板下方，
     // 用的是 INV_CURSOR_HINT（含"左键取放 / Shift+左键搬运"这些实际操作）。
@@ -185,7 +201,7 @@ public final class Localization {
         TEXT.put(MSG_MAGAZINE_FULL, "弹匣已满");
         TEXT.put(MSG_NO_RESERVE, "没有后备弹药");
         TEXT.put(MSG_RELOAD_BLOCKS_FIRE, "换弹中，无法开火");
-        TEXT.put(MSG_GEAR_GRANTED, "已获得 手枪 + 冲锋枪 + 手枪弹 ×%d");
+        TEXT.put(MSG_GEAR_GRANTED, "已获得 手枪 + 冲锋枪 + 步枪 + 手枪弹 ×%d + 步枪弹 ×%d，另发步枪材料包");
         TEXT.put(MSG_HIT_ENTITY, "击中 %s：%.1f 格，伤害 %d");
     TEXT.put(MSG_SAVE_OK, "已保存");
     TEXT.put(MSG_SAVE_FAILED, "保存失败");
@@ -243,6 +259,10 @@ public final class Localization {
         TEXT.put(INV_CURSOR_HINT, "左键取放，Shift+左键快速移动，E/Esc 关闭");
         TEXT.put(MSG_INV_DROPPED_ON_CLOSE, "背包已满，%d 个物品已丢弃");
         TEXT.put(MSG_INV_MOVE_BLOCKED, "没有空位，无法移动");
+        TEXT.put(MSG_CRAFT_MISSING, "缺少 %s ×%d");
+        TEXT.put(CRAFT_SECTION_TITLE, "合成");
+        TEXT.put(CRAFT_ACTION, "[合成]");
+        TEXT.put(MSG_CRAFT_NO_ROOM, "背包放不下产物，合成已取消（材料未扣除）");
 
         // 底部操作提示（注意：背包不在这一组 —— 它的提示画在面板下方，
         // 用的是上面已登记的 INV_CURSOR_HINT。曾有一个 HINT_INVENTORY 与它争同一个
@@ -279,6 +299,19 @@ public final class Localization {
         // 中文名会触碰 CjkFontTest 的"源码里每个非 ASCII 字符都必须有字模"护栏，
         // 因此新增后必须重跑 tools/fontgen/GenCjkFont.java 重烤字模。
         DISPLAY_NAMES.put("skyisland:smg", "冲锋枪");
+
+        // ---- 步枪材料链（2026-10-02，主理人显式放行；PRD 5.1 / 5.6.2）----
+        // LocalizationTest 会断言"注册表里每一个方块与物品都有显示名"，
+        // 所以这里少一条就会变红 —— 这正是我们要的：忘登记 = 屏幕上出现英文 id。
+        DISPLAY_NAMES.put("skyisland:copper_ore", "铜矿石");
+        DISPLAY_NAMES.put("skyisland:crystal_ore", "晶体矿石");
+        DISPLAY_NAMES.put("skyisland:stick", "木棍");
+        DISPLAY_NAMES.put("skyisland:iron_ingot", "铁锭");
+        DISPLAY_NAMES.put("skyisland:copper_ingot", "铜锭");
+        DISPLAY_NAMES.put("skyisland:crystal", "晶体");
+        DISPLAY_NAMES.put("skyisland:gunpowder", "火药");
+        DISPLAY_NAMES.put("skyisland:rifle_ammo", "步枪弹");
+        DISPLAY_NAMES.put("skyisland:rifle", "步枪");
 
         DISPLAY_NAMES.put("skyisland:melee_monster", "近战怪");
     }

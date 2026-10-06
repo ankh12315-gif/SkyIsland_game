@@ -3,6 +3,8 @@ package com.skyisland.audio;
 import com.skyisland.combat.CombatController;
 import com.skyisland.combat.GunState;
 import com.skyisland.entity.Entity;
+import com.skyisland.item.GunPresentationSpec;
+import com.skyisland.player.ItemStack;
 import com.skyisland.player.Player;
 
 /**
@@ -36,19 +38,64 @@ public final class AudioFeedback implements CombatController.Listener {
 
     private final AudioManager audio;
 
+    /**
+     * 枪械音效的查表来源。
+     *
+     * <p><b>为什么必须持有玩家：</b>三个枪械音效（击发 / 空仓 / 换弹）在 2026-10-03 之前
+     * 是写死的 {@code AudioEvent.GUN_FIRE / GUN_EMPTY / RELOAD}，
+     * 而 {@code GunPresentationSpec} 的 {@code fireSoundId / emptySoundId / reloadSoundId}
+     * 三个键<b>没有任何生产读者</b>（一次标准形态的死接线）。
+     * 要让这三声真正由"当前这把枪"决定，本类就得能在事件发生的那一刻
+     * 问到"玩家手里拿的是哪把枪" —— 而 {@link CombatController.Listener} 的回调
+     * 参数里没有枪，只有坐标与结果。因此玩家是本类必要的第二个构造参数。
+     *
+     * <p>不缓存表现规格、每次现取：切槽换枪之后"手里那把"会变，
+     * 而缓存的失效时机恰恰是最容易漏的地方（与 {@code SkyIslandGame#heldGunPresentation}
+     * 同一条取舍）。
+     */
+    private final Player player;
+
     /** 上一次看到的玩家生命值；{@code Integer.MIN_VALUE} 表示"还没有基线"。 */
     private int lastHealth = Integer.MIN_VALUE;
 
-    private AudioFeedback(AudioManager audio) {
+    private AudioFeedback(AudioManager audio, Player player) {
         this.audio = audio;
+        this.player = player;
     }
 
-    /** 把一个 {@link AudioManager} 包成本监听器。 */
-    public static AudioFeedback wrap(AudioManager audio) {
+    /**
+     * 把一个 {@link AudioManager} 包成本监听器。
+     *
+     * @param player 枪械音效的查表来源（持枪者）；必须非 null，理由见字段注释
+     */
+    public static AudioFeedback wrap(AudioManager audio, Player player) {
         if (audio == null) {
             throw new IllegalArgumentException("audio 不得为 null");
         }
-        return new AudioFeedback(audio);
+        if (player == null) {
+            throw new IllegalArgumentException(
+                    "player 不得为 null —— 枪械音效必须由当前手持枪的表现规格决定，"
+                            + "没有玩家就没有可查的那把枪");
+        }
+        return new AudioFeedback(audio, player);
+    }
+
+    /**
+     * 当前手持枪械的表现规格；手持物不是枪时为 {@code null}。
+     *
+     * <p>与方法 {@link #poll} 分开取，是因为它的用途是"查表"：
+     * 三处音效<b>都</b>经过它，于是"音效键被读了"这件事只有一处可以断，
+     * 也只有一处需要被反向验证打红。
+     */
+    public GunPresentationSpec heldGunPresentation() {
+        if (player == null) {
+            return null;
+        }
+        ItemStack held = player.inventory().selectedStack();
+        if (held == null || held.item() == null || !held.item().isGun()) {
+            return null;
+        }
+        return held.item().presentation();
     }
 
     /**
@@ -115,7 +162,7 @@ public final class AudioFeedback implements CombatController.Listener {
     @Override
     public void onShotFired(double muzzleX, double muzzleY, double muzzleZ,
                             double endX, double endY, double endZ, boolean hitAnything) {
-        audio.play(AudioEvent.GUN_FIRE);
+        audio.play(fireEvent());
     }
 
     @Override
@@ -133,7 +180,7 @@ public final class AudioFeedback implements CombatController.Listener {
 
     @Override
     public void onDryFire() {
-        audio.play(AudioEvent.GUN_EMPTY);
+        audio.play(emptyEvent());
     }
 
     @Override
@@ -142,13 +189,37 @@ public final class AudioFeedback implements CombatController.Listener {
         //   按键必须立刻有反应：延迟 1.2 秒才响一声的东西，反馈的是"换弹做完了"，
         //   但它错过了最需要确认的那个瞬间（我的按键被受理了吗）。
         if (outcome == GunState.ReloadOutcome.STARTED) {
-            audio.play(AudioEvent.RELOAD);
+            audio.play(reloadEvent());
         }
     }
 
     @Override
     public void onReloadCompleted(int magazineAmmo, int magazineSize) {
         // 见 onReloadRequest：统合音已经在开始时刻播过，这里刻意不再补第二声。
+    }
+
+    // ============================================================ 枪械音效查表
+
+    /**
+     * 击发音：来自当前手持枪的 {@code fireSoundId}。
+     *
+     * <p><b>这里刻意<b>不</b>写 {@code AudioEvent.GUN_FIRE}</b>：
+     * 写了就等于把"三把枪共用同一条音轨"从"数据上的事实"降级成"代码上的巧合" ——
+     * 那样 {@code fireSoundId} 这个键就重新变回死键。
+     * 真正的取值只有一处：{@link GunAudio#fireEventOf}，由它去查 {@link AudioEvent#byId}。
+     */
+    private AudioEvent fireEvent() {
+        return GunAudio.fireEventOf(heldGunPresentation());
+    }
+
+    /** 空仓音：来自当前手持枪的 {@code emptySoundId}。理由见 {@link #fireEvent}。 */
+    private AudioEvent emptyEvent() {
+        return GunAudio.emptyEventOf(heldGunPresentation());
+    }
+
+    /** 换弹音：来自当前手持枪的 {@code reloadSoundId}。理由见 {@link #fireEvent}。 */
+    private AudioEvent reloadEvent() {
+        return GunAudio.reloadEventOf(heldGunPresentation());
     }
 
     @Override

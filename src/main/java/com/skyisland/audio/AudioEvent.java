@@ -158,4 +158,53 @@ public enum AudioEvent {
         int v = variant % variants;
         return v < 0 ? v + variants : v;
     }
+
+    // ============================================================ 稳定 id 反查
+
+    /**
+     * 按稳定 id 取事件（{@link GunPresentationSpec} 的音效键 → 本枚举的唯一入口）。
+     *
+     * <p><b>为什么必须由这张表自己提供反查，而不是让调用方写
+     * {@code "gun_fire".equals(...)} 之类的分派：</b>
+     * 后者的下场是"加一个新音效要改 N 个分派点"，漏掉的那个分派点在无声环境下
+     * 永远不会被发现。反查收在枚举里之后，"键 → 事件"只有一处真相，
+     * 而"某个键指向了不存在的事件"会在装配期就抛出来。
+     *
+     * <p><b>为什么未知 id 抛异常而不是返回 {@code null} / 回落：</b>
+     * 静默回落会让"写错了音效键"表现为"这一声没了"，
+     * 而在无头门禁里"没声音"与"这台机器没声卡"在日志上完全相同 ——
+     * 既无法归因也不可能变红。抛出来才是一条能查的失败。
+     *
+     * @throws IllegalArgumentException id 为 null / 空白 / 不在事件表里
+     */
+    public static AudioEvent byId(String id) {
+        if (id == null || id.isBlank()) {
+            throw new IllegalArgumentException("音频事件 id 不得为空");
+        }
+        for (AudioEvent event : values()) {
+            if (event.id.equals(id)) {
+                return event;
+            }
+        }
+        throw new IllegalArgumentException("未知音频事件 id: " + id);
+    }
+
+    /**
+     * 该 id 是否在事件表里（供"注册表审计"类断言使用，不抛异常）。
+     *
+     * <p>与 {@link #byId} 分成两个方法，是因为它们的用途相反：
+     * 生产路径要的是"取不到就炸"，审计路径要的是"取得到吗"。
+     * 合成一个会逼审计代码去 try/catch，而那会把"真的错了"也吞进去。
+     */
+    public static boolean has(String id) {
+        if (id == null || id.isBlank()) {
+            return false;
+        }
+        for (AudioEvent event : values()) {
+            if (event.id.equals(id)) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

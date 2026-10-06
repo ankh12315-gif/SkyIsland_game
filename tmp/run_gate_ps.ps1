@@ -1,4 +1,4 @@
-# SkyIsland - 冻结 jar 门禁串行跑（PowerShell 版，扁平结构）。
+﻿# SkyIsland - 冻结 jar 门禁串行跑（PowerShell 版，扁平结构）。
 #
 # 为什么要有这个 PS 版：本机出现过 `spawnSync java.exe -> EBUSY` 的间歇性环境故障，
 # 任何从 node 发起的子进程创建（cmd / node / java 全部）都会失败，node 版运行器
@@ -18,6 +18,13 @@
 #   D) **数组字面量里 `'-Dk=' + $var` 会被拆成两个元素 / 变空**（实测 count=6 或值为空），
 #      于是 java 把存档路径当成主类名报 ClassNotFoundException。
 #      必须写成括号表达式 `('-Dk=' + $var)`（实测 count=5、值完整）。
+#   E) ★ **本文件必须带 UTF-8 BOM**（第 1 行开头那 3 个字节就是，别手删）。
+#      Windows PowerShell 5.1 读**无 BOM** 的 .ps1 时按系统 ANSI 代码页解码（本机 GBK），
+#      而本文件是 UTF-8：中文注释会变乱码，更糟的是 GBK 双字节序列可能吞掉引号，
+#      把脚本解析打断（实测报「字符串缺少终止符: '。」，一屏语法错误）。
+#      守卫：`PowerShellScriptEncodingTest#everyTrackedNonAsciiPowerShellScriptCarriesAUtf8Bom`。
+#      ★ 本文件<b>曾经无 BOM 却一直能跑</b>（88 行中文恰好没触发吞引号）—— 那是巧合，不是安全。
+#      修法永远是**加 BOM / 改编码**，绝不是删中文注释（与 CjkFontTest 同一条项目规矩）。
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tmp/run_gate_ps.ps1
 
@@ -62,7 +69,7 @@ $saveDir = $root + '/gate-m1-saves'
 New-Item -ItemType Directory -Path $saveDir -Force | Out-Null
 $out  = $tmp + '/m2_gate-m1.stdout.txt'
 $args1 = @('--enable-native-access=ALL-UNNAMED', '-Dskyisland.selfTest=true',
-           ('-Dskyisland.saveDir=' + $saveDir), '-jar', $frozen)
+           ('-Dskyisland.saveDir=' + $saveDir), '-Dskyisland.loadout=dev', '-jar', $frozen)
 $t0 = Get-Date
 & $java $args1 *>&1 | Out-File -FilePath $out -Encoding utf8
 $exit = $LASTEXITCODE
@@ -74,7 +81,7 @@ $saveDir = $root + '/gate-ui-saves'
 New-Item -ItemType Directory -Path $saveDir -Force | Out-Null
 $out  = $tmp + '/m2_gate-ui.stdout.txt'
 $args1 = @('--enable-native-access=ALL-UNNAMED', '-Dskyisland.uiSelfTest=true',
-           ('-Dskyisland.saveDir=' + $saveDir), '-jar', $frozen)
+           ('-Dskyisland.saveDir=' + $saveDir), '-Dskyisland.loadout=dev', '-jar', $frozen)
 $t0 = Get-Date
 & $java $args1 *>&1 | Out-File -FilePath $out -Encoding utf8
 $exit = $LASTEXITCODE
@@ -86,7 +93,7 @@ $saveDir = $root + '/gate-m2-saves'
 New-Item -ItemType Directory -Path $saveDir -Force | Out-Null
 $out  = $tmp + '/m2_gate-m2.stdout.txt'
 $args1 = @('--enable-native-access=ALL-UNNAMED', '-Dskyisland.combatSelfTest=true',
-           ('-Dskyisland.saveDir=' + $saveDir), '-jar', $frozen)
+           ('-Dskyisland.saveDir=' + $saveDir), '-Dskyisland.loadout=dev', '-jar', $frozen)
 $t0 = Get-Date
 & $java $args1 *>&1 | Out-File -FilePath $out -Encoding utf8
 $exit = $LASTEXITCODE

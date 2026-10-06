@@ -1,11 +1,13 @@
 package com.skyisland.render.viewmodel;
 
+import com.skyisland.item.Item;
 import com.skyisland.item.ItemRegistry;
 import com.skyisland.player.ItemStack;
 import com.skyisland.world.block.BlockRegistry;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -172,8 +174,8 @@ class ViewmodelRendererTest {
      */
     @Test
     void thePistolAndTheSmgHaveDifferentViewmodelSilhouettes() {
-        ViewmodelModel pistol = gunModel("pistol");
-        ViewmodelModel smg = gunModel("smg");
+        ViewmodelModel pistol = gunModel(ItemRegistry.pistol());
+        ViewmodelModel smg = gunModel(ItemRegistry.smg());
         assertEquals("pistol", pistol.gunViewmodelId);
         assertEquals("smg", smg.gunViewmodelId);
 
@@ -212,65 +214,125 @@ class ViewmodelRendererTest {
     }
 
     /**
-     * SMG 轮廓同样必须通过两条布局护栏（右半屏 + 不盖准星），且在整个动画包络上扫描。
+     * <b>注册表里每一把枪</b>的轮廓都必须通过两条布局护栏（右半屏 + 不盖准星），
+     * 且在整个动画包络上扫描。
      *
-     * <p>这是"轮廓不是随便放大就行"的可执行约束：SMG 更长更宽的剪影最容易在 ADS
+     * <p>这是"轮廓不是随便放大就行"的可执行约束：越长的剪影越容易在 ADS
      * 收拢时越过屏幕中线、或长枪管顶进准星。
+     *
+     * <p><b>为什么遍历注册表而不是写死 "smg"：</b>这条断言以前只测 SMG。
+     * 若新加一把枪时忘了在 {@code ViewmodelGeometry.gunParts} 里加分支，
+     * 它会<b>静默回退成手枪轮廓</b>而不会有任何测试变红 ——
+     * 于是"逻辑上是步枪、右手是手枪"（v2 §4.2 明令禁止）就这样活下来了。
+     * 改成遍历 {@code ItemRegistry} 里所有 {@code isGun()} 的物品之后，
+     * 加枪即自动被覆盖；下面那条"三把枪几何两两不等"则负责抓"忘了加分支"。
      */
     @Test
-    void theSmgSilhouetteStaysOnTheRightHalfAndClearOfTheCrosshair() {
+    void everyGunSilhouetteStaysOnTheRightHalfAndClearOfTheCrosshair() {
         float[] out = new float[ViewmodelGeometry.MAX_BOXES * FLOATS_PER_BOX];
         float[] ndc = new float[2];
 
-        for (boolean aiming : new boolean[]{false, true}) {
-            for (boolean reloading : new boolean[]{false, true}) {
-                for (double reloadProgress : new double[]{0.0, 0.5, 1.0}) {
-                    for (double move : new double[]{0.0, 1.0}) {
-                        for (double time : new double[]{0.0, 0.17, 0.41, 0.63}) {
-                            ViewmodelModel m = gunModel("smg");
-                            m.aiming = aiming;
-                            m.reloading = reloading;
-                            m.reloadProgress01 = reloadProgress;
-                            m.moveSpeed01 = move;
-                            m.timeSeconds = time;
-                            m.shotCount = 1;          // 最坏情况：正在后坐 + 枪口闪光
-                            m.colorR = 0.5f;
-                            m.colorG = 0.5f;
-                            m.colorB = 0.5f;
+        int gunsChecked = 0;
+        for (Item gun : ItemRegistry.all()) {
+            if (!gun.isGun()) {
+                continue;
+            }
+            gunsChecked++;
+            String vmKey = gun.presentation().viewmodelId();
 
-                            ViewmodelPose pose = new ViewmodelPose();
-                            pose.update(m, 0.0);
-                            settle(m, pose, 60);
+            for (boolean aiming : new boolean[]{false, true}) {
+                for (boolean reloading : new boolean[]{false, true}) {
+                    for (double reloadProgress : new double[]{0.0, 0.5, 1.0}) {
+                        for (double move : new double[]{0.0, 1.0}) {
+                            for (double time : new double[]{0.0, 0.17, 0.41, 0.63}) {
+                                ViewmodelModel m = gunModel(gun);
+                                m.aiming = aiming;
+                                m.reloading = reloading;
+                                m.reloadProgress01 = reloadProgress;
+                                m.moveSpeed01 = move;
+                                m.timeSeconds = time;
+                                m.shotCount = 1;          // 最坏情况：正在后坐 + 枪口闪光
+                                m.colorR = 0.5f;
+                                m.colorG = 0.5f;
+                                m.colorB = 0.5f;
 
-                            int floats = write(m, pose, out);
-                            assertTrue(floats > 0);
-                            for (int i = 0; i < floats; i += FLOATS_PER_VERTEX) {
-                                ViewmodelGeometry.toNdc(out[i], out[i + 1], out[i + 2], ASPECT, ndc);
-                                String where = "SMG aim=" + aiming + " reload=" + reloadProgress
-                                        + " move=" + move + " t=" + time;
-                                assertTrue(ndc[0] > 0.0,
-                                        "SMG 必须留在右半屏（" + where + " 处 NDC x = " + ndc[0] + "）");
-                                boolean inCrosshairZone =
-                                        Math.abs(ndc[0]) < CROSSHAIR_EXCLUSION
-                                                && Math.abs(ndc[1]) < CROSSHAIR_EXCLUSION;
-                                assertTrue(!inCrosshairZone,
-                                        "SMG 不得盖住准星（" + where + " 处 NDC = ("
-                                                + ndc[0] + ", " + ndc[1] + ")）");
+                                ViewmodelPose pose = new ViewmodelPose();
+                                pose.update(m, 0.0);
+                                settle(m, pose, 60);
+
+                                int floats = write(m, pose, out);
+                                assertTrue(floats > 0);
+                                for (int i = 0; i < floats; i += FLOATS_PER_VERTEX) {
+                                    ViewmodelGeometry.toNdc(out[i], out[i + 1], out[i + 2],
+                                            ASPECT, ndc);
+                                    String where = vmKey + " aim=" + aiming
+                                            + " reload=" + reloadProgress
+                                            + " move=" + move + " t=" + time;
+                                    assertTrue(ndc[0] > 0.0,
+                                            vmKey + " 必须留在右半屏（" + where + " 处 NDC x = "
+                                                    + ndc[0] + "）");
+                                    boolean inCrosshairZone =
+                                            Math.abs(ndc[0]) < CROSSHAIR_EXCLUSION
+                                                    && Math.abs(ndc[1]) < CROSSHAIR_EXCLUSION;
+                                    assertTrue(!inCrosshairZone,
+                                            vmKey + " 不得盖住准星（" + where + " 处 NDC = ("
+                                                    + ndc[0] + ", " + ndc[1] + ")）");
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        assertEquals(3, gunsChecked,
+                "必须遍历到全部 3 把枪（手枪 / SMG / 步枪）；少一把说明注册表或本测试没跟上");
+    }
+
+    /**
+     * 三把枪的 viewmodel 几何必须<b>两两不相等</b>。
+     *
+     * <p>这条抓的是"忘了在 {@code gunParts} 里加分支"：那种情况下新枪会静默
+     * 落到手枪轮廓上，画得出的枪、跑得过的测试，玩家却看到"我拿的是步枪，右手是手枪"。
+     */
+    @Test
+    void theThreeGunSilhouettesArePairwiseDifferent() {
+        float[] pistol = new float[ViewmodelGeometry.MAX_BOXES * FLOATS_PER_BOX];
+        float[] smg = new float[ViewmodelGeometry.MAX_BOXES * FLOATS_PER_BOX];
+        float[] rifle = new float[ViewmodelGeometry.MAX_BOXES * FLOATS_PER_BOX];
+
+        int nPistol = writeSettled(gunModel(ItemRegistry.pistol()), pistol);
+        int nSmg = writeSettled(gunModel(ItemRegistry.smg()), smg);
+        int nRifle = writeSettled(gunModel(ItemRegistry.rifle()), rifle);
+
+        assertTrue(nPistol > 0 && nSmg > 0 && nRifle > 0);
+        assertFalse(sameGeometry(pistol, nPistol, smg, nSmg), "手枪与 SMG 的轮廓不得相同");
+        assertFalse(sameGeometry(pistol, nPistol, rifle, nRifle),
+                "手枪与步枪的轮廓不得相同 —— 若相同说明 RIFLE 分支没生效，静默回退到了手枪");
+        assertFalse(sameGeometry(smg, nSmg, rifle, nRifle), "SMG 与步枪的轮廓不得相同");
+    }
+
+    private static int writeSettled(ViewmodelModel m, float[] out) {
+        ViewmodelPose pose = new ViewmodelPose();
+        pose.update(m, 0.0);
+        settle(m, pose, 60);
+        return write(m, pose, out);
+    }
+
+    private static boolean sameGeometry(float[] a, int nA, float[] b, int nB) {
+        if (nA != nB) {
+            return false;
+        }
+        for (int i = 0; i < nA; i++) {
+            if (Math.abs(a[i] - b[i]) > 1e-6f) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** 造一个"手持指定枪"的模型（走 {@code apply}，因此键来自 presentation）。 */
-    private static ViewmodelModel gunModel(String viewmodelId) {
-        if ("smg".equals(viewmodelId)) {
-            return model(ViewmodelKind.GUN, ItemRegistry.smg().runtimeId(), ItemRegistry.SMG_VIEWMODEL_ID);
-        }
-        return model(ViewmodelKind.GUN, ItemRegistry.pistol().runtimeId(),
-                ItemRegistry.PISTOL_VIEWMODEL_ID);
+    private static ViewmodelModel gunModel(Item gun) {
+        return model(ViewmodelKind.GUN, gun.runtimeId(), gun.presentation().viewmodelId());
     }
 
     private static ViewmodelModel model(ViewmodelKind kind, int itemRuntimeId, String gunViewmodelId) {

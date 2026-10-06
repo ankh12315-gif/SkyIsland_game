@@ -3,6 +3,7 @@ package com.skyisland.combat;
 import com.skyisland.entity.Entity;
 import com.skyisland.entity.EntityManager;
 import com.skyisland.entity.MeleeMonster;
+import com.skyisland.item.GunSpec;
 import com.skyisland.item.ItemRegistry;
 import com.skyisland.player.Player;
 import com.skyisland.player.PlayerIntent;
@@ -211,13 +212,20 @@ class CombatControllerTest {
                 firePistol(), recorder);
 
         assertEquals(1, recorder.entityHits, "45 格仍在 32 格射程的射线可达范围内，只是衰减了");
-        int expected = DamageFalloff.damage(8, recorder.lastDistance, 32);
+        // ★ 期望值从"注册表里这把枪的数据"推出，而不是从某个生产类常量推出：
+        //   这正是 M3 接线修正的判据 —— 衰减参数是枪械表的一列，
+        //   因此"引擎结算的伤害"必须等于"用这把枪的 falloffPerUnit / falloffFloor 算出来的值"。
+        GunSpec pistol = ItemRegistry.pistol().gun();
+        int expected = DamageFalloff.damage(pistol.damage(), recorder.lastDistance,
+                pistol.range(), pistol.falloffPerUnit(), pistol.falloffFloor());
         assertEquals(expected, recorder.lastDamage,
-                "超出有效射程后必须按 ×0.9/格 衰减，且下限 20%");
+                "超出有效射程后必须按该枪的 falloffPerUnit / falloffFloor 衰减");
         assertTrue(recorder.lastDamage < 8, "45 格处的伤害必须低于基础伤害 8");
-        assertEquals(0.9, DamageFalloff.MULTIPLIER_PER_BLOCK, 1e-12, "每超 1 格 ×0.9");
-        assertEquals(0.20, DamageFalloff.MIN_MULTIPLIER, 1e-12, "最低退至 20%");
-        assertEquals(1.0, DamageFalloff.multiplier(32, 32), 1e-12, "射程内不衰减");
+        assertEquals(1.0, DamageFalloff.multiplier(pistol.range(), pistol.range(),
+                        pistol.falloffPerUnit(), pistol.falloffFloor()),
+                1e-12, "射程内不衰减");
+        assertEquals(0.9, pistol.falloffPerUnit(), 1e-12, "PRD 5.4.3：手枪每超 1 格 ×0.9");
+        assertEquals(0.20, pistol.falloffFloor(), 1e-12, "PRD 5.4.3：手枪最低退至 20%");
     }
 
     // ============================================================ 通过标准 4：最近命中 / 不得穿墙

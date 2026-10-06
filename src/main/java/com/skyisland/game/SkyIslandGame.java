@@ -5,6 +5,8 @@ import com.skyisland.audio.AudioFeedback;
 import com.skyisland.audio.AudioManager;
 import com.skyisland.combat.CombatController;
 import com.skyisland.combat.GunState;
+import com.skyisland.craft.Crafting;
+import com.skyisland.craft.CraftingPanel;
 import com.skyisland.entity.Entity;
 import com.skyisland.entity.EntityManager;
 import com.skyisland.entity.MeleeMonster;
@@ -287,6 +289,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             boolean uiSelfTest,
             boolean combatSelfTest,
             boolean infiniteReserve,
+            Loadout loadout,
             String startState
     ) {
         /**
@@ -303,6 +306,22 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
          */
         static boolean parseInfiniteReserve(String raw) {
             return raw != null && "true".equalsIgnoreCase(raw.trim());
+        }
+
+        /**
+         * 开局装备口径开关的解析（GL-free 静态纯函数，便于单测）。
+         *
+         * <p><b>与 {@link #parseInfiniteReserve} 同一条安全侧原则</b>：
+         * 只有显式写 {@code dev}（忽略大小写、允许首尾空白）才切 DEV 口径，
+         * 属性缺失 / {@code "false"} / 任何错字一律留在 {@link Loadout#SURVIVAL}。
+         *
+         * <p>为什么这一格必须"错字留在正式侧"：DEV 口径发的是<b>步枪与一整套材料</b>，
+         * 它们本不该出现在正式存档里。若把"非 survival 即 dev"当成规则，
+         * 一次手滑就会让"开一局正式新游戏"变成"开局一把步枪 + 全套材料" ——
+         * 玩法规则由一个错字决定，而这正是 {@code v2 §19-15}「未偷跑」要防的那类污染。
+         */
+        static Loadout parseLoadout(String raw) {
+            return Loadout.parse(raw);
         }
 
         static M1Config fromSystemProperties() {
@@ -332,6 +351,10 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                     //   Story 8 之后这个能力只以枚举形式存在，玩家侧一直没有入口
                     //   （唯一设成 PROTOTYPE 的地方是战斗自测路径）。
                     parseInfiniteReserve(System.getProperty("skyisland.infiniteReserve")),
+                    // ★ 开局装备口径：默认 SURVIVAL（正式玩法，v2 的 M3 范围 = 两把枪）。
+                    //   步枪与过渡材料包只属于 DEV / TEST 口径：门禁与 play-m3.bat 显式传 dev。
+                    //   详见 Loadout 的类注释（"为什么必须拆开"）。
+                    parseLoadout(System.getProperty(Loadout.SYSTEM_PROPERTY)),
                     System.getProperty("skyisland.startState", "")
             );
         }
@@ -396,6 +419,21 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      * 那次的症状正是"方块挖掉了但画面没变"，与本类若做快照会出的症状同构。
      */
     private final InventoryRenderModel inventoryModel = new InventoryRenderModel();
+
+    /**
+     * 背包内合成区的界面模型（2026-10-03）。
+     *
+     * <p><b>它是 {@code craft} 包第一个产品消费者。</b>上一轮把 PRD 5.6.2 的配方表与
+     * {@link com.skyisland.craft.Crafting} 的纯逻辑都写完了，但全工程没有任何一处
+     * 调用它们 —— 没有界面、没有命令、没有按键：数据在、逻辑对、单测全绿，
+     * 而玩家<b>永远碰不到</b>。把它挂进背包界面之后，
+     * "合成"才第一次成为一个玩家能做的事。
+     *
+     * <p>刷新时机刻意是<b>事件驱动</b>（开背包 / 一次搬运之后 / 一次合成之后），
+     * 而不是每帧重算：10 条配方 × 跨槽计数在 3000 FPS 下是每秒几百万次
+     * 没有意义的扫描，而"材料够不够"只会在背包内容变化的那一刻改变。
+     */
+    private final CraftingPanel craftingPanel = new CraftingPanel();
 
     // ---- M1.5：设置与界面 ----
     private GameSettings settings;
@@ -508,6 +546,22 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     }
 
     /**
+     * 当前手持枪的<b>后坐档案</b>（{@code GunPresentationSpec.recoilProfileId} 的解析结果）。
+     *
+     * <p>与 {@link #heldGunPresentation()} 同一条口径：不缓存、每次现取，
+     * 于是"开火那一刻的抬枪幅度"与"这一步的回落速度"必然来自同一把枪。
+     *
+     * @return 手持非枪时为 {@link RecoilProfile#DEFAULT}
+     *         （= 手枪曲线 —— 沿用既有表现，不制造一套从未被验收过的"零后坐"）
+     */
+    private com.skyisland.item.RecoilProfile heldRecoilProfile() {
+        com.skyisland.item.GunPresentationSpec pres = heldGunPresentation();
+        return pres == null
+                ? com.skyisland.item.RecoilProfile.DEFAULT
+                : com.skyisland.item.RecoilProfile.byId(pres.recoilProfileId());
+    }
+
+    /**
      * 战斗事件 → 表现 / 提示的接线（M2）。
      *
      * <p>把 {@link CombatController} 的事件翻译成粒子、曳光与 HUD 提示。
@@ -562,10 +616,16 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             }
             combatFx.spawnMuzzleFlash(muzzle[0], muzzle[1], muzzle[2], eye.x, eye.y, eye.z,
                     fwd.x(), fwd.y(), fwd.z());
-            // 后坐力"只加不回落"：回落由逻辑步里的 decayRecoil(dt) 推进。
+            // 后坐力"只加不回落"：回落由逻辑步里的 decayRecoil(dt, profile) 推进。
             // 分成两处是刻意的 —— 本方法每次开火调用一次，而回落必须按时长推进，
             // 两者的频率不同源。
-            player.camera().addRecoilPitch(com.skyisland.player.Camera.RECOIL_PITCH_PER_SHOT_DEG);
+            //
+            // 2026-10-03：抬枪量与累计上限来自当前枪的后坐档案
+            // （RecoilProfile：手枪 0.9° / SMG 0.35° / 步枪 1.6°）。
+            // 在此之前这里写的是 Camera.RECOIL_PITCH_PER_SHOT_DEG 这个全局常量 ——
+            // 于是 GunPresentationSpec.recoilProfileId 是一条没有任何读者的死键：
+            // 拿步枪开一枪，画面抬起的角度与手枪逐位相同。
+            player.camera().addRecoil(heldRecoilProfile());
         }
 
         @Override
@@ -1003,7 +1063,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //    andThen 的语义是"先发声、再把同一个事件原样转发给下游"，因此粒子、
         //    曳光、HUD 提示一条都不会少。反过来若写成"替换"，症状会是
         //    "开了音频之后曳光没了" —— 而这种失效在接口语义下是完全静默的。
-        audioFeedback = AudioFeedback.wrap(audio);
+        audioFeedback = AudioFeedback.wrap(audio, player);
         combatListener = audioFeedback.andThen(combatFeedback);
         // 破坏反馈的接线放在这里而不是 Player 的构造里：Player 是纯逻辑类，
         // 不该知道"破坏要撒粒子"这件表现层的事。
@@ -1076,7 +1136,19 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     }
 
     /**
-     * 发放 M3 开局装备：手枪 ×1 + 冲锋枪 ×1 + 手枪弹 ×24（PRD 5.4.1 初始物资表 + v2 §10 武器表）。
+     * 发放开局装备（口径由 {@link Loadout} 决定）。
+     *
+     * <ul>
+     *   <li>{@link Loadout#SURVIVAL}（<b>默认</b>）：手枪 ×1 + 冲锋枪 ×1 + 手枪弹 = 2 × 弹匣容量。</li>
+     *   <li>{@link Loadout#DEV}：上述全部 + 步枪 ×1 + 步枪弹 = 2 × 弹匣容量
+     *       + {@code DEV / TRANSITION MATERIAL KIT} 6 种。</li>
+     * </ul>
+     * （PRD 5.4.1 初始物资表 + v2 §10 武器表 + 2026-10-02 的步枪材料链；
+     * 2026-10-03 起按口径分开，理由见 {@link Loadout} 的类注释。）
+     *
+     * <p><b>步枪与材料包是 2026-10-02 主理人显式放行后追加的</b>（v2 §6.2「真正落地 rifle 时
+     * 必须新增相应 Recipe」）。材料包给的是<b>原始材料</b>并把矿石生成排除在本轮范围外，
+     * 因此它是一次<b>显式的临时偏离</b>，理由与移除条件写在下面那段注释里。
      *
      * <p>24 发不是随手取的数：弹匣容量 12，PRD 明文写"2 个满弹匣"。
      * 写成 {@code 2 * magazineSize} 而不是字面量 24，是为了让"改弹匣容量"这件事
@@ -1094,6 +1166,12 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      * 玩家开局手里就是枪，这符合"开局装备"的直觉。
      * 反过来说，任何"手里必须是空手"的脚本都必须显式声明 ——
      * {@code M1ScriptedSelfTest} 的挖掘与放置阶段正是这么做的（它先切到空格）。
+     *
+     * <p><b>落格规则有两条，不要混：</b>枪 / 弹药走 {@link com.skyisland.player.Inventory#add}
+     * （快捷栏优先，玩家一伸手就能拿到）；材料包走
+     * {@link com.skyisland.player.Inventory#addToMain}（<b>只进背包</b>）。
+     * 于是开局快捷栏是「手枪 手枪弹 冲锋枪 步枪 步枪弹 + 4 个空格」，
+     * 材料整齐地待在背包里 —— 空格必须留着，玩家挖到的第一块石头要能落进快捷栏。
      */
     private void grantStartingGear(String reason) {
         int ammo = 2 * ItemRegistry.pistol().gun().magazineSize();
@@ -1103,16 +1181,91 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                 ItemRegistry.runtimeIdOf(ItemRegistry.PISTOL_AMMO_ID), ammo);
         int smgRuntimeId = ItemRegistry.runtimeIdOf(ItemRegistry.SMG_ID);
         int leftoverSmg = smgRuntimeId > 0 ? player.inventory().add(smgRuntimeId, 1) : 0;
-        if (leftoverGun != 0 || leftoverAmmo != 0 || leftoverSmg != 0) {
+
+        // ---- 步枪 + 步枪弹 + 步枪材料包（2026-10-02 主理人显式放行；2026-10-03 改为 DEV 口径专有）----
+        // 与 SMG 进开局装备是同一条理由：v2 §19 的通过标准里有「可正常**获得**」这一项，
+        // 而只把物品注册进 ItemRegistry 并不等于玩家拿得到它。
+        //
+        // ★ 但它**不属于正式 Survival 口径**（2026-10-03 主理人裁定）：
+        //   M3 的正式范围是 v2 的两把枪（手枪 + 冲锋枪）。步枪是"为验证步枪链"才放行的，
+        //   把一把尚未进入正式获取链的枪发进每一局正式新游戏，等于用测试内容污染玩法。
+        //   因此这一段（以及下面的材料包）只在 {@link Loadout#DEV} 下执行 ——
+        //   门禁与 play-m3.bat 显式传 -Dskyisland.loadout=dev，真人试玩走的正是这条路径。
+        //
+        // 步枪弹按与手枪同一条规则给：2 × 弹匣容量（PRD：手枪"初始物资 = 2 个满弹匣"）。
+        int rifleAmmo = 2 * ItemRegistry.rifle().gun().magazineSize();
+        int leftoverRifle = 0;
+        int leftoverRifleAmmo = 0;
+        if (config.loadout().grantsRifle()) {
+            int rifleRuntimeId = ItemRegistry.runtimeIdOf(ItemRegistry.RIFLE_ID);
+            leftoverRifle = rifleRuntimeId > 0 ? player.inventory().add(rifleRuntimeId, 1) : 0;
+            int rifleAmmoRuntimeId = ItemRegistry.runtimeIdOf(ItemRegistry.RIFLE_AMMO_ID);
+            leftoverRifleAmmo = rifleAmmoRuntimeId > 0
+                    ? player.inventory().add(rifleAmmoRuntimeId, rifleAmmo) : 0;
+        }
+
+        // ---- DEV / TRANSITION MATERIAL KIT（过渡材料包；仅 DEV 口径）----
+        // ★ 名称里的 DEV / TRANSITION 是刻意写进代码的：它提醒每一个读到这段的人，
+        //   这份材料包不是产品内容，而是"矿石世界生成 + 正式合成获取链"闭合之前的替代品。
+        //
+        // ★ 这是一处**显式的、临时的偏离**，必须写清楚：
+        //   PRD 5.6.2 的配方链默认"材料从世界里挖"，但本轮范围裁定不做矿石生成
+        //   （见 BlockRegistry 里铜矿石/晶体矿石的注释），因此矿石在世界上刷不出来 ——
+        //   不发放就意味着"配方永远无法满足、提示永远是缺少 ×N"。
+        //
+        // ★ 删除条件（到点必须删，不要"先留着"）：
+        //   **矿石世界生成 + 正式合成获取链闭合后删除本段。**
+        //   保留会让"从零采集"这条闭环失去意义 —— 玩家不用挖就能拿到全部材料，
+        //   而"能不能挖到"恰恰是那条链唯一要证明的事。
+        //
+        // 数量按"刚好够打完整条链"取，见 CraftingTest#theWholeRifleChainIsCraftableFromRawMaterials
+        // 里用到的同一组数字，两者互为对照。
+        //
+        // ★ 走 addToMain 而不是 add（2026-10-02）：材料是**囤积物**，应当落在背包里，
+        //   快捷栏留给玩家当场要用的枪 / 弹药。若走 add，6 种材料会先霸占快捷栏仅剩的
+        //   4 个空格、后 2 种溢出到背包 —— 这个切分点取决于"材料有几种"，无法解释；
+        //   而且会让 M1ScriptedSelfTest#firstBlockSlot 在挖掘之前就命中 log/iron_ore。
+        //   详见 Inventory#addToMain 的 javadoc。
+        String[][] materialKit = {
+                {"skyisland:log", "4"},
+                {"skyisland:iron_ore", "9"},
+                {"skyisland:copper_ore", "3"},
+                {"skyisland:coal", "20"},
+                {"skyisland:sand", "4"},
+                {"skyisland:crystal", "1"},
+        };
+        int leftoverKit = 0;
+        if (config.loadout().grantsMaterialKit()) {
+            for (String[] entry : materialKit) {
+                int rid = ItemRegistry.runtimeIdOf(entry[0]);
+                leftoverKit += rid > 0
+                        ? player.inventory().addToMain(rid, Integer.parseInt(entry[1])) : 0;
+            }
+        }
+
+        if (leftoverGun != 0 || leftoverAmmo != 0 || leftoverSmg != 0
+                || leftoverRifle != 0 || leftoverRifleAmmo != 0 || leftoverKit != 0) {
             // 快捷栏只有 9 格，装不下就是真的装不下 —— 必须说出来，
             // 否则症状是"开局没枪"，而原因看起来像是掉落了。
             Log.noteWarning("战斗", "开局装备未能全部放入快捷栏（手枪余 " + leftoverGun
                     + " / 弹药余 " + leftoverAmmo + " / 冲锋枪余 " + leftoverSmg
+                    + " / 步枪余 " + leftoverRifle + " / 步枪弹余 " + leftoverRifleAmmo
+                    + " / 材料包余 " + leftoverKit
                     + "），请检查快捷栏容量。");
         }
-        showEvent(Localization.text(Localization.MSG_GEAR_GRANTED, ammo), 4.0);
-        Log.info("[战斗] %s：手枪 ×1、冲锋枪 ×1、手枪弹 ×%d（弹匣容量 %d）",
-                reason, ammo, ItemRegistry.pistol().gun().magazineSize());
+        showEvent(Localization.text(Localization.MSG_GEAR_GRANTED, ammo, rifleAmmo), 4.0);
+        if (config.loadout().grantsRifle()) {
+            Log.info("[战斗] %s（口径=%s）：手枪 ×1、冲锋枪 ×1、手枪弹 ×%d（弹匣容量 %d）、"
+                            + "步枪 ×1、步枪弹 ×%d（弹匣容量 %d）、DEV / TRANSITION MATERIAL KIT ×6 种",
+                    reason, config.loadout().describe(), ammo,
+                    ItemRegistry.pistol().gun().magazineSize(),
+                    rifleAmmo, ItemRegistry.rifle().gun().magazineSize());
+        } else {
+            Log.info("[战斗] %s（口径=%s）：手枪 ×1、冲锋枪 ×1、手枪弹 ×%d（弹匣容量 %d）；"
+                            + "无步枪、无材料包（正式 Survival 口径）",
+                    reason, config.loadout().describe(), ammo,
+                    ItemRegistry.pistol().gun().magazineSize());
+        }
     }
 
     /** 建完开局所有区块的网格。必须在 GL 上下文就绪之后调用。 */
@@ -1258,6 +1411,10 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         Log.info("后备弹药口径        : %s", config.infiniteReserve()
                 ? "无限（PROTOTYPE —— -Dskyisland.infiniteReserve=true，v2 §19-7 Debug 口径）"
                 : "有限（SURVIVAL —— 换弹真实扣 Inventory，v2 §19-6 正式口径）");
+        // ★ 开局装备口径同样打进启动日志：与弹药口径同一条理由 ——
+        //   "开局怎么没有步枪 / 怎么有一堆材料"这个问题的答案必须在日志里，而不是在代码里。
+        Log.info("开局装备口径        : %s（-D%s=dev 才切 DEV）",
+                config.loadout().describe(), Loadout.SYSTEM_PROPERTY);
         Log.info("输入来源            : %s", config.selfTest() || config.combatSelfTest()
                 ? "进程内脚本化意图（TR7：本机无法注入合成键盘输入）"
                 : "GLFW 真实键鼠");
@@ -1827,8 +1984,41 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
 
     private void openInventoryScreen() {
         if (ui.openInventory()) {
+            // ★ 开背包的这一刻必须重新评估一遍每条配方：
+            //   玩家在打开界面之前刚挖到的那块矿石，决定了"哪些行能合"。
+            craftingPanel.refresh(player.inventory());
             audio.play(AudioEvent.UI_OPEN);
             Log.info("[界面] 打开背包");
+        }
+    }
+
+    /**
+     * 合成第 {@code row} 行，并<b>无论如何都给出反馈</b>。
+     *
+     * <p><b>为什么三种结果都要出声 + 出字：</b>裁定第 7 条禁止"点了按钮没反应"。
+     * 而"没反应"最常见的形态不是代码没写，而是"写了但只在成功分支给反馈" ——
+     * 玩家点了缺料的那一行，屏幕一动不动，于是他会一直点下去。
+     * 缺料时把"缺少 铁锭 ×3"直接写在提示条上，反应就提前发生了。
+     *
+     * <p><b>扣料与出货全部由 {@link com.skyisland.craft.Crafting#craft} 裁决</b>，
+     * 本方法一行都不碰背包 —— 界面层自己算一次扣料，就等于给"材料扣了、产物没了"
+     * 这种事故开了一扇门（见 {@link CraftingPanel} 的类注释）。
+     */
+    private void craftRow(int row) {
+        Crafting.Outcome outcome = craftingPanel.craft(row, player.inventory());
+        if (outcome == null) {
+            return;
+        }
+        switch (outcome.result()) {
+            case CRAFTED -> audio.play(AudioEvent.UI_MOVE);
+            case MISSING_INGREDIENTS -> {
+                audio.play(AudioEvent.UI_DENIED);
+                showEvent(Crafting.describeMissing(outcome), 3.0);
+            }
+            case NO_ROOM -> {
+                audio.play(AudioEvent.UI_DENIED);
+                showEvent(Localization.text(Localization.MSG_CRAFT_NO_ROOM), 3.0);
+            }
         }
     }
 
@@ -1892,11 +2082,23 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         inventoryModel.mouseX = fb[0];
         inventoryModel.mouseY = fb[1];
 
-        InventoryLayout layout = renderer.inventoryRenderer().ensureLayout(fbWidth, fbHeight);
+        InventoryLayout layout = renderer.inventoryRenderer()
+                .ensureLayout(fbWidth, fbHeight, craftingPanel.size());
         int hovered = layout.hitTestAny(inventoryModel.mouseX, inventoryModel.mouseY);
         inventoryModel.hoverSlot = hovered;
+        int hoveredRow = layout.hitTestCraftAny(inventoryModel.mouseX, inventoryModel.mouseY);
+        inventoryModel.hoverCraftRow = hoveredRow;
 
-        if (hovered < 0 || !input.wasMouseButtonPressed(GLFW.GLFW_MOUSE_BUTTON_1)) {
+        boolean pressed = input.wasMouseButtonPressed(GLFW.GLFW_MOUSE_BUTTON_1);
+
+        // ---- 合成区优先 ----
+        // 两个区域在几何上不重叠，因此"优先"不是为了解决冲突，而是为了让
+        // "点在合成栏上"这件事不会被下面的"没点中格子就返回"提前吞掉。
+        if (pressed && hoveredRow >= 0) {
+            craftRow(hoveredRow);
+            return;
+        }
+        if (hovered < 0 || !pressed) {
             return;
         }
         boolean shift = input.isKeyDown(GLFW.GLFW_KEY_LEFT_SHIFT)
@@ -1923,6 +2125,9 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                 // 空格上点一下、或越过面板边界点击：既没搬动也没出错，不该有任何声音。
             }
         }
+        // 一次搬运之后背包内容变了（取走 / 放下 / 合并 / 交换都会改变"我有什么"），
+        // 因此合成栏必须重新评估 —— 否则会出现"刚把铁矿放进背包，合成栏还显示缺料"。
+        craftingPanel.refresh(player.inventory());
     }
 
     /** 当前界面下的菜单屏；游玩中没有菜单。 */
@@ -2272,7 +2477,8 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         // M2.1：后坐力按逻辑步的 dt 回落，而不是"每帧衰减一个固定量"——
         // 后者的后果是后坐力持续时间与帧率绑定（3000 FPS 下 3 毫秒就消失），
         // 那正是本项目 §C.4′ 反复强调的"帧率不得影响行为"。
-        player.camera().decayRecoil(fixedDt);
+        // 2026-10-03：回落速度也来自当前枪的后坐档案（手枪 5.0 / SMG 2.4 / 步枪 4.0 度每秒）。
+        player.camera().decayRecoil(fixedDt, heldRecoilProfile());
         updateAimHint();
 
         if (selfTest != null) {
@@ -2654,6 +2860,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         inventoryModel.visible = ui.state() == UiState.INVENTORY;
         inventoryModel.inventory = player.inventory();
         inventoryModel.selectedHotbarSlot = player.inventory().selectedSlot();
+        inventoryModel.craftingPanel = craftingPanel;
 
         hud.extraDebugLines.clear();
         String mode = selfTest != null ? "M1 脚本化自测"
@@ -3160,6 +3367,47 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             return inventoryModel.hoverSlot;
         }
 
+        // ---- 背包内合成区（2026-10-03）----
+        // 下面四个读数让 M1.5 界面自测能<b>走完整产品链路</b>验证合成：
+        // 播种光标到某一行的中心 → 注入左键 → 读背包。
+        // 刻意不提供"直接调 craft(row)"的快捷方式 —— 那样绕开的正是最容易断的
+        // 那一段（像素 → 命中行号 → 调用），而它恰恰是裁定第 8 条要钉住的那一段。
+
+        @Override
+        public int craftingRowCount() {
+            return craftingPanel.size();
+        }
+
+        @Override
+        public int inventoryHoverCraftRow() {
+            return inventoryModel.hoverCraftRow;
+        }
+
+        @Override
+        public String craftingRowStatusText(int row) {
+            CraftingPanel.Row r = craftingPanel.row(row);
+            return r == null ? "" : craftingPanel.statusText(r);
+        }
+
+        @Override
+        public String craftingRowRecipeId(int row) {
+            CraftingPanel.Row r = craftingPanel.row(row);
+            return r == null ? "" : r.recipe().id();
+        }
+
+        @Override
+        public double[] craftingRowCenterWindow(int row) {
+            int fbW = window.framebufferWidth();
+            int fbH = window.framebufferHeight();
+            int winW = window.windowWidth();
+            int winH = window.windowHeight();
+            double[] center = renderer.inventoryRenderer()
+                    .ensureLayout(fbW, fbH, craftingPanel.size()).craftRowCenter(row);
+            double backX = center[0] * (winW / (double) Math.max(1, fbW));
+            double backY = center[1] * (winH / (double) Math.max(1, fbH));
+            return new double[]{backX, backY};
+        }
+
         @Override
         public boolean hudGameplayVisible() {
             return hud.showGameplayHud;
@@ -3184,7 +3432,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             int winW = window.windowWidth();
             int winH = window.windowHeight();
             double[] center = renderer.inventoryRenderer()
-                    .ensureLayout(fbW, fbH).slotCenter(slot);
+                    .ensureLayout(fbW, fbH, craftingPanel.size()).slotCenter(slot);
             double backX = center[0] * (winW / (double) Math.max(1, fbW));
             double backY = center[1] * (winH / (double) Math.max(1, fbH));
             return new double[]{backX, backY};

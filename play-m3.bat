@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 REM ===========================================================================
 REM  SkyIsland - M3 Weapon Generalization  (pistol + SMG)   (double-click me)
 REM
@@ -9,7 +9,24 @@ REM         hotbar 1 = PISTOL  SINGLE  8 dmg  12-round mag  1.2 s reload
 REM         hotbar 2 = PISTOL AMMO x24  (shared by BOTH guns)
 REM         hotbar 3 = SMG     AUTO    5 dmg  24-round mag  1.5 s reload
 REM       Same ammo item, two guns. Switching is just the number keys.
-REM    2) RESERVE AMMO IS INFINITE IN THIS LAUNCHER (by default). This is the
+REM    2) THIS LAUNCHER RUNS THE DEV / TEST LOADOUT (-Dskyisland.loadout=dev).
+REM       On top of the two M3 guns you also get:
+REM         hotbar 4 = RIFLE      SINGLE  14 dmg  10-round mag  2.0 s reload
+REM         hotbar 5 = RIFLE AMMO x20
+REM         backpack = DEV / TRANSITION MATERIAL KIT (log 4, iron ore 9,
+REM                    copper ore 3, coal 20, sand 4, crystal 1)
+REM       The material kit is a TEMPORARY stand-in: ore world generation and the
+REM       real gathering chain are NOT in this milestone, so without it every
+REM       recipe would read "missing xN" forever. It is deleted once that chain
+REM       closes. The FORMAL M3 Survival loadout (the product default) has NO
+REM       rifle and NO kit - it is the two guns only.
+REM    3) CRAFTING IS LIVE. Press E to open the inventory: the RIGHT column is
+REM       the recipe list. Each row shows the product, what you have / what it
+REM       needs (e.g. "iron ingot 8/8"), and either a [CRAFT] button or the
+REM       shortfall ("missing iron ingot x3") - a row you cannot afford always
+REM       says why, it never just sits there. Clicking a row spends the
+REM       materials and puts the product in your backpack.
+REM    4) RESERVE AMMO IS INFINITE IN THIS LAUNCHER (by default). This is the
 REM       Debug / Prototype caliber (v2 sec 19-7): reloading never drains the
 REM       reserve, so you can test fire modes and reload timings back to back
 REM       without ever running dry. The startup log prints which caliber is
@@ -20,13 +37,14 @@ REM       still the product default. This launcher only flips the switch for
 REM       convenience. To play the formal caliber, either delete
 REM           -Dskyisland.infiniteReserve=true
 REM       from the java line near the bottom, or set it to false.
-REM    3) RELOAD IS NOT INTERRUPTED BY MOVEMENT. Walk while reloading and the
+REM    5) RELOAD IS NOT INTERRUPTED BY MOVEMENT. Walk while reloading and the
 REM       reload still finishes (this is deliberate, not a bug).
-REM    4) AIMING DIFFERS: hold RMB -> pistol FOV 45 / move speed x0.60,
-REM       SMG FOV 48 / move speed x0.65. These two numbers are marked as
-REM       "tunable in M3 playtest" - say so if the difference feels wrong.
+REM    6) AIMING DIFFERS: hold RMB -> pistol FOV 45 / move speed x0.60,
+REM       SMG FOV 48 / move speed x0.65, rifle FOV 40 / move speed x0.55.
+REM       These numbers are marked as "tunable in playtest" - say so if the
+REM       difference feels wrong.
 REM
-REM  DO THESE FOUR FIRST (each one is a claim that must be checked):
+REM  DO THESE FIRST (each one is a claim that must be checked):
 REM    1. press 3            -> the SMG is in your hand: different silhouette
 REM                             and a different backpack icon than the pistol.
 REM    2. ONE CLICK, then HOLD LMB:
@@ -38,6 +56,13 @@ REM    3. empty a magazine and press R -> pistol ~1.2 s, SMG ~1.5 s.
 REM       While it reloads, hold W: the reload must NOT be cancelled.
 REM    4. press F4 -> a monster walks up; shoot it with both guns and compare
 REM       (pistol hits harder but slower; SMG is faster but weaker per shot).
+REM    5. press E -> the RIGHT column is the recipe list. Craft "oak planks"
+REM       from logs, then "iron ingot" (iron ore + coal), then "gunpowder"
+REM       (coal x2 + sand). If a row says "missing ...", that is the point -
+REM       it must name the item and the count, never stay silent.
+REM    6. with the rifle (key 4): ONE CLICK = exactly ONE shot. Holding LMB
+REM       must NOT keep firing (SINGLE). Compare with the SMG (key 3), where
+REM       holding DOES keep firing (AUTO).
 REM
 REM  WHY THIS LAUNCHER IS SEPARATE FROM play-m2.bat:
 REM    Starting gear is granted ONLY on a brand new world. This launcher uses
@@ -71,13 +96,32 @@ if not exist "%JDK_HOME%\bin\java.exe" (
 
 set "JAR="
 set "JARCOUNT=0"
+REM  Ignore two files on purpose:
+REM    original-*.jar  = the thin pre-shade backup (678 KB, no deps bundled);
+REM                     it does not match the skyisland-* glob anyway.
+REM    *-shaded.jar    = maven-shade-plugin leaves a BYTE-IDENTICAL alias next
+REM                      to the main artifact (verified: same sha256).
+REM  They are not a second "version" -- the real risk this guard exists for is
+REM  running a STALE jar after a version bump, so the check must be
+REM  "exactly one REAL jar", not "exactly one file".
+REM
+REM  NB: the suffix test is a fixed-width compare (!CAND:~-11!), NOT a wildcard.
+REM  cmd string comparison does NOT glob -- "if /i neq skyisland-*-shaded"
+REM  silently matches everything and counts the alias (verified: JARCOUNT=2).
+REM  Delayed expansion is what makes the substring readable inside the loop.
 for %%f in ("%PROJ%target\skyisland-*.jar") do (
-  set "JAR=%%~ff"
-  set /a JARCOUNT+=1
+  set "CAND=%%~nxf"
+  if not "!CAND:~-11!"=="-shaded.jar" (
+    set "JAR=%%~ff"
+    set /a JARCOUNT+=1
+  )
 )
 
 if not "%JARCOUNT%"=="1" (
-  echo [ERROR] Expected exactly 1 jar in target\, found %JARCOUNT%.
+  echo [ERROR] Expected exactly 1 runnable jar in target\, found %JARCOUNT%.
+  echo         original-*.jar and *-shaded.jar are ignored on purpose.
+  echo         What is actually in target\:
+  dir /b "%PROJ%target\*.jar"
   echo         Build it first:  node tmp/build.js clean package
   pause
   exit /b 3
@@ -110,14 +154,19 @@ echo [INFO] World    : %WORLD%
 echo [INFO] Save dir : %SAVE%
 echo.
 echo [INFO] Starting gear: 1=pistol  2=pistol ammo x24  3=SMG
+echo [INFO]         (DEV loadout)     4=rifle  5=rifle ammo x20  + material kit
 echo [INFO] Reserve    : INFINITE (Debug caliber, v2 sec 19-7)
 echo [INFO] Check first:  press 3  then  compare one-click vs hold-LMB
+echo [INFO]              press E  then  craft in the RIGHT column
 echo.
 
 REM  -Dskyisland.infiniteReserve=true  -> infinite reserve for THIS launcher
 REM  (Debug / Prototype caliber). Remove it (or set false) for the formal
-REM  finite Survival caliber. See the REM header item 2 for why.
-"%JDK_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED %* -Dskyisland.worldName=%WORLD% -Dskyisland.settingsFile=tmp\m3-play-settings.json -Dskyisland.saveDir="%SAVE%" -Dskyisland.infiniteReserve=true -jar "%JAR%"
+REM  finite Survival caliber. See the REM header item 4 for why.
+REM  -Dskyisland.loadout=dev           -> DEV / TEST loadout: adds the rifle,
+REM  rifle ammo and the transition material kit (see header item 2). Remove it
+REM  to play the formal Survival loadout: two guns, no rifle, no kit.
+"%JDK_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED %* -Dskyisland.worldName=%WORLD% -Dskyisland.settingsFile=tmp\m3-play-settings.json -Dskyisland.saveDir="%SAVE%" -Dskyisland.infiniteReserve=true -Dskyisland.loadout=dev -jar "%JAR%"
 set "RC=%ERRORLEVEL%"
 
 echo.

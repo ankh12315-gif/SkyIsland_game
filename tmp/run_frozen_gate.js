@@ -28,15 +28,26 @@ const JAVA = 'D:/software/jdk-25/bin/java.exe';
 const FROZEN = PROJ + '/tmp/selftest-jar/skyisland-frozen.jar';
 const NO_BUILD = process.argv.indexOf('--no-build') >= 0;
 
-// 目标 jar 用**通配解析**而不是写死文件名（与 play-m2.bat 同样的两道校验）。
+// 目标 jar 用**通配解析**而不是写死文件名（与 play-*.bat 同样的两道校验）。
 // 写死版本号会让每次升版本都留下一个"跑的是上一版 jar"的静默陷阱：
 // 报告里引用的证据会指向一个不存在的构建，而运行器照样打印"通过"。
+//
+// ★ 2026-10-03 修正：判据是"恰好 1 个**真** jar"，不是"恰好 1 个文件"。
+//   maven-shade-plugin 会在主 jar 旁边留一个**字节完全相同**的 `-shaded` 别名
+//   （实测 sha256 一致：主 5794458 B / 别名 5794458 B / original- 678889 B），
+//   而"不 clean 就重新构建"是开发常态 —— 原来那条 `hits.length !== 1`
+//   于是会在最常见的迭代路径上把运行器自己卡死（play-m3.bat 先撞上了同一个坑）。
+//   排除项与启动器保持一致：`-shaded.jar` 是别名，`original-*` 是 shade 前的 thin 备份。
+//   仍保留唯一性校验，因为"版本升了却跑着旧 jar"才是这条守卫真正要防的东西。
 function resolveTargetJar() {
   const dir = PROJ + '/target';
-  const hits = fs.readdirSync(dir).filter((n) => /^skyisland-.*\.jar$/.test(n));
+  const all = fs.readdirSync(dir).filter((n) => /^skyisland-.*\.jar$/.test(n));
+  const hits = all.filter((n) => !n.endsWith('-shaded.jar'));
   if (hits.length !== 1) {
-    console.log('[FATAL] target/ 下应恰好有 1 个 skyisland-*.jar，实际 ' + hits.length
-      + ' 个：' + hits.join(', '));
+    console.log('[FATAL] target/ 下应恰好有 1 个可运行的 skyisland-*.jar，实际 ' + hits.length
+      + ' 个（已忽略 *-shaded.jar 别名与 original-* thin 备份）：' + hits.join(', '));
+    console.log('        target/ 实际内容：' + (all.join(', ') || '(空)'));
+    console.log('        先构建：  node tmp/build.js clean package');
     process.exit(2);
   }
   return dir + '/' + hits[0];
@@ -118,7 +129,9 @@ for (const [tag, switchArg, timeoutS] of GATES) {
   }
 
   const args = ['--enable-native-access=ALL-UNNAMED', switchArg,
-    '-Dskyisland.saveDir=' + saveDir, '-jar', FROZEN];
+    // DEV 口径：步枪与过渡材料包只在 DEV 下发（正式 Survival 默认没有），
+    // 而三个门禁都依赖它们（m2 的 GEAR_CHECK、ui 的合成阶段）。
+    '-Dskyisland.saveDir=' + saveDir, '-Dskyisland.loadout=dev', '-jar', FROZEN];
   const t0 = Date.now();
   const r = spawnSync(JAVA, args, {
     cwd: PROJ, windowsHide: true, timeout: timeoutS * 1000, maxBuffer: 64 * 1024 * 1024,

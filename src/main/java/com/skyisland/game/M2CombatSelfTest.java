@@ -4,7 +4,6 @@ import com.skyisland.audio.AudioEvent;
 import com.skyisland.audio.AudioManager;
 import com.skyisland.audio.RecordingAudioSink;
 import com.skyisland.combat.CombatController;
-import com.skyisland.combat.DamageFalloff;
 import com.skyisland.combat.GunState;
 import com.skyisland.entity.Entity;
 import com.skyisland.entity.EntityManager;
@@ -188,7 +187,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
 
     private enum Stage {
         SETTLE("静置并站稳"),
-        GEAR_CHECK("开局装备（手枪 + 冲锋枪 + 2 个满弹匣）"),
+        GEAR_CHECK("开局装备（手枪 + 冲锋枪 + 步枪 + 弹药 + 材料包）"),
         MINE_BLOCKED_WHILE_HOLDING_GUN("持枪时左键是开火不是挖掘"),
         DRY_FIRE("空弹匣空枪"),
         RELOAD_FULL("完整换弹（1.2 秒）"),
@@ -322,11 +321,27 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     /**
      * SMG 阶段末尾"松开扳机"的步数（不产生新的击发，只让后坐力回落）。
      *
-     * <p>取值 30 步 = 0.5 s。推导：后坐力上限 {@code MAX_RECOIL_PITCH_DEG = 1.8°}，
-     * 回落速度 {@code RECOIL_RECOVER_DEG_PER_SEC = 5.0°/s} → 从满值回落需要 1.8/5 = 0.36 s = 22 步。
-     * 取 30 步留 8 步余量。这 30 步内 SMG 仍然"在手上、在按住之外"，只是松开了扳机。
+     * <p><b>★ 它由 SMG 那份后坐档案算出，不是拍一个数（2026-10-03 修正）。</b>
+     * 原先写死 30 步，而 30 步的来历是<b>手枪</b>的档案：单发 0.90°、上限 1.80°、
+     * 回落 5.00°/s → 每步回落 0.0833°，30 步能落 2.5° &gt; 上限 1.80°，于是必然归零。
+     * 换成 SMG 档案（上限 2.60°、回落 2.40°/s → 每步 0.040°）之后，
+     * 30 步只能落 1.20° —— <b>落不完</b>。
+     *
+     * <p>而它<b>当时并没有红</b>，红是在几天后才出现的：收尾那条"后坐力精确回落到 0"
+     * 断言靠的是"距最后一次开火已隔若干阶段"，于是残余多少取决于
+     * 1800 步结束的那一刻，后坐力锯齿波正好停在哪个相位 ——
+     * 实测残留 0.07°（= 锯齿在某处的 1.27° 落掉 1.20°）。
+     * 这是一条<u>夹具假设</u>：断言成立依赖一个没人写下来的时序巧合，
+     * 而巧合一旦被内容变更（后坐档案数据化）打破，失败信息指向的是
+     * "回落链断了"，真正的原因却在步数预算里。
+     *
+     * <p>改成从档案推导之后，"改档案"与"改窗口"绑在一起：
+     * {@code ceil(上限 / 每步回落) + 余量} = {@code ceil(2.60 / 0.040) + 8} = 73 步。
+     * 余量 8 步吸收"完成事件要到下一步才被观测到"这类确定性时序差。
      */
-    private static final int SMG_RELEASE_SETTLE_STEPS = 30;
+    private static final int SMG_RELEASE_SETTLE_STEPS =
+            (int) Math.ceil(com.skyisland.item.RecoilProfile.SMG.maxPitchDeg() * 60.0
+                    / com.skyisland.item.RecoilProfile.SMG.recoverDegPerSec()) + 8;
 
     /** 世界出生点（与 {@link TestWorldGenerator} 一致）。 */
     private static final double SPAWN_X = TestWorldGenerator.spawnX();
@@ -373,6 +388,24 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private static final double FALLOFF_PLAYER_Z = -20.5;
     private static final double FALLOFF_MONSTER_X = -20.5;
     private static final double FALLOFF_MONSTER_Z = 24.5;
+
+    /**
+     * v2 §10 武器表里<b>手枪</b>的三个 ADS / 衰减值，作为断言用的独立基线。
+     *
+     * <p><b>为什么在这里写死字面量，而不是引用 {@code Player} 的常量或
+     * {@code DamageFalloff} 的常量（M3 接线修正）：</b>
+     * 那两个常量正是"文档承诺 45/60%、实机却是别的值，而测试全绿"这类缺陷的载体 ——
+     * 断言引用常量时，代码里把常量改了、断言跟着改，两边一起错。
+     * 写死 PRD 表格里的数字，断言的才是"实机行为 vs 文档"这件事本身。
+     *
+     * <p>注册项与这三个字面量的一致性由 {@code ItemRegistryTest} / {@code GunSpecTest} 举证；
+     * 本处额外再断一次，是因为自测是 M3 通过标准的证据来源，它不该依赖单测的结论。
+     */
+    private static final double PISTOL_ADS_FOV_DEG = 45.0;
+    private static final double PISTOL_ADS_MOVE_MULT = 0.60;
+    /** PRD 5.4.3：手枪超出有效射程每格 ×0.90、最低 20%。 */
+    private static final double PISTOL_FALLOFF_PER_UNIT = 0.90;
+    private static final double PISTOL_FALLOFF_FLOOR = 0.20;
 
     private final Host host;
     private final List<String> results = new ArrayList<>();
@@ -617,6 +650,15 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private boolean aimObservedAiming;
     private double aimObservedFovScale = -1;
     private double aimObservedCameraFov = -1;
+    /**
+     * 瞄准那一刻手上那把枪的 stable ID（M3 接线修正新增）。
+     *
+     * <p>为什么要采样它：ADS 的三个断定值（FOV 45°、移速 60%、衰减口径）都是<b>手枪的</b>。
+     * 若手持物在阶段间被换成了别的枪，那三条断言就会拿手枪的数字去核对冲锋枪的行为，
+     * 失败现场会指向"FOV 不对"，而真因是"手里不是手枪"。把持握物写进断言，
+     * 这类错会以"手持物"的措辞直接指出自己。
+     */
+    private String aimObservedGunId = "(未采样)";
 
     private boolean approachScreenshotTaken;
 
@@ -709,7 +751,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      * <p>之所以要专门记一个峰值：后坐力是瞬态的。收尾时读相机只能读到 0
      * （那正是它应该的样子），而"最终回到 0"证明不了"开火时抬过枪" ——
      * 这两件事各自可能单独成立：只接了 {@code decayRecoil} 而没接
-     * {@code addRecoilPitch} 时，读数会一直是 0，看上去和"回落正常"一模一样。
+     * {@code addRecoil} 时，读数会一直是 0，看上去和"回落正常"一模一样。
      */
     private double peakRecoilDeg;
 
@@ -1110,16 +1152,22 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                     /*
                      * 取一次调试补给（产品自带的 F6 路径）。
                      *
-                     * 为什么需要它：PRD 5.4.1 只给"手枪 ×1 + 手枪弹 ×24（2 个满弹匣）"，
+                     * 为什么需要它：PRD 5.4.1 的手枪后备弹药只有 "手枪弹 ×24（2 个满弹匣）"，
                      * 而本脚本为了举证换弹规则必须把这 24 发全部打进弹匣 —— 到存档阶段时
                      * 后备弹药恰好是 0，"弹药仍在"这条断言会退化成 "0 == 0"，验证力接近零。
                      * 补一次后，这条断言才真正检验"弹药 item id + 数量跨存档往返不变"。
+                     * （步枪弹同理：Story 阶段不会打掉它，但 F6 后 20 → 40 仍然是一个
+                     *   非零、非默认的数值，比 0 更能检验往返。）
                      *
                      * 副作用如实登记：F6 走的是 grantStartingGear，它会把**第二套**开局装备
-                     * 放进后面的空槽（枪的堆叠上限是 1），因此存档里的快捷栏会出现
-                     * 手枪 ×2 + 冲锋枪 ×2 —— 这是 F6 的既有行为，不是本自测的产物，
-                     * 也不是"多跑了一次补给"造成的污染。（Story 10 起开局装备含冲锋枪，
-                     * 所以这里翻倍的是两把枪而不是一把。）
+                     * 放进后面的空槽（枪的堆叠上限是 1，所以枪只能另占一格），因此存档里
+                     * 会出现 手枪 ×2 + 冲锋枪 ×2 + 步枪 ×2 —— 这是 F6 的既有行为，不是本自测
+                     * 的产物，也不是"多跑了一次补给"造成的污染。（Story 10 起开局装备含 SMG，
+                     * 2026-10-02 显式放行后含步枪，所以这里翻倍的是三把枪而不是一把。）
+                     *
+                     * 弹药与材料则**不会**翻倍：它们的堆叠上限是 128 / 64，第二次
+                     * add / addToMain 会<b>并入同种未满堆</b>（手枪弹 24 → 48、步枪弹 20 → 40、
+                     * 各种材料在背包里各自翻倍），因此存档往返后的数量仍然是可预期的定值。
                      */
                     host.grantDebugSupply();
                 }
@@ -1145,7 +1193,9 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private PlayerIntent intentForSmgSustained(Player player) {
         GunState gun = host.combat().existingGun(player);
         // 收尾的"松开扳机"窗口：最后 SMG_RELEASE_SETTLE_STEPS 步不再开火，
-        // 让后坐力按 Camera.RECOIL_RECOVER_DEG_PER_SEC 自然回落到 0。
+        // 让后坐力按**当前手持枪的后坐档案**自然回落到 0
+        // （步数由 SMG 档案推导，见该常量的注释 —— 写死 30 步是按手枪档案拍的，
+        //  换成 SMG 档案后落不完，而失败会以"回落链断了"的样子出现在收尾处）。
         // 为什么必须留这个窗口：DONE 阶段有一条断言"后坐力已精确回落到 0"，
         // 它原本假定"收尾时距最后一次开火已隔了若干阶段"。SMG 阶段是最后一个开火阶段，
         // 若一直扣着扳机到第 1800 步，后坐力就会停在 1.3° 让那条断言变红 ——
@@ -1242,6 +1292,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
             aimObservedAiming = player.isAiming();
             aimObservedFovScale = player.fovScale();
             aimObservedCameraFov = player.camera().fovDeg();
+            aimObservedGunId = player.inventory().selectedStack().item().id();
         }
         if (currentStep == 122) {
             noAimMoveDistance = Math.abs(player.position().z - noAimStartZ);
@@ -1529,6 +1580,8 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         ItemStack slot0 = player.inventory().hotbarSlot(0);
         ItemStack slot1 = player.inventory().hotbarSlot(1);
         ItemStack slot2 = player.inventory().hotbarSlot(2);
+        ItemStack slot3 = player.inventory().hotbarSlot(3);
+        ItemStack slot4 = player.inventory().hotbarSlot(4);
         int expectedAmmo = 2 * ItemRegistry.pistol().gun().magazineSize();
 
         // 按 item id 比对而不是只比数量：M1 时"物品 id 就是方块 id"，M2 起手枪与弹药
@@ -1551,6 +1604,85 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 ItemRegistry.SMG_ID.equals(slot2.item().id()),
                 "slot2=" + slot2 + " id=" + slot2.item().id());
         record("快捷栏第 3 格冲锋枪数量 = 1", slot2.count() == 1, "count=" + slot2.count());
+
+        // ---- 步枪（2026-10-02 主理人显式放行，v2 §18 的"显式放行"通道）----
+        // 与 SMG 那条同源：v2 §19 的通过标准要求"可正常获得"，而只注册进 ItemRegistry
+        // 不等于玩家拿得到。第 3 把枪的获取路径同样只能用开局装备
+        //（合成配方 R16 要矿石，而本轮不做矿石生成 —— 配方是给后续版本准备的）。
+        int expectedRifleAmmo = 2 * ItemRegistry.rifle().gun().magazineSize();
+        record("快捷栏第 4 格是步枪（v2 §18 显式放行后的第 3 把枪，可正常获得）",
+                ItemRegistry.RIFLE_ID.equals(slot3.item().id()),
+                "slot3=" + slot3 + " id=" + slot3.item().id());
+        record("快捷栏第 4 格步枪数量 = 1", slot3.count() == 1, "count=" + slot3.count());
+        record("快捷栏第 5 格是步枪弹（是真实注册的 Item，不是字符串标签）",
+                ItemRegistry.RIFLE_AMMO_ID.equals(slot4.item().id()),
+                "slot4=" + slot4 + " id=" + slot4.item().id());
+        record("快捷栏第 5 格步枪弹数量 = 2 × 弹匣容量", slot4.count() == expectedRifleAmmo,
+                "count=" + slot4.count() + " 期望 " + expectedRifleAmmo
+                        + "（弹匣容量 " + ItemRegistry.rifle().gun().magazineSize() + "）");
+
+        // ---- 材料包（只进背包，不进快捷栏）----
+        // ★ 这里刻意用 countOfItem（全背包统计）而不是 hotbarSlot(5..)：材料必须落进
+        //   **主背包**，所以"它在不在背包里"与"它在第几格"是两件事。用槽号断言会把
+        //   一个不该承诺的实现细节钉死 —— 而且一旦 addToMain 的填充顺序变了，
+        //   断言会红得像是"材料没发"，真正的原因却只是排列顺序。
+        //   反过来说，下面这条"快捷栏第 6 格必须仍然是空的"才是对
+        //   "材料不要污染快捷栏"这个**设计意图**的断言。
+        record("材料包：原木 ×4（配方链起点，走 addToMain 进背包）",
+                player.inventory().countOfItem("skyisland:log") == 4,
+                "countOfItem(log)=" + player.inventory().countOfItem("skyisland:log"));
+        record("材料包：铁矿石 ×9（= 3 块锭 ×3，够 R03 打三次）",
+                player.inventory().countOfItem("skyisland:iron_ore") == 9,
+                "countOfItem(iron_ore)=" + player.inventory().countOfItem("skyisland:iron_ore"));
+        record("材料包：铜矿石 ×3",
+                player.inventory().countOfItem("skyisland:copper_ore") == 3,
+                "countOfItem(copper_ore)=" + player.inventory().countOfItem("skyisland:copper_ore"));
+        record("材料包：煤 ×20（冶炼与火药共用）",
+                player.inventory().countOfItem("skyisland:coal") == 20,
+                "countOfItem(coal)=" + player.inventory().countOfItem("skyisland:coal"));
+        record("材料包：沙子 ×4（熔玻璃用）",
+                player.inventory().countOfItem("skyisland:sand") == 4,
+                "countOfItem(sand)=" + player.inventory().countOfItem("skyisland:sand"));
+        record("材料包：晶体 ×1（R16 步枪的直接材料；本轮不做矿石生成，故直接发）",
+                player.inventory().countOfItem("skyisland:crystal") == 1,
+                "countOfItem(crystal)=" + player.inventory().countOfItem("skyisland:crystal"));
+        // 材料若走 add() 会先占满快捷栏剩下的 4 格（log / iron_ore / copper_ore / coal），
+        // 把 sand / crystal 挤到背包里。这条断言存在的意义就是"它没发生"。
+        record("材料包没有污染快捷栏：第 6 格仍是空的",
+                player.inventory().hotbarSlot(5).isEmpty(),
+                "hotbarSlot(5)=" + player.inventory().hotbarSlot(5));
+        record("快捷栏仍有 4 个空格（挖到的第一块方块要能落进快捷栏）",
+                player.inventory().hotbarSlot(5).isEmpty()
+                        && player.inventory().hotbarSlot(6).isEmpty()
+                        && player.inventory().hotbarSlot(7).isEmpty()
+                        && player.inventory().hotbarSlot(8).isEmpty(),
+                "hotbar 5..8=" + player.inventory().hotbarSlot(5) + " | "
+                        + player.inventory().hotbarSlot(6) + " | "
+                        + player.inventory().hotbarSlot(7) + " | "
+                        + player.inventory().hotbarSlot(8));
+
+        // ★ 这条断言补的是一个**此前没有任何断言的隐含前提**（2026-10-02 反向验证 R1 才暴露）。
+        //
+        //   为什么它必须存在：同一份自测的 BREAK_PARTICLES 阶段，每步都调 firstBlockSlot() ——
+        //   扫快捷栏找"第一个方块物品"，并**以此判定"第一格已经挖掉、方块物品已在背包里"**。
+        //   也就是说那个阶段隐含假设「开局快捷栏里没有方块物品」。
+        //   在这条断言出现之前，这个前提只是"材料恰好进了背包"的副产品，**没人把它说出来**。
+        //   实测：把材料包改回 Inventory.add()（走快捷栏优先），该阶段在第 1 步就命中原木，
+        //   于是阶段提前切换、breakTargetAX 永不捕获，两条挖掘断言以
+        //   "第一次挖掘前捕获到有效瞄准面 — currentTarget 为空"的样子变红 ——
+        //   现场指向玩法，真因是"快捷栏不干净"。
+        //   本项目已有五次"断言在失败场景下仍能通过"的教训，所以这里让前提自己说出来。
+        String blockItemSlots = "";
+        for (int h = 0; h < Inventory.HOTBAR_SIZE; h++) {
+            if (player.inventory().hotbarSlot(h).isBlockItem()) {
+                blockItemSlots += h + "=" + player.inventory().hotbarSlot(h) + " ";
+            }
+        }
+        record("开局快捷栏里没有方块物品（挖掘阶段的 firstBlockSlot 依赖这条前提）",
+                blockItemSlots.isEmpty(),
+                blockItemSlots.isEmpty() ? "hotbar 0..8 全是枪 / 弹药或空"
+                        : "被方块物品占用的槽：" + blockItemSlots);
+
         record("开局手持物是枪（左键语义因此是开火）",
                 player.inventory().selectedStack().item().isGun(),
                 "selectedSlot=" + player.inventory().selectedSlot()
@@ -1696,16 +1828,37 @@ public final class M2CombatSelfTest implements CombatController.Listener {
     private void checkAim() {
         Player player = host.player();
         // 本方法在阶段末执行，此时玩家已经松开右键（第 61 步），
-        // 因此"瞄准中"的三条断言用的是阶段内第 60 步（仍按着右键）采样的观测值。
+        // 因此"瞄准中"的几条断言用的是阶段内第 60 步（仍按着右键）采样的观测值。
         record("按住右键时进入瞄准状态", aimObservedAiming,
                 "第 60 步 isAiming=" + aimObservedAiming);
-        record("瞄准时 fovScale = 45/70（容差 1e-9）",
-                Math.abs(aimObservedFovScale - Player.AIM_FOV_RATIO) <= 1e-9,
-                String.format("实测 %.12f 期望 %.12f", aimObservedFovScale, Player.AIM_FOV_RATIO));
-        record("瞄准时相机 FOV = 基础 FOV × 45/70",
-                Math.abs(aimObservedCameraFov - player.baseFovDeg() * Player.AIM_FOV_RATIO) < 1e-6,
+        // ★ 前置条件自证（M3 接线修正新增）：下面三条的期望值都是**手枪**的 ADS 口径，
+        //   因此必须先证明第 60 步手里确实是手枪。否则失败现场会指向"FOV 不对"，
+        //   而真因是"阶段间把枪换掉了"。
+        record("瞄准时手持的是手枪（下面三条 ADS 断言以此为前提）",
+                ItemRegistry.PISTOL_ID.equals(aimObservedGunId),
+                "第 60 步手持=" + aimObservedGunId);
+        // ★ 注册项自证：ADS 参数来自枪械表，因此顺手确认注册表里手枪的两个 ADS 值
+        //   确实是 v2 §10 承诺的 45° / ×0.60（自测是 M3 通过标准的证据来源，不依赖单测结论）。
+        GunSpec pistolSpec = ItemRegistry.pistol().gun();
+        record("注册表里手枪的 ADS 数据 = 45° / ×0.60（v2 §10 武器表）",
+                pistolSpec != null
+                        && Math.abs(pistolSpec.aimFovDeg() - PISTOL_ADS_FOV_DEG) < 1e-9
+                        && Math.abs(pistolSpec.aimMoveSpeedMult() - PISTOL_ADS_MOVE_MULT) < 1e-9,
+                pistolSpec == null ? "pistol=null"
+                        : String.format("实测 %.1f° / ×%.2f，期望 %.1f° / ×%.2f",
+                                pistolSpec.aimFovDeg(), pistolSpec.aimMoveSpeedMult(),
+                                PISTOL_ADS_FOV_DEG, PISTOL_ADS_MOVE_MULT));
+
+        // 期望值算自 PRD 数字（45/70），而不是读 Player 的常量 ——
+        // 断言的因此是"实机行为 vs 文档"，而不是"实机 vs 自己的实现"。
+        double expectedFovScale = Math.min(1.0, PISTOL_ADS_FOV_DEG / player.baseFovDeg());
+        record(String.format("瞄准时 fovScale = min(1, 45/%.0f)（容差 1e-9）", player.baseFovDeg()),
+                Math.abs(aimObservedFovScale - expectedFovScale) <= 1e-9,
+                String.format("实测 %.12f 期望 %.12f", aimObservedFovScale, expectedFovScale));
+        record("瞄准时相机 FOV = 基础 FOV × min(1, 45/基础 FOV)（即绝对目标 45°）",
+                Math.abs(aimObservedCameraFov - player.baseFovDeg() * expectedFovScale) < 1e-6,
                 String.format("实测 %.4f° 期望 %.4f°（基础 %.1f°）",
-                        aimObservedCameraFov, player.baseFovDeg() * Player.AIM_FOV_RATIO,
+                        aimObservedCameraFov, player.baseFovDeg() * expectedFovScale,
                         player.baseFovDeg()));
         record("松开右键后退出瞄准状态", !player.isAiming(), "isAiming=" + player.isAiming());
         record("松开右键后 fovScale 还原为 1.0",
@@ -1722,11 +1875,11 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                 String.format("瞄准 %.4f 格 / 非瞄准 %.4f 格（各 60 步 = 1 s，均从静止起步）",
                         aimMoveDistance, noAimMoveDistance));
         record("瞄准时水平移动速度 ≈ 非瞄准的 0.60 倍（容差 5%）",
-                Math.abs(ratio - Player.AIM_MOVE_SPEED_RATIO) <= 0.05 * Player.AIM_MOVE_SPEED_RATIO,
+                Math.abs(ratio - PISTOL_ADS_MOVE_MULT) <= 0.05 * PISTOL_ADS_MOVE_MULT,
                 String.format("实测比值 %.6f 期望 %.6f（Δ=%.6f，容差 %.4f）",
-                        ratio, Player.AIM_MOVE_SPEED_RATIO,
-                        Math.abs(ratio - Player.AIM_MOVE_SPEED_RATIO),
-                        0.05 * Player.AIM_MOVE_SPEED_RATIO));
+                        ratio, PISTOL_ADS_MOVE_MULT,
+                        Math.abs(ratio - PISTOL_ADS_MOVE_MULT),
+                        0.05 * PISTOL_ADS_MOVE_MULT));
     }
 
     private void checkSpawnAndApproach() {
@@ -1928,13 +2081,34 @@ public final class M2CombatSelfTest implements CombatController.Listener {
 
         // 断言公式本身：floor(base × max(0.20, 0.9^(d−32)))，保底 1。
         // 用<u>实测距离</u>反推期望值，因此"距离算错"与"衰减算错"会分别暴露。
-        double multiplier = Math.max(DamageFalloff.MIN_MULTIPLIER,
-                Math.pow(DamageFalloff.MULTIPLIER_PER_BLOCK, falloffDistance - 32.0));
+        //
+        // ★ M3 接线修正：这里用的四个数字（8 / 32 / 0.90 / 0.20）**故意写成 PRD 字面量**，
+        //   而不是读 Player / DamageFalloff / ItemRegistry 里的任何常量或字段。
+        //   理由：本阶段要证明的是"实机行为 == PRD 5.4.3 写的那条公式"。
+        //   若期望值也来自实现，代码把 0.9 改成 0.5、断言跟着改，两边一起错还全绿 ——
+        //   那正是这次被修掉的缺陷形态（衰减参数曾经只是死数据，测试断言的却是常量本身）。
+        double multiplier = Math.max(PISTOL_FALLOFF_FLOOR,
+                Math.pow(PISTOL_FALLOFF_PER_UNIT, falloffDistance - 32.0));
         int expected = Math.max(1, (int) Math.floor(8 * multiplier + 1e-9));
-        record("伤害等于 floor(8 × max(0.20, 0.9^(d−32)))（保底 1）",
+        record("伤害等于 floor(8 × max(0.20, 0.9^(d−32)))（保底 1，PRD 字面口径）",
                 falloffDamage == expected,
                 String.format("实测=%d 期望=%d（d=%.4f → 乘数 %.6f → 8×乘数 %.6f）",
                         falloffDamage, expected, falloffDistance, multiplier, 8 * multiplier));
+        // ★ 接线断言（与上一条互补）：上一条钉"公式对不对"，这一条钉"结算路径读的是枪的数据"。
+        //   期望值由 CombatController.damageFor(手枪 spec, 实测距离) 给出 ——
+        //   它证明 resolveShot 的伤害确实来自"这把枪的 damage/range/falloffPerUnit/falloffFloor"。
+        //   两条合起来：公式对 **且** 参数来自数据。
+        GunSpec pistolSpec = ItemRegistry.pistol().gun();
+        int expectedFromSpec = pistolSpec == null ? -1
+                : CombatController.damageFor(pistolSpec, falloffDistance);
+        record("结算伤害等于 CombatController.damageFor(手枪 spec, 实测距离)（参数来自枪械表）",
+                pistolSpec != null && falloffDamage == expectedFromSpec,
+                pistolSpec == null ? "pistol=null"
+                        : String.format("实测=%d 期望=%d（spec: 伤害 %d / 射程 %d / 衰减 %.2f 起、最低 %.2f）",
+                                falloffDamage, expectedFromSpec, pistolSpec.damage(),
+                                pistolSpec.range(), pistolSpec.falloffPerUnit(),
+                                pistolSpec.falloffFloor()));
+
         record("伤害不低于保底 1（不会出现命中却零伤害）", falloffDamage >= 1,
                 "实测伤害=" + falloffDamage);
         record("45 格处的手枪伤害 = 2（PRD 5.4.3 承诺值）", falloffDamage == 2,
@@ -2185,16 +2359,24 @@ public final class M2CombatSelfTest implements CombatController.Listener {
         // resolveShot 的每发分配集中在命中判定链（eyePosition 的 Vector3d、方向归一化的
         // Vector3d、Hitscan.Result），这些与射速<b>无关</b>，只与"打了几发"成线性 ——
         // SMG 与手枪走的是同一条 resolveShot。
-        // 真正会"因高射速而增加每发分配"的是<b>每发循环</b>：弹丸数（pelletCount）与散布采样。
-        // 二者都是 GunSpec 的数据字段：pelletCount=1 且 spreadRad=0 → 每发恰好一条射线、
-        // 不进入任何散布采样循环，因此每发分配量与手枪（同为 1/0）逐值相同。
-        // 这条断言钉住的就是"SMG 的数据没被写成 N 弹丸/带散布"，从而断死"因高射速增加每发分配"。
+        //
+        // ★ M3 接线修正后，resolveShot 里**确实有了**一个每发循环（弹丸循环 + 散布采样）：
+        //   它按 spec.pelletCount() 迭代，并对第 i 颗调用 ShotSpread.offset 在 spec.spreadRad()
+        //   的锥内取方向。因此"无每发内层循环"这句话已经不再成立，不能再当作分配量的依据。
+        //   仍然成立的、也是真正决定分配量的，是**每次迭代的分配数为 0**：
+        //   · 基向量与弹丸方向都在 CombatController 的字段级 scratch 上复用（不 new）；
+        //   · ShotSpread 两个方法都只往调用方给的向量里写字（类内不 new）；
+        //   · 候选实体列表 entities.all() 提到循环外，每发只取一次（不随弹丸数放大）。
+        //   于是"每发分配量"仍与弹丸数、射速无关 —— 这才是 v2 §15 要的那条不变式。
+        //   （仍在每条射线里 new 的是 Hitscan.resolve 内部那次归一化方向向量，
+        //     它是"每条射线一次"、与弹丸数线性，属于命中判定链而非本类的循环分配。
+        //     若将来上线多弹丸武器，那里是下一个优化点，已登记为待办。）
         Item smgItem = ItemRegistry.byRuntimeId(smgRuntimeId);
         GunSpec smgSpec = smgItem == null ? null : smgItem.gun();
-        record("SMG 每发恰好一条射线（pelletCount=1，无每发内层循环）",
+        record("SMG 每发恰好一条射线（pelletCount=1 → 弹丸循环恰好一次迭代）",
                 smgSpec != null && smgSpec.pelletCount() == 1,
                 "pelletCount=" + (smgSpec == null ? "(无枪)" : smgSpec.pelletCount()));
-        record("SMG 无散布采样（spreadRad=0，无每发随机分配）",
+        record("SMG 无散布采样（spreadRad=0 → 循环内不产生任何方向偏移）",
                 smgSpec != null && smgSpec.spreadRad() == 0.0,
                 "spreadRad=" + (smgSpec == null ? "(无枪)" : smgSpec.spreadRad()));
         // 交叉验证：曳光累计数 == 击发数（每发有且仅有一条曳光 → 表现层每发 O(1)、无随射速放大）。
@@ -2362,7 +2544,7 @@ public final class M2CombatSelfTest implements CombatController.Listener {
      *
      * <h2>为什么听觉有断言、视觉也必须有一条</h2>
      * M2.1 交付时发生过这样一件事：{@code spawnMuzzleFlash}、{@code spawnHitMarker}、
-     * {@code spawnEntityHit}、{@code addRecoilPitch}、{@code decayRecoil} 五个方法
+     * {@code spawnEntityHit}、{@code addRecoil}、{@code decayRecoil} 五个方法
      * <b>全部只被定义、从不被调用</b>，而编译通过、815 条单测全绿、
      * M1 / UI / M2 三门禁也全绿。原因是同一个：它们各自有一个"看起来成功"的读数 ——
      * 粒子与曳光还在正常累计（{@code totalSpawnCalls > 0} 依然成立），
@@ -2400,15 +2582,20 @@ public final class M2CombatSelfTest implements CombatController.Listener {
                         + " entityHitBursts=" + fx.totalEntityHitBursts());
 
         record("开火后坐力确实抬过视角（观测峰值 > 0）", peakRecoilDeg > 0.0,
-                "peakRecoilDeg=" + peakRecoilDeg + "（单发 "
-                        + com.skyisland.player.Camera.RECOIL_PITCH_PER_SHOT_DEG
-                        + "°，上限 "
-                        + com.skyisland.player.Camera.MAX_RECOIL_PITCH_DEG + "°）");
-        record("后坐力峰值不超过上限",
-                peakRecoilDeg <= com.skyisland.player.Camera.MAX_RECOIL_PITCH_DEG + 1e-9,
-                "peakRecoilDeg=" + peakRecoilDeg + " ≤ "
-                        + com.skyisland.player.Camera.MAX_RECOIL_PITCH_DEG);
-        // 线性回落的承诺是"精确回到 0"（见 Camera.RECOIL_RECOVER_DEG_PER_SEC 的注释：
+                "peakRecoilDeg=" + peakRecoilDeg + "（后坐档案：手枪 0.90°/发 上限 1.80°；"
+                        + "SMG 0.35°/发 上限 2.60°；步枪 1.60°/发 上限 2.20°）");
+        // 上限不再是 Camera 里那一个常量：三把枪各有一份档案，累计上限各不相同。
+        // 这里取三份里的最大值兜住整场自测（各阶段可能持不同的枪开火），
+        // 而"每把枪各自的峰值是否落在自己的上限内"由 RecoilProfileTest 精确举证 ——
+        // 门禁负责"链通了没有"，精度交给单测，这是本项目一贯的分工。
+        double maxCapDeg = 0.0;
+        for (com.skyisland.item.RecoilProfile profile : com.skyisland.item.RecoilProfile.ALL) {
+            maxCapDeg = Math.max(maxCapDeg, profile.maxPitchDeg());
+        }
+        record("后坐力峰值不超过任何一份后坐档案的累计上限",
+                peakRecoilDeg <= maxCapDeg + 1e-9,
+                "peakRecoilDeg=" + peakRecoilDeg + " ≤ " + maxCapDeg);
+        // 线性回落的承诺是"精确回到 0"（见 RecoilProfile 的注释：
         // 留残差的后果是静止瞄准时画面永远差一点，且无法归因）。
         // 收尾时距最后一次开火已隔了若干阶段（含一次 3 秒重生），必然早已归零。
         double resting = host.player().camera().recoilPitchDeg();

@@ -46,6 +46,21 @@ public final class ViewmodelModel {
     public String gunViewmodelId;
 
     /**
+     * 后坐档案查表键（{@link ViewmodelKind#GUN} 用）；非枪为 {@code null}。
+     *
+     * <p><b>为什么它必须和 {@link #gunViewmodelId} 分开传：</b>
+     * 两者是 {@code GunPresentationSpec} 上两个<b>互不相干</b>的键
+     * （轮廓 vs 后坐手感）。从轮廓键现推后坐键等于把两件事绑死 ——
+     * 那时"换一套轮廓"会顺手改掉后坐，而改的人并不知道。
+     *
+     * <p><b>2026-10-03：</b>它让手持物的后坐动画（{@code ViewmodelPose}）第一次有了
+     * 数据来源 —— 在那之前，后坐的三个数写死在 {@code ViewmodelPose} 里，
+     * 于是 {@code GunPresentationSpec.recoilProfileId} 是一条死键：
+     * 拿步枪开一枪，右手那把枪抬起来的幅度与手枪逐位相同。
+     */
+    public String gunRecoilProfileId;
+
+    /**
      * 手持物主色（{@link ViewmodelKind#BLOCK} 用）。
      *
      * <p>枪械与空手有自己的配色表（见 {@code ViewmodelGeometry}），
@@ -102,6 +117,12 @@ public final class ViewmodelModel {
         // 非枪一律置 null —— 否则"上一帧拿的是 SMG、这一帧换成方块"会留下一个陈旧的键。
         this.gunViewmodelId = item != null && item.isGun() && item.presentation() != null
                 ? item.presentation().viewmodelId()
+                : null;
+        // 后坐档案键：与上面同一条口径（只有枪有 presentation），非枪一律置 null。
+        // 置 null 而不是留旧值 —— 否则"上一帧拿步枪、这一帧换成方块"会留下一个
+        // 步枪的后坐档案，让挥舞一块石头也带上步枪的抬枪幅度。
+        this.gunRecoilProfileId = item != null && item.isGun() && item.presentation() != null
+                ? item.presentation().recoilProfileId()
                 : null;
         if (kind != ViewmodelKind.BLOCK || item == null) {
             return;

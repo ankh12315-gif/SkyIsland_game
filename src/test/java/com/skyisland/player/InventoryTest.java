@@ -302,6 +302,69 @@ class InventoryTest {
         assertEquals(64, inventory.hotbarSlot(8).count(), "快捷栏不被本次 add 改变");
     }
 
+    /**
+     * 2026-10-02（步枪材料包）引入的第二条通道：{@code addToMain} 只填主背包 0..26，
+     * <b>快捷栏一格都不碰</b>。
+     *
+     * <p>开局材料包走的就是它。材料是<b>囤积物</b>，快捷栏要留给玩家当场要用的枪 / 弹药；
+     * 而且快捷栏在开局已被 5 格装备占住，若材料走 {@code add}，"哪几种材料进快捷栏"
+     * 就会变成"材料有几种"的函数（6 种里前 4 种进快捷栏、后 2 种溢出到背包），
+     * 既无法解释，也会改变 {@code M1ScriptedSelfTest} 扫描"第一个方块物品槽"的结果。
+     */
+    @Test
+    void addToMainNeverTouchesTheHotbar() {
+        Inventory inventory = new Inventory();
+        assertEquals(0, inventory.addToMain(STONE, 10), "全部放入");
+
+        assertEquals(10, inventory.slot(0).count(), "必须落在主背包第 1 格（绝对索引 0）");
+        assertEquals(1, inventory.usedSlotCount());
+        for (int h = 0; h < Inventory.HOTBAR_SIZE; h++) {
+            assertTrue(inventory.hotbarSlot(h).isEmpty(),
+                    "addToMain 不得占用快捷栏第 " + h + " 格");
+        }
+    }
+
+    /** {@code addToMain} 与 {@code add} 共用堆叠规则：先并入主背包里同种未满堆，再占空槽。 */
+    @Test
+    void addToMainMergesWithExistingMainStackBeforeTakingANewSlot() {
+        Inventory inventory = new Inventory();
+        assertEquals(0, inventory.addToMain(STONE, 30));
+        assertEquals(0, inventory.addToMain(STONE, 40), "64 以内应并入同一格");
+
+        assertEquals(ItemStack.MAX_STACK, inventory.slot(0).count(), "并入后第 1 格满 64");
+        assertEquals(6, inventory.slot(1).count(), "超出的 6 个落到主背包第 2 格");
+        assertEquals(2, inventory.usedSlotCount());
+        assertTrue(inventory.hotbarSlot(0).isEmpty(), "全程不碰快捷栏");
+    }
+
+    /**
+     * 主背包装满后，{@code addToMain} 如实返回未放入数量，且<b>不会</b>溢到快捷栏。
+     * 这条是"它没有偷偷退化成 {@code add}"的反向证据。
+     */
+    @Test
+    void addToMainReportsLeftoverWithoutSpillingIntoTheHotbar() {
+        Inventory inventory = new Inventory();
+        assertEquals(0, inventory.addToMain(STONE, Inventory.MAIN_SIZE * ItemStack.MAX_STACK),
+                "主背包刚好装满");
+
+        assertEquals(10, inventory.addToMain(STONE, 10), "放不下的 10 个必须如实返回");
+        for (int h = 0; h < Inventory.HOTBAR_SIZE; h++) {
+            assertTrue(inventory.hotbarSlot(h).isEmpty(),
+                    "宁可返回余量，也不得改用快捷栏（那样就退化成 add 了）");
+        }
+    }
+
+    /** {@code addToMain} 与 {@code add} 一样忽略非正数量与空气，且口径（返回余量）一致。 */
+    @Test
+    void addToMainIgnoresNonPositiveAmountsAndAirBlock() {
+        Inventory inventory = new Inventory();
+        assertEquals(0, inventory.addToMain(GRASS, 0));
+        assertEquals(0, inventory.addToMain(GRASS, -5), "负数按「无法放入」处理，余量下限为 0");
+        assertEquals(10, inventory.addToMain(0, 10), "空气必须被整笔退回：余量 = 10");
+        assertEquals(0, inventory.totalItemCount(), "空气不得占用任何槽位");
+        assertEquals(0, inventory.usedSlotCount());
+    }
+
     /** 枪（maxStack = 1）不得堆叠：两次 add 各占一格。堆叠上限来自物品本身，不是写死的 64。 */
     @Test
     void gunDoesNotStackAcrossSlots() {

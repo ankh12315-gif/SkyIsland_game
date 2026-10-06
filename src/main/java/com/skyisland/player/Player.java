@@ -1,5 +1,7 @@
 package com.skyisland.player;
 
+import com.skyisland.item.GunSpec;
+import com.skyisland.item.Item;
 import com.skyisland.item.ItemRegistry;
 import com.skyisland.physics.AABB;
 import com.skyisland.physics.DdaRaycaster;
@@ -64,22 +66,26 @@ public final class Player {
     // ------------------------------------------------------------ 瞄准（M2）
 
     /**
-     * 瞄准时的移动速度倍率（PRD 5.4.3「瞄准」行：移动速度降至 60%）。
+     * <b>★ 这里曾经有两个 ADS 全局常量（M3 接线修正已删除）：</b>
+     * {@code AIM_MOVE_SPEED_RATIO = 0.60} 与 {@code AIM_FOV_RATIO = 45.0 / 70.0}。
      *
-     * <p>它作用在<b>目标速度</b>上而不是作用在结果速度上：这样加速、减速、
-     * 空中惯性都按同一条曲线走，松开右键时也不会出现"瞬间弹回原速"的突兀感。
-     */
-    public static final double AIM_MOVE_SPEED_RATIO = 0.60;
-
-    /**
-     * 瞄准时的视场角收窄倍率 = 45° / 70°（PRD 5.4.3「瞄准」行：FOV 由 70 收窄至 45）。
+     * <p>它们的问题不是"值写错了"，而是<b>它们让 {@code GunSpec} 的两个字段变成死数据</b>：
+     * v2 §10 的武器表里，手枪的 ADS 是 45° / ×0.60，冲锋枪是 48° / ×0.65 ——
+     * 两个字段一直按表填进了注册表（{@code ItemRegistryTest} 也逐值断言过），
+     * 但瞄准路径读的是这两个常量，因此<b>冲锋枪的 ADS 从来没有生效过</b>：
+     * 拿 SMG 按右键，得到的是 45° / ×0.60 的手枪手感。
+     * 文档承诺与实机行为不一致，而所有测试都是绿的 —— 因为测试断言的也是常量。
      *
-     * <p><b>为什么存的是"倍率"而不是那个 45：</b>设置的 FOV 是玩家可调的（60–90，
-     * 默认 70）。PRD 的 70→45 描述的是<u>默认值下</u>的实例；若写死绝对值 45，
-     * 把基础 FOV 调成 90 的玩家一按右键，视场反而会<b>变宽</b>。
-     * 按倍率收窄则在任何基础 FOV 下都保持"瞄得更近"的语义。
+     * <p>现在 ADS 的两个参数唯一来源是手持枪的 {@link com.skyisland.item.GunSpec}
+     * （见 {@link #fovScale()} 与 {@link #aimMoveSpeedMult()}）。
+     * 于是"两把枪 ADS 手感不同"是数据决定的，加第三把枪不需要动本类一行。
+     *
+     * <p><b>为什么 FOV 存"绝对目标角"而不是"收窄倍率"（v2 §5.2）：</b>
+     * 设置的 FOV 是玩家可调的（60–90，默认 70）。PRD 的 70→45 描述的是
+     * <u>默认值下</u>的实例；若写死绝对值 45，把基础 FOV 调成 90 的玩家一按右键，
+     * 视场反而会<b>变宽</b>。按"目标角 ÷ 基础角"换算则在任何基础 FOV 下都保持
+     * "瞄得更近"的语义。
      */
-    public static final double AIM_FOV_RATIO = 45.0 / 70.0;
 
     /** 跳跃高度（格）—— 由 v²/(2g) 推出，供 HUD 与自测断言引用而不必各算一遍。 */
     public static final double JUMP_HEIGHT = (JUMP_VELOCITY * JUMP_VELOCITY) / (2 * GRAVITY);
@@ -140,6 +146,23 @@ public final class Player {
      * 而那时没有任何一条代码路径会把它改回来。
      */
     private boolean aiming;
+
+    /**
+     * "当前已生效的 ADS 视场是按哪一把枪算出来的"（物品 runtimeId）。
+     *
+     * <p><b>它解决的是"瞄准途中换枪"这条路径：</b>瞄准时按 1/2/3 切枪，
+     * {@code useHeld} 一直是 true、{@code aiming} 一直是 true ——
+     * 只比较 {@code want == aiming} 的话 {@link #applyFov()} 不会被调用，
+     * 于是手枪（ADS 45°）切到冲锋枪（ADS 48°）后视场仍停在 45°，
+     * 直到玩家松手再按一次右键才对。握手感像是"切枪后有一次无响应"。
+     *
+     * <p>存 runtimeId 而不是 {@code GunSpec} 引用：runtimeId 是"同一把枪"的
+     * 稳定标识（v2 §11.2），而 {@code Item} 的 spec 是不可变值 —— 两者等价，
+     * 但 runtimeId 是 int，比较更便宜，也不会因为线程/生命周期问题持有对象。
+     * 不瞄准时置 {@code -1}（与 {@code ItemRegistry.EMPTY_RUNTIME_ID} 之外的哨兵值区分，
+     * 因为空手 runtimeId 是 0，会与"瞄准空手"混淆）。
+     */
+    private int aimFovRuntimeId = -1;
 
     /**
      * 基础（非瞄准）视场角，来自设置。
@@ -457,26 +480,69 @@ public final class Player {
      * 若只看按键，那么手持泥土按右键时玩家会同时"放置方块并进入瞄准"——
      * FOV 突然收窄而手里只有一块泥土。把持有物并进判据之后，
      * 两个语义在同一次按键里自动互斥，不需要在放置代码里再写一次"如果拿的是枪就别放"。
+     *
+     * <p><b>★ 换枪也要重算 FOV（M3 接线修正）：</b>见 {@link #aimFovRuntimeId}。
+     * 判据是"瞄准状态没变<b>且</b>手上那把枪没变"，而不是只看瞄准状态。
      */
     private void updateAiming(PlayerIntent intent) {
-        boolean want = intent.useHeld() && inventory.selectedStack().item().isGun();
-        if (want == aiming) {
+        ItemStack stack = inventory.selectedStack();
+        Item held = stack.item();
+        boolean want = intent.useHeld() && held.isGun();
+        int fovRuntimeId = want ? stack.itemRuntimeId() : -1;
+        if (want == aiming && fovRuntimeId == aimFovRuntimeId) {
             return;
         }
+        boolean entering = want && !aiming;
+        boolean leaving = aiming && !want;
         aiming = want;
+        aimFovRuntimeId = fovRuntimeId;
         applyFov();
-        Log.info("[玩家] 瞄准 %s（手持 %s）：FOV %.1f°，移动速度 %.0f%%",
-                aiming ? "开始" : "结束", inventory.selectedStack().item().id(),
-                camera.fovDeg(), aiming ? AIM_MOVE_SPEED_RATIO * 100 : 100);
+        Log.info("[玩家] 瞄准 %s（手持 %s）：FOV %.1f° / 基础 %.1f°（ADS 目标 %.1f°），移动速度 %.0f%%",
+                entering ? "开始" : leaving ? "结束" : "换枪重算",
+                held.id(), camera.fovDeg(), baseFovDeg,
+                want ? held.gun().aimFovDeg() : baseFovDeg,
+                aimMoveSpeedMult() * 100);
     }
 
     public boolean isAiming() {
         return aiming;
     }
 
-    /** 当前生效的 FOV 相对基础值的倍率（瞄准 45/70，否则 1.0）。供 HUD 与自测引用。 */
+    /**
+     * 当前生效的 FOV 相对基础值的倍率：瞄准时 {@code min(1, 本枪 ADS 目标角 ÷ 基础 FOV)}，
+     * 否则 1.0。供 HUD 与自测引用。
+     *
+     * <p>取 {@code min(1, …)} 是"瞄准只许变窄、不许变宽"的结构性保证：
+     * 当基础 FOV 已经比 ADS 目标角还小时（例如玩家把 FOV 调到 60、拿的是手枪 45°→0.75
+     * 仍是收窄；但若某把枪的 ADS 目标角 ≥ 基础 FOV，例如基础 60 的枪 ADS 目标是 65），
+     * 直接相乘会让玩家按右键后视野<b>变宽</b>——一个明显是 bug 的观感。
+     */
     public double fovScale() {
-        return aiming ? AIM_FOV_RATIO : 1.0;
+        if (!aiming) {
+            return 1.0;
+        }
+        GunSpec spec = heldGunSpec();
+        if (spec == null || !(baseFovDeg > 0)) {
+            return 1.0;
+        }
+        return Math.min(1.0, spec.aimFovDeg() / baseFovDeg);
+    }
+
+    /**
+     * 手持枪械的 ADS 移速倍率；非持枪为 1.0（不减速）。
+     *
+     * <p>它作用在<b>目标速度</b>上而不是作用在结果速度上：这样加速、减速、
+     * 空中惯性都按同一条曲线走，松开右键时也不会出现"瞬间弹回原速"的突兀感。
+     * （这条设计在 M2 就是这样，M3 只把"值从哪来"从常量换成枪的数据。）
+     */
+    private double aimMoveSpeedMult() {
+        GunSpec spec = heldGunSpec();
+        return spec == null ? 1.0 : spec.aimMoveSpeedMult();
+    }
+
+    /** 当前手持枪械的规格；手持非枪械（或空槽）时为 {@code null}。 */
+    private GunSpec heldGunSpec() {
+        return inventory.selectedStack().item().gun();
     }
 
     public double baseFovDeg() {
@@ -580,8 +646,10 @@ public final class Player {
             // PRD 5.4.3：瞄准时移动速度降至 60%。
             // 只削"目标速度"而不削结果速度：加速 / 减速 / 空中惯性共用同一条曲线，
             // 松开右键时不会出现"速度瞬间弹回去"的突兀感。
-            targetVx *= AIM_MOVE_SPEED_RATIO;
-            targetVz *= AIM_MOVE_SPEED_RATIO;
+            // ★ 倍率来自手持枪械（手枪 0.60 / 冲锋枪 0.65，v2 §10），不再是全局常量。
+            double aimMult = aimMoveSpeedMult();
+            targetVx *= aimMult;
+            targetVz *= aimMult;
         }
 
         // 指数逼近：与帧率无关（用 exp(-k·dt) 而不是每帧固定比例），
@@ -976,6 +1044,8 @@ public final class Player {
         // 倒下必须退出瞄准：死亡期间 step() 只推倒计时，updateAiming 不会被调用，
         // 不在这里清就会出现"躺在原地、视野仍是 45°"的僵硬画面。
         aiming = false;
+        // 同时清掉"上次是按哪把枪算的"：否则重生后第一帧会白白多打一条"换枪重算"日志。
+        aimFovRuntimeId = -1;
         applyFov();
         Log.info("[玩家] 已倒下（%s），%.1f 秒后重生。", cause, RESPAWN_DELAY_SECONDS);
     }
@@ -1344,6 +1414,7 @@ public final class Player {
         // 读档后一律退出瞄准：存档里不存在"瞄准中"这个状态（它是每步从意图派生的），
         // 保留旧值会让读档瞬间的 FOV 与手持物不一致。
         aiming = false;
+        aimFovRuntimeId = -1;
         applyFov();
         refreshCamera();
         Log.info("[玩家] 已应用存档状态: 位置 (%.3f, %.3f, %.3f)，视向 %.2f/%.2f，快捷栏选中 %d",

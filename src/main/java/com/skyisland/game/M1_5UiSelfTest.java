@@ -1,6 +1,7 @@
 package com.skyisland.game;
 
 import com.skyisland.input.InputMapper;
+import com.skyisland.craft.RecipeRegistry;
 import com.skyisland.physics.RaycastHit;
 import com.skyisland.player.Camera;
 import com.skyisland.player.Inventory;
@@ -13,6 +14,7 @@ import com.skyisland.settings.GameSettings;
 import com.skyisland.settings.InputBinding;
 import com.skyisland.settings.SettingsStore;
 import com.skyisland.ui.KeyRebindController;
+import com.skyisland.ui.Localization;
 import com.skyisland.ui.MenuScreen;
 import com.skyisland.ui.Menus;
 import com.skyisland.ui.SettingsMenuController;
@@ -62,6 +64,23 @@ public final class M1_5UiSelfTest {
 
     /** 单个阶段的帧数上限。超过即判该阶段失败 —— 保证自动化运行不会挂死。 */
     private static final int MAX_FRAMES_PER_STAGE = 20000;
+
+    // ---- 背包内合成子检查的物品稳定 ID（写常量而不是散落的字符串字面量）----
+    private static final String ID_LOG = "skyisland:log";
+    private static final String ID_PLANKS = "skyisland:oak_planks";
+    private static final String ID_IRON_ORE = "skyisland:iron_ore";
+    private static final String ID_COAL = "skyisland:coal";
+    private static final String ID_SAND = "skyisland:sand";
+    private static final String ID_IRON_INGOT = "skyisland:iron_ingot";
+    private static final String ID_GUNPOWDER = "skyisland:gunpowder";
+
+    /**
+     * INVENTORY_CRAFT 阶段里"把原木用完"那一小段循环的帧数上限。
+     *
+     * <p>原木只有 4 个，正常 4 帧就结束；给到 60 是为了让"点了却没扣料"
+     * 与"卡死"区分开 —— 前者会带着"原木仍有 N 个"的原因失败，后者才是超时。
+     */
+    private static final int MAX_CRAFT_FRAMES = 60;
 
     /** 暂停期间要求被抑制的逻辑步数：≥60 才足以说明"物理真的没走"。 */
     private static final int REQUIRED_PAUSED_SKIPS = 60;
@@ -254,6 +273,28 @@ public final class M1_5UiSelfTest {
         /** 上一帧背包界面命中的绝对槽位（{@code -1} = 没命中任何格子）。 */
         int inventoryHoverSlot();
 
+        // ---- 背包内合成区（2026-10-03）----
+
+        /** 合成栏当前的行数。 */
+        int craftingRowCount();
+
+        /** 界面认为光标停在第几行（{@code -1} = 没停在任何行上）。 */
+        int inventoryHoverCraftRow();
+
+        /** 第 {@code row} 行的状态文案（可合成 = {@code [合成]}；缺料 = {@code 缺少 铁锭 ×3}）。 */
+        String craftingRowStatusText(int row);
+
+        /** 第 {@code row} 行对应配方的稳定 ID。 */
+        String craftingRowRecipeId(int row);
+
+        /**
+         * 第 {@code row} 行中心的<b>窗口坐标</b>。
+         *
+         * <p>与 {@link #inventorySlotCenterWindow(int)} 同一条口径：写成"逆换算"而不是
+         * 复用产品的正向换算，于是"正向写反"会让自测瞄到别的行上并当场变红。
+         */
+        double[] craftingRowCenterWindow(int row);
+
         /**
          * 渲染模型上的"游玩 HUD 层"开关（{@code hud.showGameplayHud}）。
          *
@@ -325,6 +366,7 @@ public final class M1_5UiSelfTest {
         RESUME("ESC → 继续游戏"),
         INVENTORY_OPEN("E → 打开背包：世界继续推进、光标可见、准星隐藏"),
         INVENTORY_INTERACT("背包内点击取放：命中链路（光标像素 → DPI 换算 → 槽位）真的走通"),
+        INVENTORY_CRAFT("背包内合成：点配方行 → 扣材料 + 加产物（扣料唯一权威是 Crafting）"),
         INVENTORY_CLOSE("E → 关闭背包：回到游玩中且手上不留东西"),
         SAVE_TO_MAIN("暂停菜单 → 保存并返回主菜单"),
         SETTINGS_PERSISTENCE("设置落盘后可被重新读回且一致"),
@@ -379,6 +421,63 @@ public final class M1_5UiSelfTest {
     private int invTotalBefore = -1;
     private boolean invCursorChecked;
     private boolean invPlaced;
+    /**
+     * 合成阶段结束时的槽位物品总数。
+     *
+     * <p><b>为什么 INVENTORY_CLOSE 要拿它当基准，而不是继续用 {@link #invTotalBefore}：</b>
+     * 合成<b>本来就会改变</b>物品总数（4 个原木变成 16 个木板，净 +12；铁锭与火药各净 −1）。
+     * 若关背包时仍与"取放前"比，那么"合成真的生效了"这条好消息会以
+     * "物品总数变了"的样子让断言变红 —— 它红的那一刻恰恰证明功能是对的。
+     * 守恒应当分段断言：<b>取放段</b>守恒（{@code INVENTORY_INTERACT}）、
+     * <b>合成段</b>守恒到一个由配方算出的净值（{@code INVENTORY_CRAFT}）、
+     * <b>关背包</b>不凭空增减（本字段）。
+     */
+    private int invTotalAfterCraft = -1;
+
+    // ---- 背包内合成子检查（2026-10-03：RecipeRegistry / Crafting 的第一个玩家可达调用点）----
+    /** 三条"人类可完成"配方与一条"必然缺料"配方在界面上的行号（找不到 = −1）。 */
+    private int craftRowPlanks = -1;
+    private int craftRowIron = -1;
+    private int craftRowPowder = -1;
+    private int craftRowRifle = -1;
+    /** 合成栏总行数（用来证明"注册表里的配方真的进了界面"，而不只是注册了）。 */
+    private int craftRowCount = -1;
+    /** 子步骤游标：每帧只推进一格，于是"读上一次点击的结果"与"发下一次点击"不会同一帧发生。 */
+    private int craftStep;
+    /** 各行在<b>点击之前</b>的状态文案（可合成 / 缺少 …）。 */
+    private String craftStatusPlanks = "";
+    private String craftStatusIron = "";
+    private String craftStatusPowder = "";
+    private String craftStatusRifle = "";
+    /** 点下去那一帧界面认为光标停在哪一行（坐标换算是否正确的直接证据）。 */
+    private int craftHoverAtClick = -2;
+    private int craftHoverAtMissing = -2;
+    /** 点缺料行前后的背包物品总数：用来钉住"缺料时一点也不许扣"。 */
+    private int craftMissingTotalBefore = -1;
+    private int craftMissingTotalAfter = -1;
+    private String craftMissingStatusAfter = "";
+    /** 原木被用完之后木板行的状态（合成后界面是否刷新的证据）。 */
+    private String craftLogExhaustedStatus = "";
+    private int craftLogBefore = -1;
+    private int craftPlanksBefore = -1;
+    private int craftLogAfter = -1;
+    private int craftPlanksAfter = -1;
+    private int craftPlanksFinal = -1;
+    private int craftIronOreBeforeIron = -1;
+    private int craftCoalBeforeIron = -1;
+    private int craftIngotBeforeIron = -1;
+    private int craftIronOreAfter = -1;
+    private int craftCoalAfterIron = -1;
+    private int craftIngotAfter = -1;
+    private int craftSandBeforePowder = -1;
+    private int craftCoalBeforePowder = -1;
+    private int craftPowderBeforePowder = -1;
+    private int craftSandAfter = -1;
+    private int craftCoalAfterPowder = -1;
+    private int craftPowderAfter = -1;
+    /** 合成阶段前后的槽位物品总数：用来断言"净变化量 = 配方算出来的那个数"。 */
+    private int craftTotalBefore = -1;
+    private int craftTotalAfter = -1;
 
     // ---- 视角/灵敏度子检查（0 = 1.5 倍，1 = 0.5 倍，2 = 反转 Y）----
     private int lookCheckIndex;
@@ -579,6 +678,31 @@ public final class M1_5UiSelfTest {
                 invCursorChecked = false;
                 invPlaced = false;
                 invTotalBefore = host.player().inventory().totalItemCount();
+            }
+            case INVENTORY_CRAFT -> {
+                craftStep = 0;
+                craftRowPlanks = rowOfRecipe(RecipeRegistry.R01_OAK_PLANKS);
+                craftRowIron = rowOfRecipe(RecipeRegistry.R03_IRON_INGOT);
+                craftRowPowder = rowOfRecipe(RecipeRegistry.R06_GUNPOWDER);
+                craftRowRifle = rowOfRecipe(RecipeRegistry.R16_RIFLE);
+                craftRowCount = host.craftingRowCount();
+                craftStatusPlanks = host.craftingRowStatusText(craftRowPlanks);
+                craftStatusIron = host.craftingRowStatusText(craftRowIron);
+                craftStatusPowder = host.craftingRowStatusText(craftRowPowder);
+                craftStatusRifle = host.craftingRowStatusText(craftRowRifle);
+                craftHoverAtClick = -2;
+                craftHoverAtMissing = -2;
+                craftMissingStatusAfter = "";
+                craftLogExhaustedStatus = "";
+                craftLogBefore = countOfItem(ID_LOG);
+                craftPlanksBefore = countOfItem(ID_PLANKS);
+                craftIronOreBeforeIron = countOfItem(ID_IRON_ORE);
+                craftIngotBeforeIron = countOfItem(ID_IRON_INGOT);
+                craftSandBeforePowder = countOfItem(ID_SAND);
+                craftPowderBeforePowder = countOfItem(ID_GUNPOWDER);
+                craftPlanksFinal = -1;
+                craftTotalBefore = host.player().inventory().totalItemCount();
+                craftTotalAfter = -1;
             }
             case PAUSED_FREEZE -> {
                 simStepsBefore = host.simulationSteps();
@@ -1008,7 +1132,7 @@ public final class M1_5UiSelfTest {
                                 + "命中链路没走通（悬停槽位=" + host.inventoryHoverSlot() + "）");
                         return;
                     }
-                    invPlaceSlot = firstEmptySlot();
+                    invPlaceSlot = firstEmptySlotOtherThan(invPickSlot);
                     if (invPlaceSlot < 0) {
                         failFast(stage, "背包里没有空槽位，无法验证放下");
                         return;
@@ -1018,6 +1142,84 @@ public final class M1_5UiSelfTest {
                     return;
                 }
                 conditionMet = invPlaced;
+            }
+            case INVENTORY_CRAFT -> {
+                // ★ 本阶段证明的是"玩家在背包里点配方行 → Crafting 扣料出货 → 界面状态刷新"
+                //   这条链真的通，而且扣料与出货的唯一权威是 Crafting（界面不自己算）。
+                //
+                //   每帧只做一件事：要么读上一次点击的结果，要么发下一次点击。
+                //   两者同一帧发生的话，"点击还没被处理"会被误读成"点了没反应"。
+                switch (craftStep) {
+                    case 0 -> {
+                        if (craftRowCount <= 0 || craftRowPlanks < 0 || craftRowIron < 0
+                                || craftRowPowder < 0 || craftRowRifle < 0) {
+                            failFast(stage, "合成栏里凑不齐本阶段要用的配方行：行数=" + craftRowCount
+                                    + "，木板=" + craftRowPlanks + "，铁锭=" + craftRowIron
+                                    + "，火药=" + craftRowPowder + "，步枪=" + craftRowRifle);
+                            return;
+                        }
+                        if (craftLogBefore <= 0 || craftIronOreBeforeIron <= 0
+                                || craftSandBeforePowder <= 0) {
+                            failFast(stage, "背包材料不足以跑完本阶段：原木=" + craftLogBefore
+                                    + "，铁矿石=" + craftIronOreBeforeIron
+                                    + "，沙子=" + craftSandBeforePowder);
+                            return;
+                        }
+                        aimAndClickCraftRow(craftRowPlanks);
+                        craftStep = 1;
+                    }
+                    case 1 -> {
+                        // 读第一次合成的结果，然后点一条必然缺料的行
+                        craftHoverAtClick = host.inventoryHoverCraftRow();
+                        craftLogAfter = countOfItem(ID_LOG);
+                        craftPlanksAfter = countOfItem(ID_PLANKS);
+                        craftMissingTotalBefore = host.player().inventory().totalItemCount();
+                        aimAndClickCraftRow(craftRowRifle);
+                        craftStep = 2;
+                    }
+                    case 2 -> {
+                        craftHoverAtMissing = host.inventoryHoverCraftRow();
+                        craftMissingTotalAfter = host.player().inventory().totalItemCount();
+                        craftMissingStatusAfter = host.craftingRowStatusText(craftRowRifle);
+                        craftStep = 3;
+                    }
+                    case 3 -> {
+                        // 一直点到原木用完：用完的那一刻木板行必须自己变成"缺料"，
+                        // 这是"合成后界面刷新"最硬的一条证据（缓存没刷就会一直显示 [合成]）。
+                        if (countOfItem(ID_LOG) > 0) {
+                            if (framesInStage > MAX_CRAFT_FRAMES) {
+                                failFast(stage, "点了 " + MAX_CRAFT_FRAMES
+                                        + " 次 R01 后原木仍有 " + countOfItem(ID_LOG)
+                                        + " 个 —— 合成路径没有真的扣料");
+                                return;
+                            }
+                            aimAndClickCraftRow(craftRowPlanks);
+                            return;
+                        }
+                        craftLogExhaustedStatus = host.craftingRowStatusText(craftRowPlanks);
+                        craftPlanksFinal = countOfItem(ID_PLANKS);
+                        craftCoalBeforeIron = countOfItem(ID_COAL);
+                        aimAndClickCraftRow(craftRowIron);
+                        craftStep = 4;
+                    }
+                    case 4 -> {
+                        craftIronOreAfter = countOfItem(ID_IRON_ORE);
+                        craftCoalAfterIron = countOfItem(ID_COAL);
+                        craftIngotAfter = countOfItem(ID_IRON_INGOT);
+                        craftCoalBeforePowder = countOfItem(ID_COAL);
+                        aimAndClickCraftRow(craftRowPowder);
+                        craftStep = 5;
+                    }
+                    case 5 -> {
+                        craftSandAfter = countOfItem(ID_SAND);
+                        craftCoalAfterPowder = countOfItem(ID_COAL);
+                        craftPowderAfter = countOfItem(ID_GUNPOWDER);
+                        craftTotalAfter = host.player().inventory().totalItemCount();
+                        invTotalAfterCraft = craftTotalAfter;
+                        conditionMet = true;
+                    }
+                    default -> throw new IllegalStateException("未处理的合成子步骤: " + craftStep);
+                }
             }
             case INVENTORY_CLOSE -> {
                 if (framesInStage == 1) {
@@ -1305,6 +1507,78 @@ public final class M1_5UiSelfTest {
                         host.player().inventory().totalItemCount() == invTotalBefore,
                         invTotalBefore + " → " + host.player().inventory().totalItemCount());
             }
+            case INVENTORY_CRAFT -> {
+                // ① 配方表真的进了界面（在 RecipeRegistry 里注册 ≠ 玩家看得到）
+                ok &= record("合成栏列出了全部已注册配方",
+                        craftRowCount > 0 && craftRowCount == RecipeRegistry.all().size(),
+                        "界面行数=" + craftRowCount + "，注册表=" + RecipeRegistry.all().size());
+                // ② 坐标链路：瞄准哪一行就必须命中哪一行（换算写反时唯一会先红的地方）
+                ok &= record("瞄准木板行时界面命中的就是木板行",
+                        craftHoverAtClick == craftRowPlanks && craftRowPlanks >= 0,
+                        "hover_row=" + craftHoverAtClick + "，aim=" + craftRowPlanks);
+                ok &= record("瞄准步枪行时界面命中的就是步枪行",
+                        craftHoverAtMissing == craftRowRifle && craftRowRifle >= 0,
+                        "hover_row=" + craftHoverAtMissing + "，aim=" + craftRowRifle);
+                // ③ 状态必须能区分（裁定第 7 条）：可合成 / 缺料两种文案不能是同一句
+                ok &= record("材料齐备的木板行显示可合成按钮",
+                        Localization.text(Localization.CRAFT_ACTION).equals(craftStatusPlanks),
+                        "实际=" + craftStatusPlanks);
+                ok &= record("缺料的步枪行显示缺什么（不是空白、也不是可合成）",
+                        craftStatusRifle.contains("缺少")
+                                && !craftStatusRifle.equals(craftStatusPlanks),
+                        "实际=" + craftStatusRifle);
+                // ④ 单次合成的原子结果：扣一次、产一次，数量逐项对账
+                // ★ 这里的减号用 ASCII "-" 而不是 U+2212：断言名会原样写进门禁日志，
+                //   而证据链的 PowerShell 重定向会把非 ASCII 的减号渲染成 "?"
+                //   （实测「点一次木板行：原木 ?1」——数字对，但报告引用时无法读）。
+                //   排版上少一个数学减号，换来"证据可读"，这个交换是划算的。
+                ok &= record("点一次木板行：原木 -1",
+                        craftLogAfter == craftLogBefore - 1,
+                        craftLogBefore + " → " + craftLogAfter);
+                ok &= record("点一次木板行：木板 +4（PRD 5.6.2 的 R01 产出量）",
+                        craftPlanksAfter == craftPlanksBefore + 4,
+                        craftPlanksBefore + " → " + craftPlanksAfter);
+                // ⑤ 缺料行的另一半原子性：宁可一点不动，也不许半扣
+                ok &= record("点缺料的步枪行后背包物品总数不变（没有偷偷扣料）",
+                        craftMissingTotalAfter == craftMissingTotalBefore,
+                        craftMissingTotalBefore + " → " + craftMissingTotalAfter);
+                ok &= record("点缺料的步枪行后仍给出缺料提示（禁止点了没反应）",
+                        craftMissingStatusAfter.contains("缺少"),
+                        "实际=" + craftMissingStatusAfter);
+                // ⑥ 合成之后界面必须刷新（第 8 条路径的最后一环）
+                ok &= record("原木用尽后木板行自己变成缺料（合成后界面状态刷新）",
+                        craftLogExhaustedStatus.contains("缺少"),
+                        "实际=" + craftLogExhaustedStatus);
+                ok &= record("木板产出总量 = 4 × 消耗原木数（不复制、不丢失）",
+                        craftLogBefore > 0
+                                && craftPlanksFinal == craftPlanksBefore + 4 * craftLogBefore,
+                        "原木 " + craftLogBefore + "，木板 " + craftPlanksBefore
+                                + " → " + craftPlanksFinal);
+                // ⑧ 守恒：净变化量必须等于"三条配方各自的材料/产出之差"，
+                //    多一个少一个都说明扣料或出货走漏了（这是第 9 条原子性的总量侧）。
+                //    R01：1 原木 → 4 木板，每份净 +3；R03：2 材料 → 1 产物，净 −1；
+                //    R06：3 材料 → 2 产物，净 −1。
+                int expectedNetDelta = craftLogBefore * (4 - 1) - 1 - 1;
+                ok &= record("合成阶段物品总数的净变化 = 三条配方算出的净值（不复制、不丢失）",
+                        craftTotalAfter == craftTotalBefore + expectedNetDelta,
+                        craftTotalBefore + " → " + craftTotalAfter
+                                + "（期望 +" + expectedNetDelta + "）");
+                // ⑦ 另两条"人类可完成"配方（裁定第 10 条）
+                ok &= record("点铁锭行：铁矿石 -1、煤炭 -1、铁锭 +1",
+                        craftIronOreAfter == craftIronOreBeforeIron - 1
+                                && craftCoalAfterIron == craftCoalBeforeIron - 1
+                                && craftIngotAfter == craftIngotBeforeIron + 1,
+                        "铁矿石 " + craftIronOreBeforeIron + "→" + craftIronOreAfter
+                                + "，煤炭 " + craftCoalBeforeIron + "→" + craftCoalAfterIron
+                                + "，铁锭 " + craftIngotBeforeIron + "→" + craftIngotAfter);
+                ok &= record("点火药行：煤炭 -2、沙子 -1、火药 +2",
+                        craftCoalAfterPowder == craftCoalBeforePowder - 2
+                                && craftSandAfter == craftSandBeforePowder - 1
+                                && craftPowderAfter == craftPowderBeforePowder + 2,
+                        "煤炭 " + craftCoalBeforePowder + "→" + craftCoalAfterPowder
+                                + "，沙子 " + craftSandBeforePowder + "→" + craftSandAfter
+                                + "，火药 " + craftPowderBeforePowder + "→" + craftPowderAfter);
+            }
             case INVENTORY_CLOSE -> {
                 ok &= record("E 使界面回到游玩中",
                         host.ui().state() == UiState.PLAYING, "实际=" + host.ui().state());
@@ -1313,9 +1587,10 @@ public final class M1_5UiSelfTest {
                 ok &= record("关闭背包后手上不留东西",
                         host.player().inventory().cursorStack().isEmpty(),
                         "cursor=" + host.player().inventory().cursorStack());
-                ok &= record("关闭背包后槽位物品总数仍与取放前一致",
-                        host.player().inventory().totalItemCount() == invTotalBefore,
-                        invTotalBefore + " → " + host.player().inventory().totalItemCount());
+                ok &= record("关闭背包后槽位物品总数与合成阶段结束时一致（关背包不凭空增减）",
+                        host.player().inventory().totalItemCount() == invTotalAfterCraft,
+                        invTotalAfterCraft + " → " + host.player().inventory().totalItemCount()
+                                + "（取放前 " + invTotalBefore + "；差额来自本轮合成）");
             }
             case SAVE_TO_MAIN -> {
                 ok &= record("暂停菜单返回主菜单成功",
@@ -1499,6 +1774,42 @@ public final class M1_5UiSelfTest {
         host.injectMouseButton(GLFW.GLFW_MOUSE_BUTTON_LEFT, false);
     }
 
+    /**
+     * 把光标播种到合成栏第 {@code row} 行的中心并注入一次左键点击。
+     *
+     * <p>与 {@link #aimAndClick(int)} 完全同构：走的同样是
+     * {@code 播种光标 → 注入原始鼠标键 → handleInventoryInput → 命中判定 → 合成}，
+     * 被绕开的只有 {@code OS → GLFW} 那一段。
+     */
+    private void aimAndClickCraftRow(int row) {
+        double[] center = host.craftingRowCenterWindow(row);
+        host.seedCursorPosition(center[0], center[1]);
+        host.injectMouseButton(GLFW.GLFW_MOUSE_BUTTON_LEFT, true);
+        host.injectMouseButton(GLFW.GLFW_MOUSE_BUTTON_LEFT, false);
+    }
+
+    /**
+     * 合成栏里配方 ID 等于 {@code recipeId} 的行号；没有则 −1。
+     *
+     * <p><b>为什么不直接用注册表下标：</b>界面行的顺序是 {@code CraftingPanel} 自己的事，
+     * 写死下标会让"列表换了顺序"变成一条莫名其妙的失败。按 ID 找行，
+     * 断言盯的才是"这一行是不是这条配方"。
+     */
+    private int rowOfRecipe(String recipeId) {
+        int n = host.craftingRowCount();
+        for (int i = 0; i < n; i++) {
+            if (recipeId.equals(host.craftingRowRecipeId(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** 背包里某稳定 ID 物品的总数（跨槽累加，与 {@code Crafting} 计数同一口径）。 */
+    private int countOfItem(String itemId) {
+        return host.player().inventory().countOfItem(itemId);
+    }
+
     /** 背包里第一个非空槽位（按绝对索引扫 36 格）；没有则 −1。 */
     private int firstNonEmptySlot() {
         Inventory inv = host.player().inventory();
@@ -1510,11 +1821,31 @@ public final class M1_5UiSelfTest {
         return -1;
     }
 
-    /** 背包里第一个空槽位（按绝对索引扫 36 格）；没有则 −1。 */
-    private int firstEmptySlot() {
+    /**
+     * 背包里第一个空槽位，<b>但跳过 {@code excluded}</b>；没有则 −1。
+     *
+     * <p><b>为什么"放下"那一格必须与"取走"那一格不同（这不是洁癖，是让断言可满足）：</b>
+     * 本阶段的两条断言是
+     * <ol>
+     *   <li>「被取走的格子已空」——{@code slot(invPickSlot).isEmpty()}；</li>
+     *   <li>「再次点击空格后，物品落在第 invPlaceSlot 格」——{@code slot(invPlaceSlot)}
+     *       等于光标上那一堆。</li>
+     * </ol>
+     * 如果 {@code invPlaceSlot == invPickSlot}，第二次点击会把东西<b>原样放回去</b>，
+     * 于是第 ① 条<u>永远不可能成立</u>——它会在读完 ② 之后被求值，看到的正是被放回来的那堆。
+     *
+     * <p>2026-10-02（步枪材料包进背包）实测踩到：材料包走 {@code addToMain} 落在
+     * 主背包 {@code slot(0..5)}，于是"第一个非空槽"从快捷栏的 27 变成了主背包的 0，
+     * 而"第一个空槽"在取走之后恰好也是 0 —— 两格重合，ui 门禁红在
+     * {@code 被取走的格子已空 — slot(0)=skyisland:logx4}（62 项断言 1 项失败，
+     * 后续 4 个阶段被跳过）。旧代码没暴露这一点，只是因为"非空槽都在快捷栏 27..35、
+     * 空槽都在主背包 0..26"这个<u>巧合</u>把两格天然分开了 —— 巧合不是契约。
+     * 现在把它写成显式条件，无论物品落在哪一区都成立。
+     */
+    private int firstEmptySlotOtherThan(int excluded) {
         Inventory inv = host.player().inventory();
         for (int i = 0; i < Inventory.SLOT_COUNT; i++) {
-            if (inv.slot(i).isEmpty()) {
+            if (i != excluded && inv.slot(i).isEmpty()) {
                 return i;
             }
         }

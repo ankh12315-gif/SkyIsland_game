@@ -29,6 +29,10 @@ import java.util.List;
  * 快捷栏空着，所有既有断言与玩家手感一起崩。该顺序由 {@code InventoryTest} 的
  * {@code addPrefersHotbarThenMain} 单测定钉。
  *
+ * <p><b>{@link #addToMain} 是"只进主背包"的第二条通道</b>（2026-10-02 随开局材料包引入）：
+ * 拾取走 {@code add}（快捷栏优先，手感优先），而<b>囤积物</b>走 {@code addToMain}。
+ * 两条通道共用同一份 {@code fillRegion} 逻辑，只在"扫不扫快捷栏"上分叉。
+ *
  * <p><b>掉落直接进背包（不是掉在地上）：</b>M2 仍没有 {@code ItemEntity}（属 M3），所以破坏方块后
  * 物品直接入包。这条差异会写进 M2 报告的"与 PRD 的差距"一节。
  *
@@ -155,6 +159,35 @@ public final class Inventory {
      * @return 实际未能放入的数量（0 表示全部放入）。调用方据此告警 / 掉落。
      */
     public int add(int itemRuntimeId, int amount) {
+        return addPreferring(itemRuntimeId, amount, true);
+    }
+
+    /**
+     * 加入若干物品，<b>只进主背包 {@code 0..26}</b>，完全不碰快捷栏。
+     *
+     * <p><b>为什么必须与 {@link #add} 分开：</b>开局装备里的"材料包"属于<b>囤积物</b>，
+     * 它应当落在背包里；快捷栏必须留给玩家当场要用的东西（枪 / 弹药 / 火把）。
+     * 若走 {@link #add}，材料会先霸占快捷栏剩下的空格 —— 而快捷栏只有 9 格，
+     * 手枪 + 手枪弹 + 冲锋枪 + 步枪 + 步枪弹已占去 5 格，于是"哪几种材料进快捷栏"
+     * 就变成了<u>材料有几种</u>的函数：6 种里前 4 种占满快捷栏、后 2 种溢出到背包。
+     * 这个切分点既不是设计意图、也无法向玩家解释；更糟的是它会让
+     * {@code M1ScriptedSelfTest#firstBlockSlot}（扫快捷栏找"第一个方块物品"）
+     * 在挖掘之前就命中 {@code skyisland:log} / {@code skyisland:iron_ore}，
+     * 从而改变既有 M1 门禁的行为 —— 门禁该红的地方红，但不该因为"背包发放顺序"而红。
+     *
+     * <p>与 {@link #add} 一致：先并入同种未满堆、再占空槽；返回未能放入的数量。
+     */
+    public int addToMain(int itemRuntimeId, int amount) {
+        return addPreferring(itemRuntimeId, amount, false);
+    }
+
+    /**
+     * 两处 {@code add} 的公共实现。
+     *
+     * @param hotbarFirst {@code true} = 先快捷栏再主背包（玩家拾取的口径）；
+     *                    {@code false} = 只填主背包（囤积物 / 开局材料包的口径）。
+     */
+    private int addPreferring(int itemRuntimeId, int amount, boolean hotbarFirst) {
         if (itemRuntimeId == 0 || amount <= 0) {
             return Math.max(0, amount);
         }
@@ -168,7 +201,9 @@ public final class Inventory {
         int remaining = amount;
 
         // 先快捷栏，再主背包。
-        remaining = fillRegion(HOTBAR_OFFSET, SLOT_COUNT, itemRuntimeId, perStack, remaining);
+        if (hotbarFirst) {
+            remaining = fillRegion(HOTBAR_OFFSET, SLOT_COUNT, itemRuntimeId, perStack, remaining);
+        }
         remaining = fillRegion(0, MAIN_SIZE, itemRuntimeId, perStack, remaining);
         return remaining;
     }

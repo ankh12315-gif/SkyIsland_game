@@ -51,6 +51,14 @@ tmp/*
 !tmp/run_gate_ps.ps1
 !tmp/verify_m3_play.ps1
 !tmp/verify_infinite_reserve.ps1
+# --- native launcher build script, MUST stay tracked ---
+# WHY: `/launcher/*.exe` is ignored below (no 300 KB binary diffs per rebuild),
+# so the C source is the ONLY tracked artefact of the Desktop entry point.
+# Without a tracked build script, "recompile the launcher" has NO trigger --
+# which is exactly how `launcher/SkyIsland.exe` stayed a frozen 09-23 M2.1
+# binary for two whole milestones while play-m3.bat was being fixed next to it.
+# Guard: NativeLauncherWiringTest#theLauncherHasATrackedBuildScript
+!tmp/build_launcher.js
 
 # =====================================================================
 # launcher/ — native Windows .exe entry point.

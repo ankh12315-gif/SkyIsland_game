@@ -27,6 +27,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class CombatCoreTest {
 
+    /**
+     * PRD 5.4.3 基线口径：每超 1 格 ×0.9、最低退至 20%（手枪 / 冲锋枪在注册表里的取值）。
+     *
+     * <p><b>这里写成测试内的字面量，而不是引用 {@code DamageFalloff} 的常量</b> ——
+     * 那正是这次 M3 接线修正要拆掉的东西：常量放在生产类里，就会有人拿它当"规格"，
+     * 而真正的规格在 PRD 表格里、在每把枪的注册项里。
+     * 本类断言的因此是"公式（PRD 的文字）"，注册项与公式的一致性由
+     * {@code ItemRegistryTest} 与 {@code WeaponDataWiringTest} 分开举证。
+     */
+    private static final double BASELINE_PER_UNIT = 0.9;
+    private static final double BASELINE_FLOOR = 0.20;
+
     // ============================================================ RayBox
 
     @Test
@@ -67,46 +79,78 @@ class CombatCoreTest {
     @Test
     void noFalloffWithinEffectiveRange() {
         for (double d = 0; d <= 32.0; d += 4) {
-            assertEquals(1.0, DamageFalloff.multiplier(d, 32), 1e-12,
-                    "有效射程内（" + d + " 格）必须是 100% 伤害");
+            assertEquals(1.0, DamageFalloff.multiplier(d, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
+                    1e-12, "有效射程内（" + d + " 格）必须是 100% 伤害");
         }
     }
 
     @Test
     void falloffIsContinuousAtTheRangeBoundary() {
-        assertEquals(1.0, DamageFalloff.multiplier(32.0, 32), 1e-12,
-                "恰好 32 格仍为 100%（PRD：有效射程内 100%）");
-        assertEquals(0.9, DamageFalloff.multiplier(33.0, 32), 1e-9,
-                "超出 1 格 → ×0.9");
+        assertEquals(1.0, DamageFalloff.multiplier(32.0, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
+                1e-12, "恰好 32 格仍为 100%（PRD：有效射程内 100%）");
+        assertEquals(0.9, DamageFalloff.multiplier(33.0, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
+                1e-9, "超出 1 格 → ×0.9");
     }
 
     @Test
     void falloffFollowsNineTenthsPerBlock() {
-        assertEquals(0.81, DamageFalloff.multiplier(34, 32), 1e-9, "超 2 格 → 0.9²");
-        assertEquals(Math.pow(0.9, 5), DamageFalloff.multiplier(37, 32), 1e-12, "超 5 格 → 0.9⁵");
+        assertEquals(0.81, DamageFalloff.multiplier(34, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
+                1e-9, "超 2 格 → 0.9²");
+        assertEquals(Math.pow(0.9, 5),
+                DamageFalloff.multiplier(37, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
+                1e-12, "超 5 格 → 0.9⁵");
     }
 
     @Test
     void falloffClampsAtTwentyPercent() {
-        assertEquals(DamageFalloff.MIN_MULTIPLIER, DamageFalloff.multiplier(1000, 32), 1e-12,
+        assertEquals(BASELINE_FLOOR,
+                DamageFalloff.multiplier(1000, 32, BASELINE_PER_UNIT, BASELINE_FLOOR), 1e-12,
                 "PRD 5.4.3：最低退至 20%");
         // 0.9^n = 0.2 大约在 n = 15.3，因此超过 15 格就开始触底
-        assertEquals(0.20, DamageFalloff.multiplier(48, 32), 1e-9);
+        assertEquals(0.20, DamageFalloff.multiplier(48, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
+                1e-9);
+    }
+
+    /**
+     * ★ M3 接线修正的核心断言：<b>衰减必须由传入的参数决定，而不是由生产类里的常量决定。</b>
+     *
+     * <p>霰弹枪在 PRD 5.4.3 里的口径是"超出 12 格每格 ×0.8、最低 15%"。
+     * 这条用同一把"基础伤害 8、射程 12"的假设枪，分别按霰弹口径与手枪口径结算，
+     * 断言两者在同一距离上给出<b>不同</b>的伤害 ——
+     * 若 {@code DamageFalloff} 还像 M3 之前那样把 0.9 / 0.20 写死，
+     * 第二个参数就会被无声忽略，这条断言立刻变红。
+     */
+    @Test
+    void falloffCurveComesFromTheParametersNotFromAConstant() {
+        double distance = 25.0;
+        assertEquals(8, DamageFalloff.damage(8, distance, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
+                "25 格在 32 格射程内 → 100% → 8 点伤害");
+        // 同一把"基础 8、射程 12"的枪，按霰弹口径（0.8 / 0.15）结算：
+        // 超出 13 格 → 0.8^13 ≈ 0.0549，被 0.15 截断 → 8 × 0.15 = 1.2 → 保底 1。
+        int shotgunCaliber = DamageFalloff.damage(8, 25.0, 12, 0.8, 0.15);
+        // 按手枪口径（0.9 / 0.20）算同一发：射程 12 → 超 13 格 → 0.9^13 ≈ 0.2542 →
+        // 8 × 0.2542 ≈ 2.03 → 2。两者必须不同。
+        int pistolCaliber = DamageFalloff.damage(8, 25.0, 12, BASELINE_PER_UNIT, BASELINE_FLOOR);
+        assertEquals(1, shotgunCaliber, "霰弹口径下限 15% → 8 × 0.15 = 1.2 → 1");
+        assertEquals(2, pistolCaliber, "手枪口径 0.9^13 → 8 × 0.2542 ≈ 2.03 → 2");
+        assertTrue(shotgunCaliber != pistolCaliber,
+                "同一距离上两种口径必须给出不同伤害，否则说明参数根本没被读");
     }
 
     @Test
     void pistolDamageIsExactlyEightWithinRange() {
         // M2 通过标准第 2 条：手枪单发伤害 8（偏差 ≤ 5%）
         for (double d = 0; d <= 32; d += 2) {
-            assertEquals(8, DamageFalloff.damage(8, d, 32),
+            assertEquals(8, DamageFalloff.damage(8, d, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
                     "32 格内每发必须是 8 点伤害（本次距离 " + d + "）");
         }
     }
 
     @Test
     void outOfRangeDamageDecaysButNeverDropsToZero() {
-        assertEquals(7, DamageFalloff.damage(8, 33, 32), "8 × 0.9 = 7.2 → 向下取整 7");
-        assertEquals(1, DamageFalloff.damage(8, 200, 32),
+        assertEquals(7, DamageFalloff.damage(8, 33, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
+                "8 × 0.9 = 7.2 → 向下取整 7");
+        assertEquals(1, DamageFalloff.damage(8, 200, 32, BASELINE_PER_UNIT, BASELINE_FLOOR),
                 "即使远到 20% 下限，命中也不得是 0 伤害（否则玩家以为没打中）");
     }
 

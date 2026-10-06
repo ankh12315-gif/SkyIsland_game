@@ -1,5 +1,6 @@
 package com.skyisland.player;
 
+import com.skyisland.item.RecoilProfile;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Vector3d;
@@ -67,35 +68,23 @@ public final class Camera {
      *      （见 {@link #addRecoilPitch(double)} 里对这一取舍的解释）。
      */
 
-    /**
-     * 每一发实弹给相机的抬枪角度（度）。
+    /*
+     * ★ 2026-10-03：这三个常量<b>已删除</b>，取而代之的是 {@link RecoilProfile}
+     * （{@code com.skyisland.item.RecoilProfile#PISTOL / SMG / RIFLE}）。
      *
-     * <p>0.9° 的量级校准：70° FOV、720p 下一屏高约 70°/720 ≈ 0.097°/px，
-     * 于是 0.9° ≈ 9 像素的画面位移 —— 看得见，但绝不可能把准星里的目标晃出去。
-     * 这条线的位置很明确：目标是"每枪看见一次抬头"，不是"制造难瞄准"。
-     */
-    public static final double RECOIL_PITCH_PER_SHOT_DEG = 0.9;
-
-    /**
-     * 后坐力累计上限（度）。
+     * 删除它们的理由不是"整理常量"，而是它们本身就是一条死接线的证据：
+     * {@code GunPresentationSpec.recoilProfileId} 这个键从 M3 Story 5 起就挂在每把枪上，
+     * 但只要后坐的三个数仍写死在这里，那个键就<b>没有任何生产读者</b> ——
+     * 拿步枪开一枪，画面抬起的角度与手枪逐位相同。
      *
-     * <p>为什么必须有上限：手枪 4 发/秒、回落需要 0.18 秒，
-     * 连打时两发之间的后坐力是<u>叠加</u>的。没有上限时按住左键 3 秒会累积到 10° 以上，
-     * 屏幕就这么一直歪着 —— 那已经不是反馈，是失控。取 2 发多一点的量（1.8°）
-     * 意味着"最多累积两发的量"，第三发只会把已经在回落的那点补满，
-     * 不会让仰角持续增长。
-     */
-    public static final double MAX_RECOIL_PITCH_DEG = 1.8;
-
-    /**
-     * 后坐力回落速度（度/秒）。
+     * 手枪那份档案的数值与这三个常量<b>逐值相等</b>（0.9° / 1.8° / 5.0° 每秒），
+     * 因此本轮改造对手枪的画面零影响；SMG 与步枪则第一次拿到自己的曲线。
      *
-     * <p>5.0 度/秒 × 单发 0.9° → 0.18 秒归零（≈ 11 帧 @60 Hz）。
-     * 用<b>线性</b>而不是指数衰减：线性回落会很干脆地到达精确的 0，
-     * 不会留下"永远差一点回不去"的残差 —— 而残差的后果是
-     * 玩家静止瞄准时准星与画面永远差 0.05°，那是无法归因的"手感不好"。
+     * 三个数现在分别是：
+     *   单发抬枪  {0.90, 0.35, 1.60}°   累计上限 {1.80, 2.60, 2.20}°
+     *   回落速度  {5.00, 2.40, 4.00}°/s
+     * 全都两两不同 —— 这是"后坐真的由数据决定"能被证伪的前提（同值巧合）。
      */
-    public static final double RECOIL_RECOVER_DEG_PER_SEC = 5.0;
 
     private final Matrix4f view = new Matrix4f();
     private final Matrix4f projection = new Matrix4f();
@@ -161,24 +150,30 @@ public final class Camera {
     // ------------------------------------------------------------ M2.1：开火后坐力
 
     /**
-     * 打出一发实弹：给相机叠一次抬枪角。
+     * 打出一发实弹：给相机叠一次抬枪角，幅度与上限都来自<b>当前这把枪的后坐档案</b>。
      *
      * <p><b>它<u>不</u>改 {@link #pitchDeg}、不碰 {@link #forward()}</b>，
      * 所以不会产生任何玩法后果 —— 这是本次改造的核心取舍，三条理由写在类注释里。
-     * 一句话总结取舍的代价：在后坐力尚未回落的那 0.18 秒里，
-     * "画面中心"与"射线中心"会暂时相差最多 1.8°。<b>这是有意为之</b>：
-     * 只有"视图被顶了一下、而准星与子弹方向不动"，才能既给出击发反馈，
-     * 又不让玩家因为打了连发而真的瞄不准（玩家的手不需要补偿，画面自己会回来）。
+     * 一句话总结取舍的代价：在后坐力尚未回落的那段时间里，
+     * "画面中心"与"射线中心"会暂时相差最多 {@link RecoilProfile#maxPitchDeg()}。
+     * <b>这是有意为之</b>：只有"视图被顶了一下、而准星与子弹方向不动"，
+     * 才能既给出击发反馈，又不让玩家因为打了连发而真的瞄不准
+     * （玩家的手不需要补偿，画面自己会回来）。
      * 若把后坐力加进 {@code pitchDeg}，则"连发 = 视角持续上飘"，
      * 玩家必须反向压枪 —— 那是另一个游戏的玩法，不是本作现在要的。
      *
-     * @param deltaDeg 抬枪角度（度）；负值会被忽略 —— 后坐力只有一个方向
+     * <p><b>为什么参数是整份档案而不是一个 {@code double} 角度：</b>
+     * 只传角度的话，"累计上限"这个量就得留在相机里，于是它又变回一个全局常量 ——
+     * 而 SMG 那份档案的上限（2.6°）与步枪的（2.2°）是不同的。
+     * 传整份档案之后，{@code 抬枪量 / 上限 / 回落速度} 三个量<b>只能</b>来自同一把枪。
+     *
+     * @param profile 当前手持枪的后坐档案；{@code null} 按"没有后坐"处理
      */
-    public void addRecoilPitch(double deltaDeg) {
-        if (Double.isNaN(deltaDeg) || deltaDeg <= 0.0) {
+    public void addRecoil(RecoilProfile profile) {
+        if (profile == null) {
             return;
         }
-        recoilPitchDeg = Math.min(MAX_RECOIL_PITCH_DEG, recoilPitchDeg + deltaDeg);
+        recoilPitchDeg = Math.min(profile.maxPitchDeg(), recoilPitchDeg + profile.pitchDegPerShot());
     }
 
     /**
@@ -188,12 +183,20 @@ public final class Camera {
      * 后者会让后坐力的持续时间与帧率绑定 —— 3000 FPS 下它会在 3 毫秒内消失，
      * 表现为"高端机上看不到后坐力"。这正是本项目反复强调的
      * "帧率不得影响行为"（§C.4′）在同一类问题上的又一次出现。
+     *
+     * <p><b>回落速度同样来自档案：</b>手枪 5.0°/s（0.18 秒归零），
+     * SMG 只有 2.4°/s —— 那是"扫射时看得见的累积"的数据来源，
+     * 若这里回落到全局常量，SMG 那份档案就只有一半生效。
+     *
+     * <p>用<b>线性</b>而不是指数衰减：线性回落会很干脆地到达精确的 0，
+     * 不会留下"永远差一点回不去"的残差 —— 而残差的后果是
+     * 玩家静止瞄准时准星与画面永远差 0.05°，那是无法归因的"手感不好"。
      */
-    public void decayRecoil(double dt) {
-        if (recoilPitchDeg <= 0.0 || !(dt > 0.0)) {
+    public void decayRecoil(double dt, RecoilProfile profile) {
+        if (recoilPitchDeg <= 0.0 || !(dt > 0.0) || profile == null) {
             return;
         }
-        double drop = RECOIL_RECOVER_DEG_PER_SEC * dt;
+        double drop = profile.recoverDegPerSec() * dt;
         // 先减后夹，而不是 Math.max(0, recoil - drop) 之后再夹：
         // 两者在这里等价，但"恒定不能为负"应当由最后一次赋值保证，
         // 这样即使将来有人引入方向的负后坐力，改动也不会悄悄突破不变量。

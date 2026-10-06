@@ -13,6 +13,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * M2 瞄准（PRD 5.4.3「瞄准」行）：
  * <b>手持枪械按住右键 → FOV 由 70 收窄至 45、移动速度降至 60%</b>。
  *
+ * <p><b>M3 接线修正后的两处口径变化（都在本类里有对应断言）：</b>
+ * <ol>
+ *   <li>FOV 的收窄不再是固定倍率 {@code 45/70}，而是 v2 §5.2 第 8 条 / §9.1 的
+ *       <b>绝对目标 FOV</b>：{@code scale = min(1, 本枪 aimFovDeg / 基础 FOV)}。
+ *       默认 FOV 70 时两者数值相同；玩家把 FOV 改成 90 时，旧实现给 57.86°，新实现给 45°；</li>
+ *   <li>移速倍率与上面那个 45 都<b>取自手持枪的 {@code GunSpec}</b>，不再是 {@code Player} 上的
+ *       全局常量 —— 因此"手枪 45/×0.60、冲锋枪 48/×0.65"（v2 §10）是真的两套手感。
+ *       两把枪分别的断言见 {@code WeaponDataWiringTest}。</li>
+ * </ol>
+ *
  * <p><b>为什么瞄准状态必须由意图派生，而不是可以随便置位：</b>
  * 它是"持枪"与"按住右键"两个事实的<b>合成</b>。允许外部直接置位的话，
  * 就会出现"手里只有一块泥土、视野却是 45°"这种自相矛盾的状态 ——
@@ -74,18 +84,52 @@ class PlayerAimingTest {
         assertEquals(70.0, player.camera().fovDeg(), 1e-9, "松开右键必须回到基础 FOV");
     }
 
+    /**
+     * ADS 是<b>绝对目标 FOV</b>（v2 §5.2 第 8 条 / §9.1）：无论玩家的基础 FOV 调成多少，
+     * 手枪 ADS 之后都落在 45°。
+     *
+     * <p><b>★ 这条断言在 M3 接线修正时被改写，也是本轮唯一的玩家可见行为变化。</b>
+     * 改写前 {@code Player} 用的是固定倍率 {@code 45/70}，于是把基础 FOV 调到 90 的玩家
+     * 按右键得到 57.86° —— 而 v2 §9.1 写得很直白：
+     * 「玩家 base FOV = 70，手枪 aim=45 → 45°；玩家 base FOV = 90，手枪 aim=45 → 45°」。
+     * 也就是说"文档承诺绝对目标角、实机按倍率收窄"，两者只在默认 70 时偶然重合。
+     * 现在实现与文档一致；代价是<b>改过 FOV 设置的玩家会感到 ADS 视野比之前更窄</b>
+     * （这不是回退，而是把文档里早已冻结的口径真正接上）。
+     */
     @Test
-    void aimIsARelativeNarrowingSoACustomFovStillWorks() {
+    void adsLandsOnTheAbsoluteTargetFovNotOnAFixedRatio() {
         World world = world();
         Player player = armedPlayer();
         player.setBaseFovDeg(90.0);
 
         player.step(world, aim(), DT);
 
-        // 写死绝对值 45 的话，把 FOV 调到 90 的玩家一按右键视野反而变宽 ——
-        // 这条断言钉的就是"收窄是相对基础值的"。
-        assertEquals(90.0 * 45.0 / 70.0, player.camera().fovDeg(), 1e-9);
+        assertEquals(45.0, player.camera().fovDeg(), 1e-9,
+                "v2 §9.1：base FOV = 90 时手枪 ADS 仍是 45°（绝对目标角）");
         assertTrue(player.camera().fovDeg() < 90.0, "瞄准必须比基础视野更窄");
+        assertEquals(45.0 / 90.0, player.fovScale(), 1e-12,
+                "倍率是 min(1, 45 / baseFov)，不是固定 45/70");
+    }
+
+    /**
+     * 防御性下界：若基础 FOV 已经比 ADS 目标角还窄，{@code min(1, …)} 保证瞄准<b>不放大</b>视野。
+     *
+     * <p>v2 §9.1 第三条：「若未来错误配置 aimFov &gt; baseFov，则不会'开镜反而拉远'」。
+     * 设置界面允许的范围是 60–90，因此当前两把枪（45 / 48）都到不了这个分支 ——
+     * 这条断言保护的是"以后有人把某把枪的 aimFovDeg 配得比基础 FOV 还大"以及
+     * "设置范围被放宽"这两种未来情形。
+     */
+    @Test
+    void aimingNeverWidensTheViewWhenTheBaseFovIsAlreadyNarrow() {
+        World world = world();
+        Player player = armedPlayer();
+        player.setBaseFovDeg(40.0);   // 比手枪的 ADS 目标角 45° 还窄
+
+        player.step(world, aim(), DT);
+
+        assertEquals(1.0, player.fovScale(), 1e-12, "min(1, 45/40) 必须夹到 1.0");
+        assertEquals(40.0, player.camera().fovDeg(), 1e-9,
+                "瞄准只许变窄：不得因为目标角更大就把视野撑宽");
     }
 
     @Test
@@ -105,7 +149,11 @@ class PlayerAimingTest {
         double walk = horizontalDistanceAfterMovingAlone(false);
         double aim = horizontalDistanceAfterMovingAlone(true);
 
-        assertEquals(Player.AIM_MOVE_SPEED_RATIO, aim / walk, 0.05,
+        // ★ 期望值取自"手持这把枪的 spec"，不再是 Player 上的全局常量（M3 接线修正）：
+        //   手枪的 ADS 移速倍率在注册表里是 0.60（PRD 5.4.3 / v2 §10）。
+        double expected = ItemRegistry.pistol().gun().aimMoveSpeedMult();
+        assertEquals(0.60, expected, 1e-12, "手枪 ADS 移速倍率 = 0.60（PRD 5.4.3）");
+        assertEquals(expected, aim / walk, 0.05,
                 "PRD 5.4.3：瞄准时移动速度降至 60%（实测 " + walk + " → " + aim + " 格）");
     }
 

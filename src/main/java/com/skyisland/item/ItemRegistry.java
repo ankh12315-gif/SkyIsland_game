@@ -46,6 +46,49 @@ public final class ItemRegistry {
     /** 煤炭：煤炭矿石的掉落物（PRD 5.1）。MVP 第一种"方块掉非方块物品"。 */
     public static final String COAL_ID = "skyisland:coal";
 
+    // ============================================================ 步枪材料链（2026-10-02）
+    //
+    // 主理人显式放行（v2 §18 的"除非主理人后续显式放行"），范围=数据层 + 合成逻辑。
+    // v2 §6.2「后续扩展规则」明文要求：真正落地 rifle 时
+    //   · skyisland:rifle_ammo 必须注册为 Item；
+    //   · 再新增相应 Recipe；
+    //   · **禁止只添加字符串标签。**
+    // 本组常量与下面的 register(...) 就是照这条规则落地的。
+
+    /** 木棍（R02：木板 ×2 → 木棍 ×4）。R16 步枪的输入物之一。 */
+    public static final String STICK_ID = "skyisland:stick";
+    /** 铁锭（R03：铁矿石 ×1 + 煤炭 ×1）。R11 / R12 / R16 的输入物。 */
+    public static final String IRON_INGOT_ID = "skyisland:iron_ingot";
+    /** 铜锭（R04：铜矿石 ×1 + 煤炭 ×1）。PRD 5.6.2：铜定位为进阶金属，只用于进阶枪械。 */
+    public static final String COPPER_INGOT_ID = "skyisland:copper_ingot";
+    /** 晶体（晶体矿石的掉落物）。PRD：最稀有、最远岛屿才有的最高阶枪械材料。 */
+    public static final String CRYSTAL_ID = "skyisland:crystal";
+    /** 火药（R06：煤炭 ×2 + 沙子 ×1 → 火药 ×2）。所有弹药的共同输入物。 */
+    public static final String GUNPOWDER_ID = "skyisland:gunpowder";
+    /** 步枪弹（R12：铁锭 ×1 + 火药 ×2 → 6 发）。v2 §6.2：必须注册为真实 Item。 */
+    public static final String RIFLE_AMMO_ID = "skyisland:rifle_ammo";
+    /** 步枪（R16：铁锭 ×8 + 铜锭 ×3 + 晶体 ×1 + 火药 ×6 + 木棍 ×2）。 */
+    public static final String RIFLE_ID = "skyisland:rifle";
+
+    /** 步枪的 Viewmodel 查表键 —— 必须与手枪 / SMG 都不同（v2 §4.2 第①项）。 */
+    public static final String RIFLE_VIEWMODEL_ID = "rifle";
+    /** 步枪的 HUD / 背包图标查表键。 */
+    public static final String RIFLE_ICON_ID = "rifle";
+    /** 步枪的视觉后坐查表键。 */
+    public static final String RIFLE_RECOIL_PROFILE_ID = "rifle";
+
+    /**
+     * 步枪的枪口前向偏移（格）。
+     *
+     * <p>三把枪的 muzzleOffset 必须两两不同（v2 §14.6）：手枪 0.55 / SMG 0.72 / 步枪 0.86。
+     * 步枪的枪管最长，"火光从更远处冒出"这件事在数据上就看得见。
+     */
+    public static final double RIFLE_MUZZLE_FORWARD = 0.86;
+    /** 步枪的枪口右向偏移（格）。比 SMG（0.24）略内收：长枪管端得更正。 */
+    public static final double RIFLE_MUZZLE_RIGHT = 0.22;
+    /** 步枪的枪口下向偏移（格）。比手枪（0.12）略低、比 SMG（0.15）略高。 */
+    public static final double RIFLE_MUZZLE_DOWN = 0.13;
+
     /** 弹药的堆叠上限（PRD 5.4.2）。 */
     public static final int AMMO_MAX_STACK = 128;
 
@@ -173,6 +216,39 @@ public final class ItemRegistry {
                 SMG_RECOIL_PROFILE_ID);
     }
 
+    /**
+     * 步枪的表现规格。
+     *
+     * <p>与手枪 / SMG 的差异（v2 §4.2 第①②③项：轮廓 / 图标 / 枪口位置必须两两不同）：
+     * <ul>
+     *   <li>{@code viewmodelId = "rifle"} —— 渲染层据此取<b>第三套</b>剪影
+     *       （{@code ViewmodelGeometry.RIFLE_PARTS}）。这一条是硬性的：
+     *       在该键被加入之前，未知键会<b>静默回退到手枪轮廓</b>，
+     *       于是"逻辑是步枪、右手是手枪"——v2 §4.2 明令禁止的那种情况；</li>
+     *   <li>{@code iconId = "rifle"} —— 图标层据此画第三套图样；</li>
+     *   <li>三个 muzzle 分量与手枪、SMG <b>两两不同</b>（0.86 / 0.22 / 0.13）；</li>
+     *   <li>{@code recoilProfileId = "rifle"} —— 与另外两把不同键。</li>
+     * </ul>
+     *
+     * <p><b>音效键仍复用</b>（{@code gun_fire} / {@code gun_empty} / {@code reload}）：
+     * 与 SMG 同一条理由 —— 本轮不新增音频资源，v2 §4.2 第④项的
+     * "开火声音<b>或</b>射击节奏表现"由<b>射击节奏</b>满足：
+     * 步枪是 2.0 发/秒，比手枪（4.0）更慢、比 SMG（10.0）慢得多，
+     * 且它是唯一"高伤 + 慢速 + 远射"的组合，手感差异比换一条音效更可感知。
+     */
+    public static GunPresentationSpec riflePresentation() {
+        return new GunPresentationSpec(
+                RIFLE_VIEWMODEL_ID,
+                RIFLE_ICON_ID,
+                RIFLE_MUZZLE_FORWARD,
+                RIFLE_MUZZLE_RIGHT,
+                RIFLE_MUZZLE_DOWN,
+                SOUND_GUN_FIRE,
+                SOUND_GUN_EMPTY,
+                SOUND_RELOAD,
+                RIFLE_RECOIL_PROFILE_ID);
+    }
+
     private static final List<Item> BY_RUNTIME_ID = new ArrayList<>();
     private static final Map<String, Item> BY_STABLE_ID = new HashMap<>();
 
@@ -243,6 +319,68 @@ public final class ItemRegistry {
                 FireMode.AUTO, 1, 0.0,
                 48.0, 0.65, 0.90, 0.20,
                 PISTOL_AMMO_ID), smgPresentation());
+
+        // ================================================================
+        // 步枪材料链（2026-10-02，主理人显式放行；PRD 5.6.2【Alpha 必须】）
+        //
+        // 全部**追加在表尾**：已在册物品（尤其手枪 / SMG）的 runtimeId 只受
+        // "新增了 2 个方块"这一条影响（见 BlockRegistry 的说明），
+        // 不受本组新增影响 —— 它们只是往后面排。
+        //
+        // 顺序与 PRD 5.6.2 的依赖方向一致：材料 → 弹药 → 枪。
+        // 每一条都在 ItemRegistryTest 里对着 PRD 的数值/数量逐值钉住。
+        // ================================================================
+
+        // 木棍（R02：木板 ×2 → 木棍 ×4）。PRD 5.1 的材料类，堆叠 64。
+        // 它是 R07 火把与 R16 步枪的输入物 —— 因为步枪要它，本轮必须一并登记。
+        register(STICK_ID, ItemKind.MATERIAL, DEFAULT_MAX_STACK, null);
+        // 铁锭（R03：铁矿石 ×1 + 煤炭 ×1 → 铁锭 ×1）。MVP 就有配方，此前从未登记。
+        register(IRON_INGOT_ID, ItemKind.MATERIAL, DEFAULT_MAX_STACK, null);
+        // 铜锭（R04：铜矿石 ×1 + 煤炭 ×1 → 铜锭 ×1）。
+        // PRD 5.6.2 的口径：铜定位为**进阶金属**，只参与进阶枪械（R15–R17），
+        // 不参与基础弹药合成 —— 手枪弹自 v0.3 起改用铁锭。
+        register(COPPER_INGOT_ID, ItemKind.MATERIAL, DEFAULT_MAX_STACK, null);
+        // 晶体（晶体矿石的掉落物 ×1）。最高阶的稀有材料，来源是最远的晶矿岛。
+        register(CRYSTAL_ID, ItemKind.MATERIAL, DEFAULT_MAX_STACK, null);
+        // 火药（R06：煤炭 ×2 + 沙子 ×1 → 火药 ×2）。所有弹药的共同输入物。
+        register(GUNPOWDER_ID, ItemKind.MATERIAL, DEFAULT_MAX_STACK, null);
+        // 步枪弹（R12：铁锭 ×1 + 火药 ×2 → 步枪弹 ×6）。
+        // v2 §6.2 明文：落地步枪时 skyisland:rifle_ammo 必须注册为真实 Item，禁止只加字符串标签。
+        // 堆叠上限与手枪弹一致（128，PRD 5.4.2）。
+        register(RIFLE_AMMO_ID, ItemKind.AMMO, AMMO_MAX_STACK, null);
+
+        // 步枪（R16：铁锭 ×8 + 铜锭 ×3 + 晶体 ×1 + 火药 ×6 + 木棍 ×2 → 步枪 ×1）。
+        // PRD 5.4.1 武器表逐值照抄：伤害 14 / 弹匣 10 / 射速 2.0 发每秒 / 有效射程 48 格；
+        // 换弹 2.0 秒（PRD 5.4.3）。
+        //
+        // fireMode = SINGLE（2026-10-03 主理人裁定，**已冻结，不是试玩可调项**）：
+        //   同一次裁定冻结的还有 damage 14 / magazine 10 / fireRate 2.0 / range 48 / reload 2.0。
+        //   裁定语义：**每次真实 PRIMARY_ACTION press 最多发射 1 发；按住左键不得自动连发。**
+        //   因此三枪的开火模式分布是 手枪 SINGLE / SMG AUTO / 步枪 SINGLE ——
+        //   它不是"SMG 之外的都叫 SINGLE"，而是两把 SINGLE 与一把 AUTO 在
+        //   Input → PlayerIntent → CombatController 上必须各自可证伪
+        //  （由 FireModeInputSemanticsTest 承担：同一串 intent 下三把枪的射弹数互不相同）。
+        //
+        //   ★ 反向钉子：曾经这里写的是 AUTO（"慢射速 AUTO = 按住慢慢喷"），已按裁定改回 SINGLE。
+        //     若把它改回 AUTO，`rifleIsSingleShotNotAuto` 与门禁里的步枪射速断言必须变红。
+        //
+        // ADS = 40° / ×0.55 的取舍（★ 新增、待确认）：
+        //   PRD 与 v2 都**没有**给步枪的 ADS 参数（v2 §10 只冻结了手枪 45 / SMG 48）。
+        //   这里刻意取与另外两把**都不同**的值，而不是抄手枪的 45 / 0.60 ——
+        //   理由正是 2026-10-02 接线轮的血债：注册表里的值一旦等于既有常量，
+        //   "读了数据"与"读了常量"在行为上就再也分不出来。
+        //   取 40° / ×0.55 后，ADS 的注册表口径变成 {45, 48, 40} 与 {0.60, 0.65, 0.55}，
+        //   三个值互不相同 → 这条数据第一次能被**真实内容**端到端证伪（手枪 45° / SMG 48° / 步枪 40°）。
+        //   语义上也自洽：最高伤、最远射程的枪，开镜收得最紧、移动代价最大。
+        //
+        // falloff 沿用基线的 0.90 / 0.20（与 SMG 同一条理由）：PRD 与 v2 均未给步枪的衰减，
+        //   不自行发明未冻结的数值。衰减那对参数的可证伪性由合成 spec 的单测承担
+        //  （WeaponDataWiringTest），不依赖在册枪种取到不同的值。
+        register(RIFLE_ID, ItemKind.GUN, 1, new GunSpec(
+                14, 10, 2.0, 48, 2.0,
+                FireMode.SINGLE, 1, 0.0,
+                40.0, 0.55, 0.90, 0.20,
+                RIFLE_AMMO_ID), riflePresentation());
 
         bootstrapped = true;
         verify();
@@ -327,6 +465,45 @@ public final class ItemRegistry {
 
     public static Item pistolAmmo() {
         return byName(PISTOL_AMMO_ID);
+    }
+
+    // ---- 步枪材料链（2026-10-02）----
+    //
+    // 与 byName 同口径：未注册时返回 null（而不是抛异常），调用方决定是警告还是拒绝。
+
+    /** 步枪（v2 §6.2 放行后的第三把枪）。 */
+    public static Item rifle() {
+        return byName(RIFLE_ID);
+    }
+
+    /** 步枪弹（v2 §6.2：必须是真实 Item，不是字符串标签）。 */
+    public static Item rifleAmmo() {
+        return byName(RIFLE_AMMO_ID);
+    }
+
+    /** 木棍（R02）。 */
+    public static Item stick() {
+        return byName(STICK_ID);
+    }
+
+    /** 铁锭（R03）。 */
+    public static Item ironIngot() {
+        return byName(IRON_INGOT_ID);
+    }
+
+    /** 铜锭（R04，进阶金属）。 */
+    public static Item copperIngot() {
+        return byName(COPPER_INGOT_ID);
+    }
+
+    /** 晶体（晶体矿石掉落物，最高阶材料）。 */
+    public static Item crystal() {
+        return byName(CRYSTAL_ID);
+    }
+
+    /** 火药（R06，弹药共同输入物）。 */
+    public static Item gunpowder() {
+        return byName(GUNPOWDER_ID);
     }
 
     /**

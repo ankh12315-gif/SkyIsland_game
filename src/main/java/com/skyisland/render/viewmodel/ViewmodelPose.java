@@ -1,7 +1,20 @@
 package com.skyisland.render.viewmodel;
 
+import com.skyisland.item.RecoilProfile;
+
 /**
  * 第一人称手持物的<b>动画状态</b>：idle bob / use swing / fire recoil / slot pop / ADS / 换弹下压。
+ *
+ * <h2>后坐三个数从哪来（2026-10-03）</h2>
+ * 本类原先自带 {@code RECOIL_SECONDS / RECOIL_Z / RECOIL_PITCH} 三个
+ * {@code private static final} 常量。它们是 M2.1 一次成型的调参产物，
+ * 到 M3 三把枪落地时就变成了死接线的另一半：
+ * {@code GunPresentationSpec.recoilProfileId} 挂在每个枪上，而这里永远读自己的常量。
+ *
+ * <p>现在它们改由 {@link ViewmodelModel#gunRecoilProfileId} → {@link RecoilProfile} 提供。
+ * <b>手枪那份档案的三个数与旧常量逐值相等</b>（0.24 s / 0.055 格 / 0.34 弧度），
+ * 因此这一步对手枪画面零影响；SMG（0.16 / 0.030 / 0.20）与步枪（0.34 / 0.085 / 0.52）
+ * 则第一次有了自己的手感。
  *
  * <h2>为什么状态机住在渲染层</h2>
  * 这六种动作全都是"表现"，没有一条影响命中判定、伤害或物品数量 ——
@@ -44,18 +57,27 @@ public final class ViewmodelPose {
     /** 切槽时放大的最大比例（"弹出感"）。 */
     private static final double POP_SCALE = 0.14;
 
-    /** 后坐：向相机方向的位移（格）。 */
-    private static final double RECOIL_Z = 0.055;
-
-    /** 后坐：枪口上扬的角度（弧度）。 */
-    private static final double RECOIL_PITCH = 0.34;
-
     /** 换弹时下沉的幅度（格）与翻转角度（弧度）。 */
     private static final double RELOAD_DROP = 0.075;
     private static final double RELOAD_ROLL = 0.42;
 
     /** 挥动的最大角度（弧度）。 */
     private static final double SWING_ANGLE = 0.55;
+
+    /**
+     * 上一次击发时那把枪的后坐档案。
+     *
+     * <p><b>为什么在击发那一刻快照，而不是每帧去查当前枪：</b>
+     * 后坐动画会持续 0.16–0.34 秒，期间玩家完全可能切槽换枪。
+     * 每帧现查的话，"拿步枪开一枪、立刻切成手枪"会让这一次后坐
+     * 中途从步枪的曲线跳到手枪的曲线 —— 画面上是半段动画突然变软。
+     * 快照之后，一次击发的后坐<b>整段都属于开枪的那把枪</b>。
+     *
+     * <p>初值取 {@link RecoilProfile#DEFAULT}（= 手枪）：
+     * 在没有击发过时它是"上一个值"，而回落动画在那段时间内恒为 0，
+     * 因此取哪一份都不会影响任何一帧。
+     */
+    private RecoilProfile recoilProfile = RecoilProfile.DEFAULT;
 
     private int lastSlot = -1;
     private int lastShot = 0;
@@ -91,7 +113,12 @@ public final class ViewmodelPose {
 
         if (m.shotCount != lastShot) {
             if (m.shotCount > lastShot) {
-                recoil = RECOIL_SECONDS;
+                // 击发的那一刻把档案快照下来（理由见字段注释）。
+                // m.gunRecoilProfileId 为 null 表示"非枪械击发"（例如空手挥击），
+                // 此时 RecoilProfile.byId(null) 返回 DEFAULT —— 那是唯一允许的回落路径，
+                // 因为"没有枪"本身不是一种需要新曲线的状态。
+                recoilProfile = RecoilProfile.byId(m.gunRecoilProfileId);
+                recoil = recoilProfile.viewmodelSeconds();
             }
             lastShot = m.shotCount;
         }
@@ -143,7 +170,7 @@ public final class ViewmodelPose {
         if (recoil <= 0) {
             return 0;
         }
-        double u = 1.0 - recoil / RECOIL_SECONDS;
+        double u = 1.0 - recoil / recoilProfile.viewmodelSeconds();
         return Math.exp(-5.0 * u);
     }
 
@@ -221,7 +248,8 @@ public final class ViewmodelPose {
 
     /** 绕 X 轴：基础俯角 + 后坐上扬 + 挥动。 */
     public double pitchRad() {
-        return ViewmodelGeometry.BASE_PITCH + RECOIL_PITCH * recoil01() + swingAngleRad();
+        return ViewmodelGeometry.BASE_PITCH
+                + recoilProfile.viewmodelPitchRad() * recoil01() + swingAngleRad();
     }
 
     /** 绕 Z 轴：基础侧倾 + 换弹翻转 + bob 带来的轻微摆动。 */
@@ -232,7 +260,12 @@ public final class ViewmodelPose {
 
     /** 后坐：沿 +Z（朝相机）的位移。 */
     public double recoilPush() {
-        return RECOIL_Z * recoil01();
+        return recoilProfile.viewmodelPushZ() * recoil01();
+    }
+
+    /** 上一次击发所用的后坐档案（自测断言"三把枪的手感不同"时的读数入口）。 */
+    public RecoilProfile recoilProfile() {
+        return recoilProfile;
     }
 
     /** 整体缩放（切槽弹出 + ADS 时略缩）。 */

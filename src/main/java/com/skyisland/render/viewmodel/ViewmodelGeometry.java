@@ -34,7 +34,7 @@ public final class ViewmodelGeometry {
     /** 手持物专用投影的垂直 FOV（度）。比世界 FOV 窄，透视更平。 */
     public static final double FOV_DEG = 50.0;
 
-    /** 盒体容量：SMG 6 个（含枪口闪光）、手枪 6 个、方块 2 个、空手 2 个，取 8 留余量。 */
+    /** 盒体容量：步枪 6 个（含枪口闪光）、SMG 6 个、手枪 6 个、方块 2 个、空手 2 个，取 8 留余量。 */
     public static final int MAX_BOXES = 8;
 
     // ---- 锚点（视图空间，米）----
@@ -73,6 +73,10 @@ public final class ViewmodelGeometry {
     private static final int P_SMG_BODY = 8;
     /** SMG 枪管：更暗的绿灰。 */
     private static final int P_SMG_BARREL = 9;
+    /** 步枪机匣 / 枪托：深胡桃木色 —— 三把枪里唯一的暖色，色相上一眼可分。 */
+    private static final int P_RIFLE_BODY = 10;
+    /** 步枪枪管 / 瞄准镜：深钢蓝 —— 比手枪的冷灰更蓝、更暗。 */
+    private static final int P_RIFLE_BARREL = 11;
 
     private static final float[][] PALETTE = {
             {0.26f, 0.28f, 0.32f},   // 枪身：冷灰
@@ -85,6 +89,8 @@ public final class ViewmodelGeometry {
             {1.00f, 1.00f, 1.00f},   // 占位（实际取模型色）
             {0.24f, 0.29f, 0.26f},   // SMG 机匣：暗橄榄绿
             {0.16f, 0.20f, 0.18f},   // SMG 枪管：更暗的绿灰
+            {0.32f, 0.26f, 0.19f},   // 步枪机匣 / 枪托：深胡桃木
+            {0.21f, 0.23f, 0.29f},   // 步枪枪管 / 瞄准镜：深钢蓝
     };
 
     /**
@@ -146,6 +152,51 @@ public final class ViewmodelGeometry {
     /** SMG 轮廓键 = SMG 的 {@code presentation().viewmodelId()}（{@code ItemRegistry.SMG_VIEWMODEL_ID}）。 */
     private static final String SMG_VIEWMODEL_KEY = "smg";
 
+    /**
+     * 步枪轮廓键 = 步枪的 {@code presentation().viewmodelId()}（{@code ItemRegistry.RIFLE_VIEWMODEL_ID}）。
+     *
+     * <p><b>这个键的存在本身就是一处缺陷修复。</b>在此之前 {@link #gunParts} 只有
+     * "是 SMG 吗"一个分支，未知键一律回退到 {@link #GUN_PARTS}（手枪轮廓）。
+     * 于是"注册了一把步枪、右手却画成手枪"这件事会<b>静默发生</b> ——
+     * 正是 v2 §4.2 第①项明令禁止的那一类。第三把枪落地时把这条分支补齐，
+     * 并由 {@code ViewmodelRendererTest} 遍历"注册表里每一把枪"来保证加枪必被覆盖。
+     */
+    private static final String RIFLE_VIEWMODEL_KEY = "rifle";
+
+    /**
+     * 步枪的轮廓（三把枪里最长、最"重"的一把）。
+     *
+     * <p>相对 {@link #SMG_PARTS} 的可辨识差异（都写在图元签名里，由单测断言几何不相等）：
+     * <ul>
+     *   <li><b>机匣更宽</b>（0.080 vs SMG 的 0.082 —— 相近，但枪托把它撑得更长）；</li>
+     *   <li><b>瞄准镜</b>（{@code y 0.020..0.050} 的上方凸起）—— 手枪与 SMG
+     *       <b>都没有</b>这个部件，它单独就把步枪的剪影分出来了；</li>
+     *   <li><b>向后的直枪托</b>（{@code z 0.040..0.140}）—— SMG 的枪托短得多（到 0.105）；</li>
+     *   <li><b>配色是三把枪里唯一的暖色</b>：机匣/枪托为深胡桃木
+     *       （{@link #P_RIFLE_BODY}），对比手枪的冷灰与 SMG 的暗橄榄绿。</li>
+     * </ul>
+     *
+     * <p><b>为什么枪管刻意没有做得更长：</b>轮廓的上界不是美术口味，而是两条硬约束 ——
+     * 所有顶点必须留在<b>右半屏</b>（NDC x &gt; 0）且不得落进<b>准星禁区</b>
+     * （{@code ViewmodelRendererTest} 在整个动画包络上扫描）。SMG 已经把
+     * "枪管的绝对前伸"用到了安全边界（−0.320），因此步枪靠<b>瞄准镜 + 枪托 + 配色</b>
+     * 而不是靠再加长枪管来取得差异 —— 这是"贴着约束取最大差异"的同一条做法。
+     */
+    private static final double[] RIFLE_PARTS = {
+            // 机匣：与 SMG 相近的宽窄，但更低更厚（深胡桃木）
+            -0.040, -0.026, -0.165, 0.040, 0.020, 0.045, P_RIFLE_BODY,
+            // 枪管：细长的深钢蓝 —— 比手枪长得多，与 SMG 相当的绝对长度
+            -0.019, -0.018, -0.285, 0.019, 0.010, -0.150, P_RIFLE_BARREL,
+            // 瞄准镜：机匣上方的一段凸起 —— 步枪独有的剪影特征，手枪与 SMG 都没有
+            -0.015, 0.020, -0.120, 0.015, 0.050, -0.035, P_RIFLE_BARREL,
+            // 枪托：向后方伸出的直托（比 SMG 的枪托更长）
+            -0.032, -0.058, 0.040, 0.032, -0.004, 0.140, P_RIFLE_BODY,
+            // 握枪的手（与另外两把一致：手本身不该成为区分点）
+            -0.040, -0.130, 0.030, 0.040, -0.040, 0.125, P_HAND,
+            // 枪口闪光：贴着步枪枪管的末端
+            -0.034, -0.024, -0.320, 0.034, 0.016, -0.285, P_FLASH,
+    };
+
     private static final double[] BLOCK_PARTS = {
             // 方块本体：一个 0.115 的立方体
             -0.0575, -0.0325, -0.0775, 0.0575, 0.0825, 0.0375, P_ITEM,
@@ -189,12 +240,24 @@ public final class ViewmodelGeometry {
     /**
      * 按轮廓键选零件数组。
      *
-     * <p><b>未知键兜底走手枪轮廓</b>：宁可画成手枪，也不要画出一片空白 ——
-     * 空白会被读成"手里没东西"，比"画错一把枪"更难诊断。键的正确性由
-     * {@code ItemRegistry} 的常量与测试保证，兜底只是防御性的一层。
+     * <p><b>未知键仍兜底走手枪轮廓</b>：宁可画错一把枪，也不要画出一片空白 ——
+     * 空白会被读成"手里没东西"，比"画错一把枪"更难诊断。
+     *
+     * <p><b>但兜底不是"可以忘记加分支"的理由。</b>它的正确性依赖"每个已注册的
+     * {@code viewmodelId} 都在这里有分支"这一条，而这条一旦漏掉是<b>静默</b>的
+     * （枪还是画得出来，只是画成了手枪）。因此这条不变式由测试守住：
+     * {@code ViewmodelRendererTest} 会遍历 {@code ItemRegistry} 里<b>每一把枪</b>，
+     * 用它的 {@code presentation().viewmodelId()} 走一遍布局护栏，
+     * 并断言三把枪的几何两两不相等 —— 加第四把枪时如果忘了在这里加分支，它会红。
      */
     private static double[] gunParts(String gunViewmodelId) {
-        return SMG_VIEWMODEL_KEY.equals(gunViewmodelId) ? SMG_PARTS : GUN_PARTS;
+        if (SMG_VIEWMODEL_KEY.equals(gunViewmodelId)) {
+            return SMG_PARTS;
+        }
+        if (RIFLE_VIEWMODEL_KEY.equals(gunViewmodelId)) {
+            return RIFLE_PARTS;
+        }
+        return GUN_PARTS;
     }
 
     /**

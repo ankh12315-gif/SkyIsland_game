@@ -30,6 +30,36 @@ public final class InventoryLayout {
     /** 主背包与快捷栏之间的分隔带高度（基准像素）。 */
     private static final int SEPARATOR_HEIGHT = 6;
 
+    /**
+     * 右侧合成栏与背包格子之间的间隔（基准像素）。
+     *
+     * <p>它比槽位间隙（2）大得多是刻意的：两侧是<b>两个不同性质的区域</b>
+     * （"我有什么" vs "我能做什么"），而不是同一片网格里相邻的两格。
+     * 留一条明显的空白带，玩家才不会把配方行当成背包第 10 列。
+     */
+    private static final int CRAFT_COLUMN_GAP = 14;
+
+    /**
+     * 合成栏的宽度（基准像素）。
+     *
+     * <p><b>它是按"最长那一行的文字"反推的，不是随手给的数。</b>
+     * 最长的一行是 R16 步枪：产物名 + 五项材料，形如
+     * {@code 步枪 ×1  铁锭 8/8 铜锭 3/3 晶体 1/1 火药 6/6 木棍 2/2 [合成]}。
+     * 中文按 12 px/字、ASCII 按 6 px/字估（见 {@link BitmapFont}），
+     * 约 16 个汉字 + 30 个半角字符 ≈ 372 px，取 380 留一点余量。
+     *
+     * <p>这个值只在 1280×720 给过一次校准（见 {@code InventoryLayoutTest} 里
+     * "最长那一行必须放得进合成栏"那条断言）—— 若将来加更长的配方，
+     * 那条断言会先变红，提醒这里要改，而不是让文字被画到面板外面去。
+     */
+    private static final int CRAFT_COLUMN_WIDTH = 380;
+
+    /** 一行的高度（基准像素）：图标 20 + 上下各留 2，与槽位同一套节奏。 */
+    private static final int CRAFT_ROW_HEIGHT = 24;
+
+    /** 合成栏标题的占位（基准像素；与面板标题同为 LABEL_SCALE 的中文行盒）。 */
+    private static final int CRAFT_TITLE_HEIGHT = 24;
+
     private final int fbWidth;
     private final int fbHeight;
     private final int uiScale;
@@ -46,9 +76,19 @@ public final class InventoryLayout {
     private final int hotbarRowY;
     private final int separatorY;
 
+    // ---- 右侧合成栏（2026-10-03）----
+    private final int craftX;
+    private final int craftWidth;
+    private final int craftTitleY;
+    private final int craftFirstRowY;
+    private final int craftRowHeight;
+    private final int craftRowCount;
+
     private InventoryLayout(int fbWidth, int fbHeight, int uiScale, int slotSize, int gap, int pad,
                             int panelX, int panelY, int panelWidth, int panelHeight,
-                            int titleY, int firstRowY, int hotbarRowY, int separatorY) {
+                            int titleY, int firstRowY, int hotbarRowY, int separatorY,
+                            int craftX, int craftWidth, int craftTitleY, int craftFirstRowY,
+                            int craftRowHeight, int craftRowCount) {
         this.fbWidth = fbWidth;
         this.fbHeight = fbHeight;
         this.uiScale = uiScale;
@@ -63,9 +103,24 @@ public final class InventoryLayout {
         this.firstRowY = firstRowY;
         this.hotbarRowY = hotbarRowY;
         this.separatorY = separatorY;
+        this.craftX = craftX;
+        this.craftWidth = craftWidth;
+        this.craftTitleY = craftTitleY;
+        this.craftFirstRowY = craftFirstRowY;
+        this.craftRowHeight = craftRowHeight;
+        this.craftRowCount = craftRowCount;
     }
 
     public static InventoryLayout compute(int fbWidth, int fbHeight) {
+        return compute(fbWidth, fbHeight, 0);
+    }
+
+    /**
+     * 计算布局。
+     *
+     * @param craftRowCount 合成栏要显示的行数（0 = 本帧不画合成栏）
+     */
+    public static InventoryLayout compute(int fbWidth, int fbHeight, int craftRowCount) {
         int scale = UiMetrics.uiScale(fbHeight);
         int slot = UiMetrics.px(UiMetrics.SLOT_SIZE, scale);
         int gap = UiMetrics.px(UiMetrics.SLOT_GAP, scale);
@@ -76,18 +131,30 @@ public final class InventoryLayout {
         int mainRows = Inventory.MAIN_SIZE / COLUMNS;
         int mainHeight = mainRows * slot + (mainRows - 1) * gap;
 
-        // 标题的占位必须按「行盒」算，不能按字号估：
-        // 中文占满 12 行行盒，而标题是用 LABEL_SCALE(=2) 画的，所以它的实际占位是
-        // 12 × 2 × scale。原先这里写死 PANEL_TITLE_H = 16（≈ ASCII 的 7 行 × 2），
-        // 少留了 8 × scale，标题墨迹正好顶到第一行格子的上沿（实测间隙 0–2px）。
-        // 常量已删除，避免"下次有人照着 16 再写一遍"。
         int titleH = BitmapFont.lineHeight(UiMetrics.px(UiMetrics.LABEL_SCALE, scale));
         int contentHeight = mainHeight + separator + slot;
 
-        int panelWidth = gridWidth + 2 * pad;
-        int panelHeight = pad + titleH + pad + contentHeight + pad;
+        // ---- 右侧合成栏（2026-10-03：背包内合成）----
+        // 它把面板从"只有 36 格"变成"左背包 + 右配方列表"。
+        // 栏宽先按常量算，再夹到"面板不得越出帧缓冲"这条硬约束之内 ——
+        // 极窄的帧缓冲下降级是"栏变窄"，而不是"整块面板被挤出屏幕"。
+        int craftWidth = craftRowCount > 0
+                ? Math.min(UiMetrics.px(CRAFT_COLUMN_WIDTH, scale),
+                        Math.max(0, fbWidth - (gridWidth + 2 * pad
+                                + UiMetrics.px(CRAFT_COLUMN_GAP, scale) + pad)))
+                : 0;
+        int craftRowH = UiMetrics.px(CRAFT_ROW_HEIGHT, scale);
+        int craftTitleH = craftRowCount > 0 ? UiMetrics.px(CRAFT_TITLE_HEIGHT, scale) : 0;
+        int craftColumnHeight = craftRowCount > 0
+                ? craftTitleH + UiMetrics.px(4, scale) + craftRowCount * craftRowH : 0;
 
-        int panelX = (fbWidth - panelWidth) / 2;
+        int leftWidth = gridWidth + 2 * pad;
+        int panelWidth = craftWidth > 0
+                ? gridWidth + 2 * pad + UiMetrics.px(CRAFT_COLUMN_GAP, scale) + craftWidth
+                : leftWidth;
+        int panelHeight = pad + titleH + pad + Math.max(contentHeight, craftColumnHeight) + pad;
+
+        int panelX = Math.max(0, (fbWidth - panelWidth) / 2);
         int panelY = Math.max(0, (fbHeight - panelHeight) / 2);
 
         int titleY = panelY + pad;
@@ -95,9 +162,16 @@ public final class InventoryLayout {
         int separatorY = firstRowY + mainHeight;
         int hotbarRowY = separatorY + separator;
 
+        int craftX = craftWidth > 0
+                ? panelX + pad + gridWidth + UiMetrics.px(CRAFT_COLUMN_GAP, scale) : 0;
+        int craftTitleY = firstRowY;
+        int craftFirstRowY = craftRowCount > 0
+                ? craftTitleY + craftTitleH + UiMetrics.px(4, scale) : 0;
+
         return new InventoryLayout(fbWidth, fbHeight, scale, slot, gap, pad,
                 panelX, panelY, panelWidth, panelHeight,
-                titleY, firstRowY, hotbarRowY, separatorY);
+                titleY, firstRowY, hotbarRowY, separatorY,
+                craftX, craftWidth, craftTitleY, craftFirstRowY, craftRowH, craftRowCount);
     }
 
     // ============================================================ 查询
@@ -142,6 +216,77 @@ public final class InventoryLayout {
     /** 主背包 3 行与快捷栏 1 行之间的分隔线 y。 */
     public int separatorY() {
         return separatorY;
+    }
+
+    // ============================================================ 右侧合成栏（2026-10-03）
+
+    /** 本布局是否含合成栏（{@code craftRowCount > 0}）。 */
+    public boolean hasCraftColumn() {
+        return craftRowCount > 0 && craftWidth > 0;
+    }
+
+    /** 合成栏左边界 x。 */
+    public int craftX() {
+        return craftX;
+    }
+
+    /** 合成栏宽度。 */
+    public int craftWidth() {
+        return craftWidth;
+    }
+
+    /** 合成栏标题的 y。 */
+    public int craftTitleY() {
+        return craftTitleY;
+    }
+
+    /** 一行的高度。 */
+    public int craftRowHeight() {
+        return craftRowHeight;
+    }
+
+    /** 行数。 */
+    public int craftRowCount() {
+        return craftRowCount;
+    }
+
+    /** 第 {@code index} 行的上边界 y。 */
+    public int craftRowY(int index) {
+        return craftFirstRowY + index * craftRowHeight;
+    }
+
+    /** 第 {@code index} 行的矩形是否包含给定像素点。 */
+    public boolean hitTestCraftRow(int index, double mouseX, double mouseY) {
+        if (!hasCraftColumn() || index < 0 || index >= craftRowCount) {
+            return false;
+        }
+        double y = craftRowY(index);
+        return mouseX >= craftX && mouseX < craftX + craftWidth
+                && mouseY >= y && mouseY < y + craftRowHeight;
+    }
+
+    /**
+     * 命中第几行；没命中返回 {@code -1}。
+     *
+     * <p><b>它与 {@link #hitTestAny} 是两个互不相干的通道</b>，刻意不做成一个
+     * 返回"槽位或配方行"的联合下标：两者一个是 {@code 0..35}、一个是 {@code 0..N-1}，
+     * 合成一个整数区间会让"第 3 个"到底是格子还是配方变成一个要靠注释才能分清的事。
+     */
+    public int hitTestCraftAny(double mouseX, double mouseY) {
+        if (!hasCraftColumn()) {
+            return -1;
+        }
+        for (int i = 0; i < craftRowCount; i++) {
+            if (hitTestCraftRow(i, mouseX, mouseY)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** 第 {@code index} 行中心的帧缓冲像素坐标（自测用它把光标"瞄准"到行上）。 */
+    public double[] craftRowCenter(int index) {
+        return new double[]{craftX + craftWidth / 2.0, craftRowY(index) + craftRowHeight / 2.0};
     }
 
     /** 某绝对槽位的左上角 x。 */

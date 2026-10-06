@@ -60,7 +60,10 @@ public final class ItemIcon {
             case BLOCK -> blockParts(out, x, y, size, item);
             case GUN -> gunParts(out, x, y, size, item);
             case AMMO -> ammoParts(out, x, y, size);
-            case MATERIAL -> materialParts(out, x, y, size);
+            // 材料按"具体是哪种材料"分派（M4）：此前所有材料共用一个几何，
+            // 单种材料（煤炭）时没问题，一旦有了铁锭/铜锭/晶体/火药/木棍，
+            // 快捷栏里就会出现五格一模一样的图标 —— 玩家分不出自己拿的是什么。
+            case MATERIAL -> materialParts(out, x, y, size, item);
             default -> blockParts(out, x, y, size, item); // EMPTY 不应出现（已上方拦截），兜底当方块
         }
         return out;
@@ -90,12 +93,38 @@ public final class ItemIcon {
                 float b = item.block().colorB();
                 yield new float[]{r, g, b, 1.0f};
             }
-            case GUN -> ItemRegistry.SMG_ICON_ID.equals(iconIdOf(item))
-                    ? SMG_ICON_COLOR
-                    : UiTheme.ITEM_GUN_COLOR;
+            case GUN -> {
+                // 每把枪一个主色：手枪冷灰 / SMG 冷暗绿 / 步枪深胡桃木。
+                String icon = iconIdOf(item);
+                if (ItemRegistry.SMG_ICON_ID.equals(icon)) {
+                    yield SMG_ICON_COLOR;
+                }
+                if (ItemRegistry.RIFLE_ICON_ID.equals(icon)) {
+                    yield RIFLE_ICON_COLOR;
+                }
+                yield UiTheme.ITEM_GUN_COLOR;
+            }
             case AMMO -> UiTheme.ITEM_AMMO_COLOR;
-            case MATERIAL -> UiTheme.ITEM_MATERIAL_COLOR;
+            case MATERIAL -> materialColor(item);
             default -> UiTheme.ITEM_MATERIAL_COLOR;
+        };
+    }
+
+    /**
+     * 材料的主色。
+     *
+     * <p>煤炭沿用既有的 {@link UiTheme#ITEM_MATERIAL_COLOR}（逐值不变，M2 的断言依赖它）；
+     * 新增的 5 种材料各有自己的颜色 —— 手里的材料与快捷栏里的图标是同一个色，
+     * 玩家据此认出"我拿的是同一件东西"（与 {@code ViewmodelKind} 的说明同源）。
+     */
+    private static float[] materialColor(Item item) {
+        return switch (item.id()) {
+            case ItemRegistry.IRON_INGOT_ID -> IRON_INGOT_COLOR;
+            case ItemRegistry.COPPER_INGOT_ID -> COPPER_INGOT_COLOR;
+            case ItemRegistry.CRYSTAL_ID -> CRYSTAL_COLOR;
+            case ItemRegistry.GUNPOWDER_ID -> GUNPOWDER_COLOR;
+            case ItemRegistry.STICK_ID -> STICK_COLOR;
+            default -> UiTheme.ITEM_MATERIAL_COLOR;   // 煤炭
         };
     }
 
@@ -137,7 +166,7 @@ public final class ItemIcon {
     // ---- 枪：按 iconId 分派（v2 §4.2 第②项：两把枪的图标必须肉眼可分）----
 
     /**
-     * 枪械图标：手枪与 SMG 各走一套几何 + 配色。
+     * 枪械图标：手枪 / SMG / 步枪各走一套几何 + 配色。
      *
      * <p><b>为什么按 {@link Item#presentation()} 的 {@code iconId} 而不是按 kind 分派：</b>
      * kind 只能回答"这是不是枪"，回答不了"是哪把枪"。M2 只有手枪时这没问题，
@@ -150,11 +179,18 @@ public final class ItemIcon {
      * 不该兼任"用哪张图"的开关。
      *
      * <p>未知 iconId 兜底走手枪几何：宁可画错一把枪，也不要画出一格空白 ——
-     * 空白会让玩家以为那一格是空的。
+     * 空白会让玩家以为那一格是空的。与 {@code ViewmodelGeometry.gunParts} 同一条口径：
+     * 兜底是防御，不是"可以忘记加分支"的理由 —— 加枪必被覆盖由
+     * {@code ItemIconTest} 遍历注册表里每一把枪来保证。
      */
     private static void gunParts(List<IconPart> out, float x, float y, float size, Item item) {
-        if (ItemRegistry.SMG_ICON_ID.equals(iconIdOf(item))) {
+        String icon = iconIdOf(item);
+        if (ItemRegistry.SMG_ICON_ID.equals(icon)) {
             smgParts(out, x, y, size);
+            return;
+        }
+        if (ItemRegistry.RIFLE_ICON_ID.equals(icon)) {
+            rifleParts(out, x, y, size);
             return;
         }
         pistolParts(out, x, y, size);
@@ -208,6 +244,32 @@ public final class ItemIcon {
                 0.62f, 0.66f, 0.64f, 1.0f);
     }
 
+    // ---- 步枪：最长的枪管 + 机匣上方的瞄准镜 + 向后的枪托 ----
+    //
+    // 相对手枪与 SMG 的三处可辨识差异（由 ItemIconTest 断言三张图标两两不相等）：
+    //   ① 枪管最长（伸到 0.94，SMG 是 0.98 但更细；手枪只到 0.88）—— 见下方具体值；
+    //   ② **瞄准镜**：机匣上方的一段凸起矩形 —— 手枪与 SMG 都没有这个部件；
+    //   ③ 配色是深胡桃木色（唯一暖色），与手枪的冷灰、SMG 的冷暗绿都不同色相。
+
+    /** 步枪图标主色：深胡桃木 —— 三把枪里唯一偏暖的枪身色。 */
+    private static final float[] RIFLE_ICON_COLOR = {0.38f, 0.28f, 0.19f};
+
+    private static void rifleParts(List<IconPart> out, float x, float y, float size) {
+        float[] wood = RIFLE_ICON_COLOR;
+        // 枪托：从机匣向<b>后</b>下方伸出的一截（暖木色，与机匣同色但更暗）
+        add(out, x, y, size, 0.02f, 0.52f, 0.12f, 0.16f,
+                shade(wood[0], 0.85f), shade(wood[1], 0.85f), shade(wood[2], 0.85f), 1.0f);
+        // 机匣：比手枪更长更厚
+        add(out, x, y, size, 0.10f, 0.46f, 0.52f, 0.12f,
+                wood[0], wood[1], wood[2], 1.0f);
+        // 枪管：三把枪里最长的一条细管
+        add(out, x, y, size, 0.62f, 0.49f, 0.32f, 0.06f,
+                0.30f, 0.33f, 0.40f, 1.0f);
+        // 瞄准镜：机匣<b>上方</b>的凸起 —— 步枪独有
+        add(out, x, y, size, 0.24f, 0.34f, 0.22f, 0.12f,
+                0.26f, 0.29f, 0.36f, 1.0f);
+    }
+
     // ---- 弹药：竖立金铜弹壳 + 顶部深色弹头 ----
 
     private static void ammoParts(List<IconPart> out, float x, float y, float size) {
@@ -220,9 +282,96 @@ public final class ItemIcon {
                 shade(brass[0], 0.55f), shade(brass[1], 0.55f), shade(brass[2], 0.55f), 1.0f);
     }
 
-    // ---- 材料（煤炭）：近黑底 + 两个灰色高光点（矿石块面感） ----
+    // ---- 材料：按"具体是哪种材料"分派 ----
+    //
+    // 在只有煤炭时，所有材料共用一套"近黑底 + 两个灰色高光点"的几何是够的
+    // （见下 coalParts，逐值保留）。但 M4 引入 5 种新材料后，共用几何会让
+    // 快捷栏里出现五格一模一样的图标 —— 玩家看不出自己拿的是铁锭还是火药。
+    //
+    // 材料的**分派键是 stable ID 而不是 iconId**：{@code presentation()} 只挂在枪械上
+    // （见 Item 的构造不变式），材料没有 iconId 可用。这与
+    // {@code Localization.displayName(stableId)} 同源 —— 材料的表现解析一律以 stable ID 为准。
 
-    private static void materialParts(List<IconPart> out, float x, float y, float size) {
+    private static void materialParts(List<IconPart> out, float x, float y, float size, Item item) {
+        switch (item.id()) {
+            case ItemRegistry.IRON_INGOT_ID -> ingotParts(out, x, y, size, IRON_INGOT_COLOR);
+            case ItemRegistry.COPPER_INGOT_ID -> ingotParts(out, x, y, size, COPPER_INGOT_COLOR);
+            case ItemRegistry.CRYSTAL_ID -> crystalParts(out, x, y, size);
+            case ItemRegistry.GUNPOWDER_ID -> gunpowderParts(out, x, y, size);
+            case ItemRegistry.STICK_ID -> stickParts(out, x, y, size);
+            default -> coalParts(out, x, y, size);   // 煤炭：M2 既有几何，逐值不变
+        }
+    }
+
+    // 材料主色（图标与手里的物品同色，见 ViewmodelKind 的说明）。
+    private static final float[] IRON_INGOT_COLOR = {0.72f, 0.74f, 0.78f};   // 亮钢灰
+    private static final float[] COPPER_INGOT_COLOR = {0.72f, 0.45f, 0.26f}; // 铜橙
+    private static final float[] CRYSTAL_COLOR = {0.45f, 0.78f, 0.86f};      // 冷青
+    private static final float[] GUNPOWDER_COLOR = {0.30f, 0.30f, 0.33f};    // 深灰
+    private static final float[] STICK_COLOR = {0.47f, 0.33f, 0.19f};        // 木褐
+
+    /**
+     * 锭的形状：下宽上窄的两段（金属锭的剪影）。
+     *
+     * <p>铁锭与铜锭共用这条几何、只换颜色 —— 它们是同一种"形制"、
+     * 只靠材质区分的物品，这与玩家对"两种锭"的心智一致；
+     * 可区分性由颜色承担，{@code ItemIconTest} 会断言两者颜色确实不同。
+     */
+    private static void ingotParts(List<IconPart> out, float x, float y, float size, float[] color) {
+        // 主体（下段，宽）
+        add(out, x, y, size, 0.14f, 0.44f, 0.72f, 0.26f,
+                color[0], color[1], color[2], 1.0f);
+        // 顶面（上段，窄）—— 打出"上表面受光"的伪 3D 感
+        add(out, x, y, size, 0.24f, 0.32f, 0.52f, 0.14f,
+                shade(color[0], 1.18f), shade(color[1], 1.18f), shade(color[2], 1.18f), 1.0f);
+        // 底面暗边
+        add(out, x, y, size, 0.14f, 0.62f, 0.72f, 0.10f,
+                shade(color[0], 0.72f), shade(color[1], 0.72f), shade(color[2], 0.72f), 1.0f);
+    }
+
+    /** 晶体：上下尖、中间宽的宝石剪影（与"锭"完全不同的轮廓）。 */
+    private static void crystalParts(List<IconPart> out, float x, float y, float size) {
+        float[] c = CRYSTAL_COLOR;
+        // 顶部尖端
+        add(out, x, y, size, 0.42f, 0.12f, 0.16f, 0.14f,
+                shade(c[0], 1.20f), shade(c[1], 1.20f), shade(c[2], 1.20f), 1.0f);
+        // 主体（最宽）
+        add(out, x, y, size, 0.28f, 0.26f, 0.44f, 0.30f,
+                c[0], c[1], c[2], 1.0f);
+        // 内高光棱
+        add(out, x, y, size, 0.38f, 0.30f, 0.10f, 0.22f,
+                0.86f, 0.96f, 1.00f, 1.0f);
+        // 底部尖端
+        add(out, x, y, size, 0.42f, 0.56f, 0.16f, 0.24f,
+                shade(c[0], 0.78f), shade(c[1], 0.78f), shade(c[2], 0.78f), 1.0f);
+    }
+
+    /** 火药：一小堆颗粒（三个小块 + 顶上一个）。 */
+    private static void gunpowderParts(List<IconPart> out, float x, float y, float size) {
+        float[] c = GUNPOWDER_COLOR;
+        // 底层三堆
+        add(out, x, y, size, 0.16f, 0.56f, 0.22f, 0.22f, c[0], c[1], c[2], 1.0f);
+        add(out, x, y, size, 0.40f, 0.54f, 0.22f, 0.26f,
+                shade(c[0], 1.10f), shade(c[1], 1.10f), shade(c[2], 1.10f), 1.0f);
+        add(out, x, y, size, 0.64f, 0.56f, 0.22f, 0.22f, c[0], c[1], c[2], 1.0f);
+        // 顶上的一堆：堆成小丘
+        add(out, x, y, size, 0.36f, 0.36f, 0.30f, 0.20f,
+                shade(c[0], 0.85f), shade(c[1], 0.85f), shade(c[2], 0.85f), 1.0f);
+    }
+
+    /** 木棍：两根细长的褐色木条（竖长条 —— 与所有"块状"材料天然可分）。 */
+    private static void stickParts(List<IconPart> out, float x, float y, float size) {
+        float[] c = STICK_COLOR;
+        add(out, x, y, size, 0.26f, 0.18f, 0.13f, 0.60f,
+                c[0], c[1], c[2], 1.0f);
+        add(out, x, y, size, 0.28f, 0.20f, 0.04f, 0.56f,
+                shade(c[0], 1.25f), shade(c[1], 1.25f), shade(c[2], 1.25f), 1.0f);
+        add(out, x, y, size, 0.56f, 0.24f, 0.13f, 0.58f,
+                shade(c[0], 0.88f), shade(c[1], 0.88f), shade(c[2], 0.88f), 1.0f);
+    }
+
+    /** 煤炭：M2 既有几何（近黑底 + 两个灰色高光点），逐值不变。 */
+    private static void coalParts(List<IconPart> out, float x, float y, float size) {
         float[] base = UiTheme.ITEM_MATERIAL_COLOR;
         // 底块
         add(out, x, y, size, 0.12f, 0.12f, 0.76f, 0.76f,

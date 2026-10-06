@@ -209,6 +209,35 @@ public final class BlockRegistry {
         register("skyisland:wooden_door", true, false, true, true, true,
                 1.0f, 0, RenderType.OPAQUE, 0x8B6334);
 
+        // ================================================================
+        // 步枪材料链（主理人 2026-10-02 显式放行；PRD 5.1 标【Alpha 必须】）
+        //
+        // 为什么加这两块方块：PRD 的配方 R04（铜锭）与 R16（步枪）的输入物是
+        // **铜矿石**与**晶体**，而晶体是 {@code skyisland:crystal_ore} 的掉落物。
+        // 没有这两块方块，配方表里就会出现指向不存在物品的悬空引用 ——
+        // 那正是本项目明令禁止的"死接线"。
+        //
+        // **代价（必须知道）**：方块物品的 runtimeId 与方块 runtimeId 严格对齐，
+        // 且方块物品排在物品表最前面，因此**每多一个方块，其后所有非方块物品的
+        // runtimeId 整体 +1**（煤炭 15→17、手枪弹 16→18、手枪 17→19、SMG 18→20）。
+        // 这条位移是安全的：PRD 12.3 规定存档只写 stable string ID，运行期不写 runtimeId。
+        // 它由 {@code ItemRegistryTest} 的稳定性断言显式钉住，位移必须有人显式改数字。
+        //
+        // 本轮**不做矿石生成**（范围裁定：数据层 + 合成逻辑）：
+        // 两块矿石登记后不会出现在世界里，材料由开局装备发放。
+        // 生成器接入是独立的一步，见报告 §边界。
+        // ================================================================
+        // 铜矿石：PRD 5.1 —— 硬度 3.0（首版无工具系统，验收按"空手耗时"列 3.5 秒），
+        // 掉落自身 ×1。颜色取铜锈的偏橙褐，与铁矿石的灰褐（0x9A8C7A）拉开色相。
+        register("skyisland:copper_ore", true, false, true, true, true,
+                3.5f, 0, RenderType.OPAQUE, 0x9A6B4A);
+        // 晶体矿石：PRD 5.1 —— 硬度 5.0（空手 8.0 秒，最硬的可挖方块），
+        // **掉晶体（物品）×1**（与煤炭矿石一样是"方块掉非方块物品"）。
+        // 颜色取冷青蓝：它是最高阶的枪械材料，视觉上要与两种金属矿明显不同。
+        register("skyisland:crystal_ore", true, false, true, true, true,
+                8.0f, 0, RenderType.OPAQUE, 0x7FB8C8,
+                "skyisland:crystal", 1);
+
         bootstrapped = true;
         verify();
     }
@@ -297,11 +326,37 @@ public final class BlockRegistry {
         return byName("skyisland:wooden_door");
     }
 
+    // ---- 步枪材料链新增的 2 种矿石（PRD 5.1【Alpha 必须】，2026-10-02 主理人放行）----
+
+    /** 铜矿石（R04 铜锭的输入物）。 */
+    public static Block copperOre() {
+        return byName("skyisland:copper_ore");
+    }
+
+    /** 晶体矿石（掉落晶体，R16 步枪的稀有输入物）。 */
+    public static Block crystalOre() {
+        return byName("skyisland:crystal_ore");
+    }
+
     /**
-     * MVP 玩家常规方块数量（PRD 5.1 / 5.1.1 口径）。
+     * PRD 5.1 定义的 <b>MVP 核心玩家常规方块数</b>。
      *
-     * <p>PRD 的数量口径是 <b>13 种玩家常规方块 + 1 种系统方块</b>，
-     * 系统方块单独计数、不得当作第 14 种玩家可用方块（PRD 第 8 章）。
+     * <p>它<b>不是</b> {@link #playerBlockCount()} 的当前值 —— 2026-10-02 落地的步枪材料链
+     * 追加了 2 种【Alpha 必须】矿石（铜矿石 / 晶体矿石），使当前值升到 15。
+     * 把"MVP 核心 13"与"Alpha 追加"分成两个数字，是为了让
+     * "PRD 的 MVP 口径没被改动"这件事仍然可断言（见 {@code BlockRegistryTest}）。
+     */
+    public static final int MVP_CORE_PLAYER_BLOCK_COUNT = 13;
+
+    /** 步枪材料链追加的【Alpha 必须】矿石方块数（铜矿石 + 晶体矿石）。 */
+    public static final int ALPHA_ORE_BLOCK_COUNT = 2;
+
+    /**
+     * 玩家常规方块数量（PRD 5.1 / 5.1.1 口径）。
+     *
+     * <p>PRD 的口径原本是 <b>13 种玩家常规方块 + 1 种系统方块</b>；
+     * 2026-10-02 追加 2 种 Alpha 矿石后为 <b>15 + 1</b>。
+     * 系统方块单独计数、不得当作玩家可用方块（PRD 第 8 章）。
      * 这个方法把口径写成可断言的数字，让"方块数量对不对"不再靠人工数表。
      */
     public static int playerBlockCount() {

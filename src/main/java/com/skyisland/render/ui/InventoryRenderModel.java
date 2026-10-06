@@ -1,5 +1,6 @@
 package com.skyisland.render.ui;
 
+import com.skyisland.craft.CraftingPanel;
 import com.skyisland.player.Inventory;
 
 /**
@@ -46,6 +47,19 @@ public final class InventoryRenderModel {
 
     /** 鼠标悬停的绝对槽位索引；{@code -1} 表示未悬停在任何格子上。 */
     public int hoverSlot = -1;
+
+    /**
+     * 右侧合成栏的界面模型；{@code null} 表示本帧不画合成栏。
+     *
+     * <p><b>为什么持有模型而不是拷一份行数组：</b>与 {@link #inventory} 同一条理由 ——
+     * 合成栏的状态（哪一行可合成）必须由"当前背包"与 {@link com.skyisland.craft.Crafting}
+     * 现算，界面若持有一份快照，就会出现"刚合完、界面还显示能再合一次"。
+     * 刷新时机由游戏层显式控制（背包变化时与合成后），见 {@code CraftingPanel}。
+     */
+    public CraftingPanel craftingPanel;
+
+    /** 鼠标悬停的配方行号；{@code -1} 表示未悬停在任何行上。 */
+    public int hoverCraftRow = -1;
 
     /** 光标位置（帧缓冲像素）。未获得指针时为 {@code Double.NaN}，渲染器据此不画跟随光标的那一堆。 */
     public double mouseX = Double.NaN;

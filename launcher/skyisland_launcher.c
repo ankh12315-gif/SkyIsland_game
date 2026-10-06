@@ -10,17 +10,21 @@
  *  on every double-click. This is a real .exe with the game icon embedded, so
  *  a single double-click entry point can live on the Desktop.
  *
- *  It does exactly what play-m2.bat does, only natively:
+ *  It does exactly what play-m3.bat does, only natively:
  *    1. find the project dir  (SKYISLAND_HOME > the exe's own dir > built-in)
- *    2. find a JDK            (SKYISLAND_JDK > JAVA_HOME > built-in > PATH)
- *    3. require EXACTLY ONE target\skyisland-*.jar. Two jars means a stale
- *       build, and guessing which one to run is how you end up testing last
- *       week's bytecode. Same rule as play-m2.bat, same refusal to guess.
+ *    2. find a JDK            (SKYISLAND_JDK > built-in > JAVA_HOME > PATH)
+ *    3. require EXACTLY ONE REAL target\skyisland-*.jar. Two *different* jars
+ *       means a stale build, and guessing which one to run is how you end up
+ *       testing last week's bytecode. Same rule as play-m3.bat, same refusal
+ *       to guess. The shade plugin's byte-identical "-shaded.jar" alias and its
+ *       "original-*" thin backup are excluded on purpose (see step 3).
  *    4. create the throwaway play save dir
  *    5. run  <java> --enable-native-access=ALL-UNNAMED <extra args>
- *              -Dskyisland.worldName=m21-play
- *              -Dskyisland.settingsFile=<proj>\tmp\m21-play-settings.json
- *              -Dskyisland.saveDir=<proj>\tmp\m21-play-saves
+ *              -Dskyisland.infiniteReserve=true
+ *              -Dskyisland.loadout=dev
+ *              -Dskyisland.worldName=m3-play
+ *              -Dskyisland.settingsFile=<proj>\tmp\m3-play-settings.json
+ *              -Dskyisland.saveDir=<proj>\tmp\m3-play-saves
  *              -jar <jar>
  *       (extra args land before the fixed -D switches, exactly as in the .bat,
  *        so the fixed ones always win)
@@ -41,8 +45,11 @@
  *    SKYISLAND_NO_DIALOG  =1 -> print errors to stderr instead of showing a
  *                         modal dialog (a modal box would block a test run)
  *
- *  Exit codes: 2 no JDK, 3 not exactly one jar, 4 cannot prepare dirs,
+ *  Exit codes: 2 no JDK, 3 not exactly one real jar, 4 cannot prepare dirs,
  *              5 cannot start the JVM, otherwise the game's own exit code.
+ *
+ *  Build:  node tmp/build_launcher.js   (see that file for why the .exe is
+ *          not tracked and therefore must be rebuilt after any source change)
  * ===========================================================================
  */
 
@@ -57,9 +64,23 @@
 
 static const wchar_t* const kDefaultProjectDir = L"F:\\minecraftspace";
 static const wchar_t* const kDefaultJdkDir = L"D:\\software\\jdk-25";
-static const wchar_t* const kWorldName = L"m21-play";
-static const wchar_t* const kSaveRelDir = L"tmp\\m21-play-saves";
-static const wchar_t* const kSettingsRel = L"tmp\\m21-play-settings.json";
+/* M3 play world. The old values (m21-play / tmp\m21-play-*) came from the M2.1
+ * era and were the reason the Desktop entry point kept launching a world with a
+ * single pistol and no rifles: the file was a frozen 09-23 binary that nobody
+ * rebuilt after the world name moved. */
+static const wchar_t* const kWorldName = L"m3-play";
+static const wchar_t* const kSaveRelDir = L"tmp\\m3-play-saves";
+static const wchar_t* const kSettingsRel = L"tmp\\m3-play-settings.json";
+
+/* Play switches, kept in lockstep with play-m3.bat. Both are "fail towards the
+ * product default": without them this entry point would silently differ from
+ * the .bat one, which is exactly the class of bug this file already had.
+ *   infiniteReserve=true -> ReserveMode.PROTOTYPE (v2 19-7 debug wording)
+ *   loadout=dev          -> rifles + transition material kit, i.e. the DEV /
+ *                           TEST loadout. A typo in the value would fall back to
+ *                           SURVIVAL (fewer guns), never to a broken launcher. */
+static const wchar_t* const kExtraSwitches =
+    L"-Dskyisland.infiniteReserve=true -Dskyisland.loadout=dev ";
 
 /* ---------------------------------------------------------------------------
  * Small wide-string helpers.
@@ -183,6 +204,32 @@ static void fail(const wchar_t* msg, int code) {
     ExitProcess((UINT)code);
 }
 
+/* ---------------------------------------------------------------------------
+ * Is this file one of the two artefacts the shade plugin leaves behind that are
+ * NOT a runnable candidate?
+ *
+ *   skyisland-<v>-shaded.jar  a BYTE-IDENTICAL alias of the real artifact
+ *                             (verified: same sha256, 5794668 B). Counting it
+ *                             is what made both this launcher and play-m3.bat
+ *                             refuse to start with "Expected exactly 1 jar".
+ *   original-skyisland-<v>.jar  the thin pre-shade backup (679100 B, no deps).
+ *
+ * The suffix test is a FIXED-WIDTH tail compare, not a wildcard, and that is
+ * deliberate: the .bat equivalent went through `if ... neq "skyisland-*-shaded"`
+ * first, and cmd's string comparison does NOT glob (only `if exist` does), so
+ * the alias was counted anyway. Here in C there is no glob trap -- but the
+ * lesson is worth keeping in the shape of the code: compare the exact tail.
+ * ------------------------------------------------------------------------- */
+static BOOL w_is_shade_artefact(const wchar_t* name) {
+    static const wchar_t tail[] = L"-shaded.jar";
+    const size_t n = wcslen(name);
+    const size_t m = (sizeof(tail) / sizeof(tail[0])) - 1; /* 11 */
+    if (n < m) {
+        return FALSE;
+    }
+    return _wcsicmp(name + (n - m), tail) == 0;
+}
+
 /* Everything after the exe path in the raw command line, preserved verbatim
  * (GetCommandLineW so we do not lose any non-ASCII argument). */
 static const wchar_t* extra_args(void) {
@@ -273,27 +320,38 @@ int main(void) {
         }
     }
 
-    /* ---- 2. java -------------------------------------------------------- */
+    /* ---- 2. java --------------------------------------------------------
+     * Order: SKYISLAND_JDK > the built-in jdk-25 > JAVA_HOME > PATH.
+     *
+     * WHY the built-in comes before JAVA_HOME: this project builds with JDK 25
+     * and that is what the .bat launchers use. JAVA_HOME on this machine points
+     * at jdk-23, and the old order silently ran the game on 23 while every log
+     * and gate said 25 -- "works fine either way" until it does not, at which
+     * point nothing in the evidence points at the real cause. */
     javaPath[0] = 0;
     if (env_get(L"SKYISLAND_JDK", buf, MAXP) && buf[0] != 0) {
         w_join(javaPath, MAXP, buf, L"bin\\java.exe");
+    }
+    if (javaPath[0] == 0 || !w_is_file(javaPath)) {
+        w_join(javaPath, MAXP, kDefaultJdkDir, L"bin\\java.exe");
     }
     if (javaPath[0] == 0 || !w_is_file(javaPath)) {
         if (env_get(L"JAVA_HOME", buf, MAXP) && buf[0] != 0) {
             w_join(javaPath, MAXP, buf, L"bin\\java.exe");
         }
     }
-    if (javaPath[0] == 0 || !w_is_file(javaPath)) {
-        w_join(javaPath, MAXP, kDefaultJdkDir, L"bin\\java.exe");
-    }
     if (!w_is_file(javaPath)) {
         w_set(javaPath, MAXP, L"java");
     }
     if (wcscmp(javaPath, L"java") == 0) {
         w_set(msg, MAXP * 2, L"No JDK found.\n\n");
-        w_add(msg, MAXP * 2, L"Looked for: ");
+        w_add(msg, MAXP * 2, L"Tried, in order:\n");
+        w_add(msg, MAXP * 2, L"    $SKYISLAND_JDK\\bin\\java.exe\n");
+        w_add(msg, MAXP * 2, L"    ");
         w_add(msg, MAXP * 2, kDefaultJdkDir);
-        w_add(msg, MAXP * 2, L"\\bin\\java.exe\n\nSet SKYISLAND_JDK or JAVA_HOME, or install a JDK 21+.");
+        w_add(msg, MAXP * 2, L"\\bin\\java.exe\n");
+        w_add(msg, MAXP * 2, L"    $JAVA_HOME\\bin\\java.exe\n\n");
+        w_add(msg, MAXP * 2, L"Install a JDK 21+ (this project builds on 25).");
         fail(msg, 2);
     }
 
@@ -311,7 +369,12 @@ int main(void) {
                 if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                     continue;
                 }
-                /* never the shade plugin's leftover "original-*" artefact */
+                /* never the shade plugin's leftover artefacts: the byte-identical
+                 * "-shaded.jar" alias (it matches this very glob) and the
+                 * "original-*" thin backup. Neither is a second version. */
+                if (w_is_shade_artefact(fd.cFileName)) {
+                    continue;
+                }
                 if (_wcsnicmp(fd.cFileName, L"skyisland-", 10) != 0) {
                     continue;
                 }
@@ -325,13 +388,37 @@ int main(void) {
     }
     if (jarCount != 1) {
         wchar_t num[32];
-        w_set(msg, MAXP * 2, L"Expected exactly 1 jar in\n");
+        w_set(msg, MAXP * 2, L"Expected exactly 1 runnable jar in\n");
         w_add(msg, MAXP * 2, targetDir);
         w_add(msg, MAXP * 2, L"\n\nfound ");
         w_uint((unsigned)jarCount, num, 32);
         w_add(msg, MAXP * 2, num);
-        w_add(msg, MAXP * 2, L".\n\nTwo skyisland-*.jar files means a stale build. Rebuild first:\n");
-        w_add(msg, MAXP * 2, L"    node tmp/build.js clean package");
+        w_add(msg, MAXP * 2, L".\n\nIgnored on purpose: original-*.jar (thin pre-shade backup) "
+                              L"and *-shaded.jar (byte-identical alias of the real artifact).\n\n"
+                              L"Two DIFFERENT skyisland-*.jar files means a stale build. "
+                              L"Which is actually there:\n");
+        {
+            /* Same reasoning as play-m3.bat's `dir /b` in the failure branch:
+             * a guard that only says "found 2" leaves the person stuck at
+             * "what do I even have". Listing the directory is 3 seconds of work. */
+            wchar_t listPat[MAXP];
+            WIN32_FIND_DATAW lfd;
+            HANDLE lh;
+            w_join(listPat, MAXP, targetDir, L"*.jar");
+            lh = FindFirstFileW(listPat, &lfd);
+            if (lh != INVALID_HANDLE_VALUE) {
+                do {
+                    if (lfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                        continue;
+                    }
+                    w_add(msg, MAXP * 2, L"    ");
+                    w_add(msg, MAXP * 2, lfd.cFileName);
+                    w_add(msg, MAXP * 2, L"\n");
+                } while (FindNextFileW(lh, &lfd));
+                FindClose(lh);
+            }
+        }
+        w_add(msg, MAXP * 2, L"\nRebuild with:\n    node tmp/build.js clean package");
         fail(msg, 3);
     }
 
@@ -365,6 +452,7 @@ int main(void) {
         w_add(cmd, MAXCMD, extra);
         w_add(cmd, MAXCMD, L" ");
     }
+    w_add(cmd, MAXCMD, kExtraSwitches);
     w_add(cmd, MAXCMD, L"-Dskyisland.worldName=");
     w_add(cmd, MAXCMD, kWorldName);
     w_add(cmd, MAXCMD, L" -Dskyisland.settingsFile=\"");
@@ -381,6 +469,8 @@ int main(void) {
     w_add(info, MAXP * 2, kWorldName);
     w_add(info, MAXP * 2, L"\n  save dir : ");
     w_add(info, MAXP * 2, saveDir);
+    w_add(info, MAXP * 2, L"\n  switches : ");
+    w_add(info, MAXP * 2, kExtraSwitches);
     w_add(info, MAXP * 2, L"\n  java     : ");
     w_add(info, MAXP * 2, javaPath);
     say(stdout, info);

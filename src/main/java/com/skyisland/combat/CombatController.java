@@ -15,6 +15,7 @@ import com.skyisland.world.World;
 import org.joml.Vector3d;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -206,6 +207,21 @@ public final class CombatController {
     private int lastDamage;
     private double lastDistance;
 
+    // ---- 每发复用的 scratch 向量（v2 §15：禁止因高射速增加每发分配）----
+    //
+    // 为什么是字段而不是局部变量：散布采样发生在"每发 × 每弹丸"的内层循环里，
+    // 是整条射击链上唯一会随射速与弹丸数<b>相乘</b>放大的分配点。
+    // 把基向量与方向向量提到字段上复用后，本类的这份开销与射速、弹丸数彻底无关。
+    //
+    // 复用是安全的：它们只在一次 resolveShot 内部存活，resolveShot 不递归、
+    // 也不把其中任何一个交给外部（Hitscan 只读 origin/direction）。
+    // ★ 注意 Hitscan.resolve 内部自己会 new 一个方向向量做归一化，那是"每条射线一次"、
+    //   与弹丸数线性 —— 若将来真的上线霰弹枪（多弹丸），这里才是下一个优化点。
+    private final Vector3d shotForward = new Vector3d();
+    private final Vector3d shotRight = new Vector3d();
+    private final Vector3d shotUp = new Vector3d();
+    private final Vector3d shotDirection = new Vector3d();
+
     public CombatController(EntityManager entities) {
         this.entities = entities;
     }
@@ -308,44 +324,89 @@ public final class CombatController {
      * 而挖掘与放置用的都是 {@code Player.raycastTarget} 的"眼睛 → 视线方向"射线。
      * 让射击共用同一个口径，就不存在"准星指着 A、子弹打到 B"这类两套射线不一致的问题 ——
      * 这正是 M1 已经解决过一次的事（准星即射线）。
+     *
+     * <h2>★ 弹丸循环（M3 接线修正：{@code pelletCount} / {@code spreadRad} 的读者）</h2>
+     * 一次击发按枪的数据发出 {@code spec.pelletCount()} 条射线，第 i 条的方向由
+     * {@link ShotSpread#offset} 在 {@code spec.spreadRad()} 的锥内给出。
+     *
+     * <p>M3 的两把枪都是 {@code pelletCount=1} / {@code spreadRad=0}，
+     * 此时循环恰好跑一轮且 {@link ShotSpread#offset} 返回的方向与准星<b>逐位相同</b> ——
+     * 因此这一步改造对现有两把枪是零行为变化（"准星指向即命中"不回退）。
+     * 它存在的意义是：把霰弹枪写进注册表就真的能打出多丸与散布，
+     * 而不是得到"一把伤害 6 倍的单发手枪"。
+     *
+     * <p>{@code shotsFired} 记的是<b>击发次数</b>（按下扳机一次），不是弹丸数；
+     * 命中统计（{@code entityHits} / {@code totalDamageDealt}）则按弹丸累加 ——
+     * 一次击发打中两个目标时，两个目标都该掉血，且都该被计入。
      */
     private void resolveShot(World world, Player player, GunState gun, Listener listener) {
         shotsFired++;
+        GunSpec spec = gun.spec();
         Vector3d origin = player.eyePosition();
-        Vector3d direction = new Vector3d(player.camera().forward()).normalize();
-        double range = gun.spec().range();
-        double ray = rayRange(gun.spec());
+        // 基向量每发算一次即可：散布只改变方向在锥内的落点，不改变锥的朝向。
+        shotForward.set(player.camera().forward()).normalize();
+        ShotSpread.basis(shotForward, shotRight, shotUp);
 
-        Hitscan.Result result = Hitscan.resolve(world, origin, direction, ray, entities.all());
+        double ray = rayRange(spec);
+        int pellets = spec.pelletCount();
+        double spreadRad = spec.spreadRad();
+        // 候选实体每发取一次（而不是每弹丸一次）：多弹丸时这是 O(1) 与 O(n) 的差别。
+        List<Entity> candidates = entities.all();
 
-        // 曳光终点：打中了就是命中点，没打中就是最大射程处
-        // （"打空也要有曳光"是必要的：没有它，玩家无法区分"没打中"与"没开枪"）
-        double endDistance = result.hitAnything() ? result.distance() : ray;
-        double endX = origin.x + direction.x * endDistance;
-        double endY = origin.y + direction.y * endDistance;
-        double endZ = origin.z + direction.z * endDistance;
-        listener.onShotFired(origin.x, origin.y, origin.z, endX, endY, endZ, result.hitAnything());
+        for (int pellet = 0; pellet < pellets; pellet++) {
+            ShotSpread.offset(shotForward, shotRight, shotUp, spreadRad, pellet, pellets,
+                    shotDirection);
+            Hitscan.Result result = Hitscan.resolve(world, origin, shotDirection, ray, candidates);
 
-        if (result.hitEntity()) {
-            Entity target = result.entity();
-            int damage = DamageFalloff.damage(gun.spec().damage(), result.distance(), range);
-            target.hurt(damage);
-            entityHits++;
-            totalDamageDealt += damage;
-            lastDamage = damage;
-            lastDistance = result.distance();
-            listener.onEntityHit(target, damage, result.distance());
-            Log.info("[战斗] 命中 %s：距离 %.2f 格 → 伤害 %d（基础 %d），目标生命 %d/%d",
-                    target.typeId(), result.distance(), damage, gun.spec().damage(),
-                    target.health(), target.maxHealth());
-        } else if (result.blockHit() != null) {
-            RaycastHit blockHit = result.blockHit();
-            blockHits++;
-            lastDistance = result.distance();
-            listener.onBlockHit(endX, endY, endZ,
-                    blockHit.faceNormalX(), blockHit.faceNormalY(), blockHit.faceNormalZ(),
-                    blockHit.blockRuntimeId());
+            // 曳光终点：打中了就是命中点，没打中就是最大射程处
+            // （"打空也要有曳光"是必要的：没有它，玩家无法区分"没打中"与"没开枪"）
+            double endDistance = result.hitAnything() ? result.distance() : ray;
+            double endX = origin.x + shotDirection.x * endDistance;
+            double endY = origin.y + shotDirection.y * endDistance;
+            double endZ = origin.z + shotDirection.z * endDistance;
+            listener.onShotFired(origin.x, origin.y, origin.z, endX, endY, endZ,
+                    result.hitAnything());
+
+            if (result.hitEntity()) {
+                Entity target = result.entity();
+                int damage = damageFor(spec, result.distance());
+                target.hurt(damage);
+                entityHits++;
+                totalDamageDealt += damage;
+                lastDamage = damage;
+                lastDistance = result.distance();
+                listener.onEntityHit(target, damage, result.distance());
+                Log.info("[战斗] 命中 %s：距离 %.2f 格 → 伤害 %d（基础 %d），目标生命 %d/%d",
+                        target.typeId(), result.distance(), damage, spec.damage(),
+                        target.health(), target.maxHealth());
+            } else if (result.blockHit() != null) {
+                RaycastHit blockHit = result.blockHit();
+                blockHits++;
+                lastDistance = result.distance();
+                listener.onBlockHit(endX, endY, endZ,
+                        blockHit.faceNormalX(), blockHit.faceNormalY(), blockHit.faceNormalZ(),
+                        blockHit.blockRuntimeId());
+            }
         }
+    }
+
+    /**
+     * 单发伤害口径（{@code GunSpec} → 实际扣血）。
+     *
+     * <p><b>为什么把它单独提出来（M3 接线修正）：</b>
+     * 伤害 = 基础伤害 × 距离衰减，而<b>衰减曲线的两个参数在 PRD 里是枪械表的列</b>
+     * （{@code falloffPerUnit} / {@code falloffFloor}）。这段逻辑必须只有一处：
+     * 否则"把衰减参数接到战斗路径上"这件事会在 {@code resolveShot} 里被写成一段
+     * 内联表达式，而单测无法在任意 {@link GunSpec} 上核对它 ——
+     * 只能靠"注册表里恰好有一把枪的衰减值与常量相同"来蒙对。
+     *
+     * <p>本方法是 GL-free / world-free 的纯函数：任何测试都可以构造一把
+     * {@code falloffPerUnit = 0.5} 的合成枪，断言它在 45 格处的伤害
+     * <b>不等于</b>按基线 0.9 算出的值 —— 那条断言才是"衰减真的由数据决定"的证明。
+     */
+    public static int damageFor(GunSpec spec, double distance) {
+        return DamageFalloff.damage(spec.damage(), distance, spec.range(),
+                spec.falloffPerUnit(), spec.falloffFloor());
     }
 
     // ============================================================ 状态

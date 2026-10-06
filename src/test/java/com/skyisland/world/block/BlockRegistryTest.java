@@ -24,17 +24,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class BlockRegistryTest {
 
     /**
-     * MVP 登记子集的数量。故意写死：新增方块时必须有人显式改这个数字并想一遍存档兼容。
+     * 登记子集的数量。故意写死：新增方块时必须有人显式改这个数字并想一遍存档兼容。
      *
-     * <p><b>15 = 1 空气 + 13 玩家常规 + 1 系统方块。</b>
+     * <p><b>17 = 1 空气 + 15 玩家常规 + 1 系统方块。</b>
      *
      * <p>沿革：M1 为 10（含提前注册的石砖）；Pre-M2 Corrective Closure（用户裁决 A10）
      * 把石砖移回 Alpha / M4，降为 9；M2 补齐 PRD 5.1 缺失的 6 种
      * （原木 / 树叶 / 铁矿石 / 煤炭矿石 / 火把 / 木门）后升为 15
-     * —— 此时才真正达成 PRD 的「13 种玩家常规方块 + 1 种系统方块」，
-     * 一并关闭审计缺口 G1 与 M3-GATE 的 MVP-BLOCK-017 / MVP-SCOPE-001。
+     * —— 此时才真正达成 PRD 的「13 种玩家常规方块 + 1 种系统方块」。
+     *
+     * <p><b>2026-10-02 升为 17：</b>步枪材料链追加了铜矿石与晶体矿石
+     * （PRD 5.1【Alpha 必须】），玩家常规方块由 13 升为 15。
+     * <b>这次改动的连带影响比"多两块方块"大</b>：方块物品排在物品表最前面，
+     * 因此所有非方块物品的 runtimeId 整体 +2（见 {@code ItemRegistryTest}
+     * 的 {@code pistolRuntimeIdIsStable}）。改这个数字前必须想一遍那条位移。
      */
-    private static final int EXPECTED_BLOCK_COUNT = 15;
+    private static final int EXPECTED_BLOCK_COUNT = 17;
 
     @Test
     void airOccupiesRuntimeIdZero() {
@@ -64,18 +69,24 @@ class BlockRegistryTest {
     // ================================================================
 
     /**
-     * PRD 5.1 / 5.1.1 的数量口径：<b>13 种玩家常规方块 + 1 种系统方块</b>。
+     * PRD 5.1 / 5.1.1 的数量口径。
      *
-     * <p>这条断言的价值在于把口径写成数字。审计发现 MVP 方块数量口径
-     * （MVP-BLOCK-017 / MVP-SCOPE-001）长期悬在"M3-GATE 前定死"，
-     * 原因是没有人能一眼说出"现在到底几种"。现在它能被断言。
+     * <p>原来这里断言"玩家常规方块 = 13"（MVP 口径）。2026-10-02 追加了
+     * 2 种【Alpha 必须】矿石后变成 15 —— 但把它拆成
+     * "MVP 核心 13 + Alpha 追加 2 = 15" 三条断言，而不是把 13 改成 15：
+     * 只该数字的话，"PRD 的 MVP 口径被悄悄改动"这件事就再也看不出来了。
      */
     @Test
-    void mvpBlockCountMatchesPrdThirteenPlusOne() {
-        assertEquals(13, BlockRegistry.playerBlockCount(),
-                "PRD 5.1：MVP 玩家常规方块 = 13 种");
+    void blockCountMatchesPrdMvpCorePlusAlphaOres() {
+        assertEquals(BlockRegistry.MVP_CORE_PLAYER_BLOCK_COUNT, 13,
+                "PRD 5.1：MVP 玩家常规方块口径 = 13 种（这个常量是 PRD 的原文数字）");
+        assertEquals(BlockRegistry.ALPHA_ORE_BLOCK_COUNT, 2,
+                "步枪材料链追加的 Alpha 矿石 = 2 种（铜矿石 / 晶体矿石）");
+        assertEquals(BlockRegistry.MVP_CORE_PLAYER_BLOCK_COUNT + BlockRegistry.ALPHA_ORE_BLOCK_COUNT,
+                BlockRegistry.playerBlockCount(),
+                "当前玩家常规方块 = MVP 核心 13 + Alpha 矿石 2 = 15");
         assertEquals(1, BlockRegistry.systemBlockCount(),
-                "PRD 5.1.1：MVP 系统方块 = 1 种（资源核心），单独计数、不得算作第 14 种玩家方块");
+                "PRD 5.1.1：系统方块 = 1 种（资源核心），单独计数、不得算作玩家方块");
     }
 
     /** M2 补齐的 6 种方块（审计缺口 G1 / MVP-BLOCK-005/007/009/010/012/013）。 */
@@ -141,8 +152,34 @@ class BlockRegistryTest {
         assertEquals(0, BlockRegistry.coalOre().lightEmission());
     }
 
-    private static void assertDrop(Block block, String itemId, int count, String why) {
-        assertTrue(block.hasDrop(), why + " —— " + block.id() + " 应有掉落");
+    /**
+     * 步枪材料链的两种矿石（PRD 5.1【Alpha 必须】，2026-10-02 主理人显式放行）。
+     *
+     * <p>它们存在的理由只有一个：让配方 R04（铜锭）与 R16（步枪）的输入物是
+     * <b>真实存在的东西</b>。没有它们，配方表里就会出现指向不存在物品的悬空引用 ——
+     * 而 {@code RecipeRegistry.verify()} 会拒绝这种配方。
+     */
+    @Test
+    void alphaOresMatchPrdSection51() {
+        assertNotNull(BlockRegistry.copperOre(), "铜矿石必须已登记（R04 铜锭的输入物）");
+        assertNotNull(BlockRegistry.crystalOre(), "晶体矿石必须已登记（R16 步枪的晶体来源）");
+
+        assertEquals(3.5f, BlockRegistry.copperOre().hardness(), 1e-6f,
+                "PRD 5.1：铜矿石空手 3.5 秒");
+        assertEquals(8.0f, BlockRegistry.crystalOre().hardness(), 1e-6f,
+                "PRD 5.1：晶体矿石空手 8.0 秒（全表最硬的可挖方块）");
+        assertEquals(0, BlockRegistry.copperOre().lightEmission());
+        assertEquals(0, BlockRegistry.crystalOre().lightEmission());
+
+        assertDrop(BlockRegistry.copperOre(), "skyisland:copper_ore", 1, "PRD 5.1：铜矿石掉自身");
+        assertDrop(BlockRegistry.crystalOre(), "skyisland:crystal", 1,
+                "PRD 5.1：晶体矿石掉晶体 ×1 —— 这是第二种『方块掉非方块物品』（第一种是煤炭矿石）");
+
+        assertTrue(BlockRegistry.copperOre().isPlaceable(), "矿石是可放置的常规方块");
+        assertTrue(BlockRegistry.crystalOre().isPlaceable());
+    }
+
+    private static void assertDrop(Block block, String itemId, int count, String why) {        assertTrue(block.hasDrop(), why + " —— " + block.id() + " 应有掉落");
         assertEquals(itemId, block.dropItemId(), why);
         assertEquals(count, block.dropCount(), why);
     }
