@@ -275,4 +275,77 @@ class ItemIconTest {
         float[] fallback = ItemIcon.baseColor(999_999);
         assertEquals(4, fallback.length, "未注册物品也必须给出一份可用的主色（老调用方不能拿到 null）");
     }
+
+    // ============================================================ 步枪与材料（2026-10-02）
+
+    /**
+     * 三把枪的图标必须<b>两两不同</b>（v2 §4.2 第②项）。
+     *
+     * <p>这里刻意同时断言"几何不同"与"主色不同"：只断言签名不同的话，
+     * 一个只改了颜色的实现也能通过，而那正是最容易被误认的一种
+     * （形状一样、颜色相近，隔着一格就分不出）。
+     */
+    @Test
+    void theThreeGunIconsArePairwiseDistinct() {
+        List<ItemIcon.IconPart> pistol = ItemIcon.parts(runtimeId(ItemRegistry.PISTOL_ID), 0f, 0f, SIZE);
+        List<ItemIcon.IconPart> smg = ItemIcon.parts(runtimeId(ItemRegistry.SMG_ID), 0f, 0f, SIZE);
+        List<ItemIcon.IconPart> rifle = ItemIcon.parts(runtimeId(ItemRegistry.RIFLE_ID), 0f, 0f, SIZE);
+
+        assertTrue(!pistol.isEmpty(), "手枪图标不得为空");
+        assertTrue(!smg.isEmpty(), "SMG 图标不得为空");
+        assertTrue(!rifle.isEmpty(), "步枪图标不得为空");
+
+        assertNotEquals(signature(pistol), signature(rifle),
+                "手枪与步枪的图标完全相同 —— 快捷栏里两把枪会长得一模一样");
+        assertNotEquals(signature(smg), signature(rifle), "SMG 与步枪的图标完全相同");
+        assertNotEquals(pistol.size(), rifle.size(),
+                "步枪的图元数应当与手枪不同（步枪多了瞄准镜那一块）");
+
+        // 主色也必须不同（否则形状相近时就只能靠形状硬分）
+        float[] pistolBase = ItemIcon.baseColor(runtimeId(ItemRegistry.PISTOL_ID));
+        float[] smgBase = ItemIcon.baseColor(runtimeId(ItemRegistry.SMG_ID));
+        float[] rifleBase = ItemIcon.baseColor(runtimeId(ItemRegistry.RIFLE_ID));
+        assertTrue(colourDistance(pistolBase, rifleBase) > 0.05f,
+                "手枪与步枪的主色太接近，实际：" + java.util.Arrays.toString(rifleBase));
+        assertTrue(colourDistance(smgBase, rifleBase) > 0.05f,
+                "SMG 与步枪的主色太接近，实际：" + java.util.Arrays.toString(rifleBase));
+    }
+
+    /**
+     * 六种材料（煤炭 + 新增的 5 种）必须产生<b>六个互不相同</b>的图标。
+     *
+     * <p>这一条抓的是本次改动前那种实现：所有材料共用一套 {@code materialParts}。
+     * 它在"只有煤炭"时完全没问题，一旦有了铁锭/铜锭/晶体/火药/木棍，
+     * 快捷栏里就会出现五格一模一样的图标。
+     */
+    @Test
+    void theSixMaterialsAllProduceDistinctIcons() {
+        String[] materials = {
+                ItemRegistry.COAL_ID,
+                ItemRegistry.IRON_INGOT_ID,
+                ItemRegistry.COPPER_INGOT_ID,
+                ItemRegistry.CRYSTAL_ID,
+                ItemRegistry.GUNPOWDER_ID,
+                ItemRegistry.STICK_ID};
+
+        Map<String, String> seen = new LinkedHashMap<>();
+        for (String id : materials) {
+            List<ItemIcon.IconPart> parts = ItemIcon.parts(runtimeId(id), 0f, 0f, SIZE);
+            assertTrue(!parts.isEmpty(), "材料图标不得为空: " + id);
+            String prev = seen.put(signature(parts), id);
+            assertTrue(prev == null, "「" + id + "」与「" + prev + "」的图标完全相同");
+        }
+        assertEquals(materials.length, seen.size());
+
+        // 铁锭与铜锭共用同一条几何、只换颜色 —— 因此它们的美色必须真的不同。
+        float[] iron = ItemIcon.baseColor(runtimeId(ItemRegistry.IRON_INGOT_ID));
+        float[] copper = ItemIcon.baseColor(runtimeId(ItemRegistry.COPPER_INGOT_ID));
+        assertTrue(colourDistance(iron, copper) > 0.05f,
+                "铁锭与铜锭几何相同，主色必须拉开；实际 iron=" + java.util.Arrays.toString(iron)
+                        + " copper=" + java.util.Arrays.toString(copper));
+    }
+
+    private static float colourDistance(float[] a, float[] b) {
+        return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+    }
 }

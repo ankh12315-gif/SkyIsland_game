@@ -75,9 +75,14 @@ class AudioFeedbackWiringTest {
         return audio;
     }
 
-    /** 把"音频 → 产品反馈"串成产品真正使用的那条链（下游用 NONE 占位）。 */
-    private static CombatController.Listener chainFor(AudioManager audio) {
-        return AudioFeedback.wrap(audio).andThen(CombatController.Listener.NONE);
+    /**
+     * 把"音频 → 产品反馈"串成产品真正使用的那条链（下游用 NONE 占位）。
+     *
+     * @param player 持枪者 —— 枪械音效（击发 / 空仓 / 换弹）必须由他的手持枪决定，
+     *               因此 2026-10-03 起 {@link AudioFeedback} 需要显式拿到玩家
+     */
+    private static CombatController.Listener chainFor(AudioManager audio, Player player) {
+        return AudioFeedback.wrap(audio, player).andThen(CombatController.Listener.NONE);
     }
 
     // ============================================================ 真实链路上的映射
@@ -90,7 +95,7 @@ class AudioFeedbackWiringTest {
         CombatController combat = new CombatController(new EntityManager());
 
         // 开局弹匣为空（PRD 5.7.1），按左键应当是"空枪"而不是"开火"
-        combat.step(world, player, FIRE_KEY, DT, chainFor(audio));
+        combat.step(world, player, FIRE_KEY, DT, chainFor(audio, player));
 
         assertEquals(1, audio.audit().countOf(AudioEvent.GUN_EMPTY),
                 "空弹匣按左键必须触发 gun_empty");
@@ -105,7 +110,7 @@ class AudioFeedbackWiringTest {
         Player player = armedPlayer();
         CombatController combat = new CombatController(new EntityManager());
 
-        combat.step(world, player, RELOAD_KEY, DT, chainFor(audio));
+        combat.step(world, player, RELOAD_KEY, DT, chainFor(audio, player));
 
         assertEquals(1, audio.audit().countOf(AudioEvent.RELOAD),
                 "按 R 并被受理必须立刻触发 reload（反馈要落在按键那一刻，不是 1.2 秒后）");
@@ -117,7 +122,7 @@ class AudioFeedbackWiringTest {
         World world = world();
         Player player = armedPlayer();
         CombatController combat = new CombatController(new EntityManager());
-        CombatController.Listener chain = chainFor(audio);
+        CombatController.Listener chain = chainFor(audio, player);
 
         // 先上膛
         combat.step(world, player, RELOAD_KEY, DT, chain);
@@ -141,7 +146,7 @@ class AudioFeedbackWiringTest {
         EntityManager entities = new EntityManager();
         MeleeMonster monster = entities.spawnMeleeMonster(0.5, TestWorlds.SURFACE_FEET_Y, -5.5);
         CombatController combat = new CombatController(entities);
-        CombatController.Listener chain = chainFor(audio);
+        CombatController.Listener chain = chainFor(audio, player);
 
         // 上膛
         combat.step(world, player, RELOAD_KEY, DT, chain);
@@ -164,7 +169,8 @@ class AudioFeedbackWiringTest {
     @Test
     void blockHitsDeliberatelyStaysSilent() {
         AudioManager audio = silentAudio();
-        AudioFeedback feedback = AudioFeedback.wrap(audio);
+        Player player = armedPlayer();
+        AudioFeedback feedback = AudioFeedback.wrap(audio, player);
 
         feedback.onBlockHit(1.0, 64.0, 1.0, 0.0, 1.0, 0.0, TestWorlds.stone());
 
@@ -180,6 +186,7 @@ class AudioFeedbackWiringTest {
     @Test
     void andThenForwardsEveryEventToTheDownstreamListener() {
         AudioManager audio = silentAudio();
+        Player player = armedPlayer();
         List<String> downstream = new ArrayList<>();
         // Listener 的 7 个方法全部是抽象的，这里逐个实现并记录（留空的方法也必须写出，
         // 否则"下游根本没收到"与"下游收到了但没记"会混在一起）
@@ -222,7 +229,7 @@ class AudioFeedbackWiringTest {
             }
         };
 
-        CombatController.Listener chain = AudioFeedback.wrap(audio).andThen(next);
+        CombatController.Listener chain = AudioFeedback.wrap(audio, player).andThen(next);
         chain.onShotFired(0, 0, 0, 1, 0, 0, true);
         chain.onDryFire();
         chain.onReloadRequest(GunState.ReloadOutcome.STARTED);
@@ -241,7 +248,8 @@ class AudioFeedbackWiringTest {
     @Test
     void andThenWithNullReturnsTheAudioFeedbackItself() {
         AudioManager audio = silentAudio();
-        CombatController.Listener chain = AudioFeedback.wrap(audio).andThen(null);
+        Player player = armedPlayer();
+        CombatController.Listener chain = AudioFeedback.wrap(audio, player).andThen(null);
 
         chain.onDryFire();
 
@@ -251,7 +259,8 @@ class AudioFeedbackWiringTest {
 
     @Test
     void wrapRejectsNull() {
-        assertThrows(IllegalArgumentException.class, () -> AudioFeedback.wrap(null));
+        Player player = armedPlayer();
+        assertThrows(IllegalArgumentException.class, () -> AudioFeedback.wrap(null, player));
     }
 
     // ============================================================ 玩家受伤（轮询）
@@ -259,8 +268,8 @@ class AudioFeedbackWiringTest {
     @Test
     void theFirstHealthSampleOnlyEstablishesABaseline() {
         AudioManager audio = silentAudio();
-        AudioFeedback feedback = AudioFeedback.wrap(audio);
         Player player = armedPlayer();
+        AudioFeedback feedback = AudioFeedback.wrap(audio, player);
 
         feedback.poll(player);
 
@@ -272,9 +281,9 @@ class AudioFeedbackWiringTest {
     @Test
     void aHealthDropRaisesPlayerHurtExactlyOnce() {
         AudioManager audio = silentAudio();
-        AudioFeedback feedback = AudioFeedback.wrap(audio);
         World world = world();
         Player player = armedPlayer();
+        AudioFeedback feedback = AudioFeedback.wrap(audio, player);
 
         feedback.poll(player);
         int before = player.health();
@@ -293,9 +302,9 @@ class AudioFeedbackWiringTest {
     @Test
     void healingDoesNotRaisePlayerHurt() {
         AudioManager audio = silentAudio();
-        AudioFeedback feedback = AudioFeedback.wrap(audio);
         World world = world();
         Player player = armedPlayer();
+        AudioFeedback feedback = AudioFeedback.wrap(audio, player);
 
         feedback.poll(player);
         player.hurt(world, 4);
@@ -313,9 +322,9 @@ class AudioFeedbackWiringTest {
     @Test
     void resettingTheBaselineMakesTheNextSampleSilentAgain() {
         AudioManager audio = silentAudio();
-        AudioFeedback feedback = AudioFeedback.wrap(audio);
         World world = world();
         Player player = armedPlayer();
+        AudioFeedback feedback = AudioFeedback.wrap(audio, player);
 
         feedback.poll(player);
         player.hurt(world, 5);
@@ -331,7 +340,8 @@ class AudioFeedbackWiringTest {
     @Test
     void pollingNullIsAHarmlessNoOp() {
         AudioManager audio = silentAudio();
-        AudioFeedback feedback = AudioFeedback.wrap(audio);
+        Player player = armedPlayer();
+        AudioFeedback feedback = AudioFeedback.wrap(audio, player);
 
         feedback.poll(null);
 
@@ -358,7 +368,8 @@ class AudioFeedbackWiringTest {
     @Test
     void andThenPlaysTheSoundBeforeDelegatingAndForwardsAllSevenEvents() {
         AudioManager audio = silentAudio();
-        AudioFeedback feedback = AudioFeedback.wrap(audio);
+        Player player = armedPlayer();
+        AudioFeedback feedback = AudioFeedback.wrap(audio, player);
         List<String> order = new ArrayList<>();
         List<Integer> audioSizeAtDelegate = new ArrayList<>();
 
@@ -452,7 +463,7 @@ class AudioFeedbackWiringTest {
         CombatController combat = new CombatController(entities);
 
         AudioManager audio = silentAudio();
-        AudioFeedback feedback = AudioFeedback.wrap(audio);
+        AudioFeedback feedback = AudioFeedback.wrap(audio, player);
         CombatController.Listener chain = feedback.andThen(CombatController.Listener.NONE);
 
         // ① 换弹（开局弹匣为空）

@@ -1,5 +1,6 @@
 package com.skyisland.audio;
 
+import com.skyisland.player.Player;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -309,6 +310,7 @@ class AudioManagerTest {
 
     @Test
     void wrapRejectsNullManager() {
-        assertThrows(IllegalArgumentException.class, () -> AudioFeedback.wrap(null));
+        Player player = new Player(0.5, 64.0, 0.5);
+        assertThrows(IllegalArgumentException.class, () -> AudioFeedback.wrap(null, player));
     }
 }

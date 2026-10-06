@@ -1,5 +1,6 @@
 package com.skyisland.game;
 
+import com.skyisland.testutil.SourceScan;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -95,17 +96,17 @@ class InfiniteReserveWiringTest {
      * 因为被注释掉的那一行里，原样的调用文本还在。也就是说那条断言
      * <b>把注释也算成了接线</b>，"有人把这一行注释掉"这种最可能的失效方式恰好从它的缝里漏过去。
      * 一条被注释满足的接线断言，等于没有断言，而且它会带着"已反向验证通过"的说法活着。
+     *
+     * <p><b>M3 接线修正：实现已改为委托 {@link SourceScan#withoutComments}。</b>
+     * 本方法原先只按"整行注释"过滤（行首是 {@code //}、{@code *} 或块注释开头就整行丢掉），
+     * 那会漏掉<b>行内块注释</b> —— 一段写在语句中间、和被调用文本同一行的注释，
+     * 既不在行首也不独占一行，于是那串文本会被当成交付代码，断言再次被注释满足。
+     * 改成状态机之后，行注释、块注释、javadoc 一律剥掉，且不会被字符串字面量里的
+     * 类注释符号骗到。同类断言现在共用一份实现（{@link SourceScan}），
+     * 不必各自维护一份"去注释"。
      */
     private static String withoutLineComments(String source) {
-        StringBuilder kept = new StringBuilder(source.length());
-        for (String line : source.split("\n", -1)) {
-            String t = line.trim();
-            if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) {
-                continue;   // 整行注释（含 javadoc 体、块注释内部行）一律不算代码
-            }
-            kept.append(line).append('\n');
-        }
-        return kept.toString();
+        return SourceScan.withoutComments(source);
     }
 
     // ============================================================ ① 解析规则

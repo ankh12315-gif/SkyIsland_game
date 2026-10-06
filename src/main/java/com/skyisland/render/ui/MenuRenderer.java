@@ -112,23 +112,31 @@ public final class MenuRenderer {
     // ============================================================ 行
 
     private void drawRow(MenuScreen screen, MenuEntry entry, int index, MenuLayout layout) {
-        int scale = layout.uiScale();
         int y = layout.rowY(index);
         int rowH = layout.rowHeight(index);
-        int textY = y + (rowH - BitmapFont.lineHeight(2 * scale)) / 2;
+        // scale 只用于"与面板边框相关的像素级留白"（高亮条、分隔线的缩进与厚度），
+        // 文字本身一律走下面的 textY / textScale。
+        int scale = layout.uiScale();
+        // ★ 文字的 y 与倍数都取自布局（MenuLayout.rowTextY / rowTextScale），本方法不做换算。
+        //   旧写法是 BitmapFont.lineHeight(2 * scale) 写死在每一行上，于是
+        //   INFO 行（1 倍字）也被当成 2 倍字算行盒，垂直居中就整体偏了，
+        //   偏出去的部分压到相邻行上 —— 那就是"设置界面文字有一点重叠"。
+        //   改成读布局之后，绘制与行高不可能再脱节：它们读的是同一个数。
+        int textY = layout.rowTextY(index);
+        int textScale = layout.rowTextScale(index);
 
         switch (entry.kind()) {
             case SPACER -> {
-                // 只占位
+                // 空行只占高度，不画任何东西 —— 它就是组与组之间那一段留白
             }
             case HEADER -> {
-                batch.text(layout.labelX(), y + 4 * scale, entry.label(), 2 * scale,
-                        UiTheme.HEADER);
-                batch.rect(layout.columnX() + 6 * scale, y + rowH - 4 * scale,
+                batch.text(layout.labelX(), textY, entry.label(), textScale, UiTheme.HEADER);
+                // 分隔线的位置由布局给出（画在行盒之下），不是"行底减几像素"。
+                int ruleY = layout.rowRuleY(index);
+                batch.rect(layout.columnX() + 6 * scale, ruleY,
                         layout.columnWidth() - 12 * scale, Math.max(1, scale), UiTheme.SEPARATOR);
             }
-            case INFO -> batch.text(layout.labelX(), y + 2 * scale, entry.label(), 1 * scale,
-                    UiTheme.INFO);
+            case INFO -> batch.text(layout.labelX(), textY, entry.label(), textScale, UiTheme.INFO);
             default -> {
                 boolean selected = index == screen.selectedIndex();
                 if (selected) {
@@ -137,15 +145,14 @@ public final class MenuRenderer {
                     batch.rect(layout.columnX() + 2 * scale, y, 3 * scale, rowH, UiTheme.SELECT_EDGE);
                 }
                 float[] labelColor = selected ? UiTheme.ITEM_SELECTED : UiTheme.ITEM;
-                batch.text(layout.labelX(), textY, entry.label(), 2 * scale,
-                        labelColor);
-                drawValue(entry, layout, textY, scale, selected);
+                batch.text(layout.labelX(), textY, entry.label(), textScale, labelColor);
+                drawValue(entry, layout, textY, textScale, selected);
             }
         }
     }
 
     /** 右对齐画数值。数值以 {@code "(none)"} / {@code "ON"} / {@code "OFF"} 等形式出现。 */
-    private void drawValue(MenuEntry entry, MenuLayout layout, int textY, int scale, boolean selected) {
+    private void drawValue(MenuEntry entry, MenuLayout layout, int textY, int textScale, boolean selected) {
         String value = entry.value();
         if (value == null || value.isEmpty() || entry.kind() == MenuEntry.Kind.ACTION) {
             return;
@@ -166,8 +173,10 @@ public final class MenuRenderer {
             // 看上去会像"这行没被选中"，而选中态正是鼠标/键盘导航唯一的反馈。
             color = new float[]{UiTheme.VALUE[0], UiTheme.VALUE[1], UiTheme.VALUE[2], 1.0f};
         }
-        float w = BitmapFont.textWidth(value, 2 * scale);
-        batch.text(layout.valueRightX() - w, textY, value, 2 * scale, color);
+        // 文字倍数取自"行盒"那一次调用：标签与数值必须同倍数，
+        // 否则一行里两种字号的基线会错开，看起来同样是"重叠"。
+        float w = BitmapFont.textWidth(value, textScale);
+        batch.text(layout.valueRightX() - w, textY, value, textScale, color);
     }
 
     // ============================================================ 覆盖层
