@@ -93,6 +93,50 @@ public enum BlockFace {
         return corners.length;
     }
 
+    /**
+     * 该面第 {@code corner} 个角在贴图内的 UV（M4-S3）。
+     *
+     * <p><b>UV 规则（PRD §6.1）：每面取该层内的满幅区域（0..1），不跨层取样。</b>
+     * 因此每个面的 4 个角恰好落在贴图的 4 个角上，
+     * 具体哪个 3D 角对应贴图哪个角，由各面的朝向决定。
+     *
+     * <p><b>为什么由 CPU 显式给出而不在片元里推导</b>：
+     * 片元只能看到插值后的坐标，而方块<b>角落处三条轴都取整数值</b>，
+     * 无法判定哪一条是常量轴 —— 强行推导会在每个方块边缘留下 1 texel 宽的接缝，
+     * 而症状只是"画面略有差异"，几乎不可能归因。
+     * 顶点里带上UV（{@code aUv}）把这件事变成确定的。
+     *
+     * <p><b>UV 的取向约定</b>：{@code v = 0} 是贴图的<b>上</b>边（美术规格 §2
+     * 规定"v=0 是贴图顶边"）。因此顶面/底面用 x/z，四个侧面用"水平轴 + y"，
+     * 且侧面的 v 随 y<b>递减</b>，使贴图上边始终朝上
+     * ——否则草方块的草边会挂在底面。
+     *
+     * @param corner 0..3，与 {@link #corner(int, int)} 的编号一致
+     * @return 长度2 的数组 {@code {u, v}}
+     */
+    public float[] cornerUv(int corner) {
+        // 各面的 u/v 取自哪两个局部坐标分量（0=x, 1=y, 2=z）。
+        // u 轴取"水平且非恒定"的那个；v 轴顶/底面取 z，侧面取 y。
+        int uAxis;
+        int vAxis;
+        boolean flipV;
+        switch (this) {
+            case NEG_X -> { uAxis = 2; vAxis = 1; flipV = true; }
+            case POS_X -> { uAxis = 2; vAxis = 1; flipV = true; }
+            case NEG_Z -> { uAxis = 0; vAxis = 1; flipV = true; }
+            case POS_Z -> { uAxis = 0; vAxis = 1; flipV = true; }
+            case POS_Y -> { uAxis = 0; vAxis = 2; flipV = false; }
+            case NEG_Y -> { uAxis = 0; vAxis = 2; flipV = true; }
+            default -> throw new IllegalStateException("未处理的面: " + this);
+        }
+        float u = corner(corner, uAxis);
+        float v = corner(corner, vAxis);
+        if (flipV) {
+            v = 1f - v;
+        }
+        return new float[]{u, v};
+    }
+
     /** 两个三角形、6 个索引的固定模式：{@code 0,1,2, 0,2,3}。 */
     public static final int[] QUAD_INDICES = {0, 1, 2, 0, 2, 3};
 

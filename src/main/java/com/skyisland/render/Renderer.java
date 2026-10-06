@@ -63,6 +63,17 @@ public final class Renderer {
             new com.skyisland.render.ui.ModalDimRenderer();
     private final Frustum frustum = new Frustum();
 
+    /**
+     * 方块纹理数组（M4-S3）。
+     *
+     * <p><b>为什么由 Renderer 持有而不是 ChunkRenderer</b>：
+     * 它是<b>整帧唯一</b>的资源，被六个渲染器共用。
+     * 若挂在 ChunkRenderer 下，实体 / 粒子 / 裂纹 / 手持物就得反向依赖区块渲染器
+     * 才能拿到纹理 —— 而它们与地形没有任何归属关系。
+     */
+    private final com.skyisland.render.mesh.BlockTextureAtlas blockAtlas =
+            new com.skyisland.render.mesh.BlockTextureAtlas();
+
     private ShaderProgram voxelShader;
     private ShaderProgram uiShader;
 
@@ -85,6 +96,10 @@ public final class Renderer {
         entityRenderer.init();
         combatFxRenderer.init();
         viewmodelRenderer.init();
+        // ★ 纹理数组必须在所有渲染器 init 之后创建：
+        // 它们 init 时会glVertexAttribPointer，而 VAO 记录的是
+        // "当前绑定的纹理单元 + 采样器 uniform"，顺序反了会绑到错的纹理上。
+        blockAtlas.create();
 
         GL11.glEnable(GL11.GL_DEPTH_TEST);
         GL11.glDepthFunc(GL11.GL_LEQUAL);
@@ -148,6 +163,24 @@ public final class Renderer {
                             List<Entity> entities, CombatFxModel fx) {
         camera.updateProjection(framebufferWidth, framebufferHeight);
         frustum.update(camera.projectionMatrix(), camera.viewMatrix());
+        //★ 绑定纹理数组（整帧唯一资源，六个渲染器共用同一份绑定状态）。
+        blockAtlas.bind();
+        // ★★ 采样器单元必须在**着色器已绑定之后**告知—— 这是 S4 修掉的一个真 bug。
+        //
+        //   glUniform1i 写的是「**当前程序**」的 uniform。若在 shader.bind() 之前调用，
+        //   它写的是上一个还处于当前状态的程序（首帧是 0 号，即默认 program），
+        //   voxelShader 的 uBlockAtlas 仍是驱动给的默认值 0。
+        //   于是片元去 **纹理单元 0** 采样 —— 那里什么都没有，
+        //   texture() 返回 (0,0,0,1)：**方块全黑，但不报任何错**。
+        //
+        //   为什么 S3 的 1211 个测试没抓到：单测只断言「源码里有 setInt 这行」，
+        //   而这行**确实在**、也确实写了正确的单元号 —— 只是写到了错的程序上。
+        //   「顺序错了」与「没写」在源码扫描里长得一模一样。
+        //
+        //   因此这里 bind 一次，之后各pass 复用同一份绑定状态。
+        voxelShader.bind();
+        voxelShader.setInt("uBlockAtlas",
+                com.skyisland.render.mesh.BlockTextureAtlas.TEXTURE_UNIT);
         chunkRenderer.render(world, camera, voxelShader, frustum);
         entityRenderer.render(voxelShader, camera, entities);
         combatFxRenderer.render(voxelShader, camera, fx);
@@ -181,6 +214,13 @@ public final class Renderer {
      * @param model 可为 null 或 {@code visible == false}：此时不画，也不碰 GL 状态
      */
     public void renderViewmodel(ViewmodelModel model) {
+        // 手持物与地形共用 voxelShader 与同一张纹理数组 —— 绑定状态仍在。
+        // 但采样器 uniform 是**逐程序**存的：换 program 必须重新 bind 后再告知，
+        // 否则会退回默认单元 0（详见 renderWorld 里那段注释）。
+        blockAtlas.bind();
+        voxelShader.bind();
+        voxelShader.setInt("uBlockAtlas",
+                com.skyisland.render.mesh.BlockTextureAtlas.TEXTURE_UNIT);
         viewmodelRenderer.render(voxelShader, model, framebufferWidth, framebufferHeight);
     }
 
@@ -290,6 +330,7 @@ public final class Renderer {
         menuRenderer.dispose();
         inventoryRenderer.dispose();
         modalDimRenderer.dispose();
+        blockAtlas.dispose();
         if (voxelShader != null) {
             voxelShader.dispose();
             voxelShader = null;

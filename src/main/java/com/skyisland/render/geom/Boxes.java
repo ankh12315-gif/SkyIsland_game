@@ -1,7 +1,10 @@
 package com.skyisland.render.geom;
 
+import com.skyisland.render.VertexFormat;
+import com.skyisland.render.mesh.BlockTextureLayers;
+
 /**
- * 把"盒体"写成体素着色器顶点（{@code pos vec3 + color vec4} = 7 float/顶点）的纯函数写入器。
+ * 把"盒体"写成体素着色器顶点（{@code pos vec3 + color vec4 + layerAo vec2} = 9 float/顶点）的纯函数写入器。
  *
  * <h2>为什么需要它</h2>
  * M2.1 有两处要画盒体、且都不是"轴对齐的世界方块"：
@@ -39,8 +42,8 @@ package com.skyisland.render.geom;
  */
 public final class Boxes {
 
-    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4)。 */
-    public static final int FLOATS_PER_VERTEX = 7;
+    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerAo(vec2)。 */
+    public static final int FLOATS_PER_VERTEX = VertexFormat.FLOATS_PER_VERTEX;
 
     /** 每盒 6 面 × 2 三角形 × 3 顶点。 */
     public static final int VERTS_PER_BOX = 36;
@@ -116,6 +119,15 @@ public final class Boxes {
                 out[p + 4] = g;
                 out[p + 5] = b;
                 out[p + 6] = brightness;
+                // S2 新增：layer/ao。实体与手持物不是体素，采样**纯白层**，
+                // 于是片元算出的 texel.rgb * vColor.rgb 恰好等于 vColor.rgb
+                // —— 这两类几何的画面因此逐像素不变。
+                out[p + 7] = BlockTextureLayers.NEUTRAL_WHITE;
+                out[p + 8] = VertexFormat.DEFAULT_AO;
+                // S3 新增：UV。采样纯白层时 UV 取何值都不影响结果，
+                // 但必须写满 —— 少写两个 float 会让后续顶点整体前移。
+                out[p + 9] = VertexFormat.DEFAULT_UV;
+                out[p + 10] = VertexFormat.DEFAULT_UV;
                 p += FLOATS_PER_VERTEX;
             }
         }

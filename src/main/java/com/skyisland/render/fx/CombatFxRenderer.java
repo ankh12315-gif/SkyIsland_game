@@ -1,6 +1,8 @@
 package com.skyisland.render.fx;
 
 import com.skyisland.player.Camera;
+import com.skyisland.render.VertexFormat;
+import com.skyisland.render.mesh.BlockTextureLayers;
 import com.skyisland.render.shader.ShaderProgram;
 import com.skyisland.util.Log;
 import org.lwjgl.opengl.GL11;
@@ -45,11 +47,21 @@ import java.nio.FloatBuffer;
  */
 public final class CombatFxRenderer {
 
-    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4)，共 7 个 float。 */
-    private static final int FLOATS_PER_VERTEX = 7;
+    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerAo(vec2)。 */
+    private static final int FLOATS_PER_VERTEX = VertexFormat.FLOATS_PER_VERTEX;
 
     /** 每面 2 个三角形 = 6 个顶点。 */
     private static final int VERTS_PER_FACE = 6;
+
+    /**
+     * 本渲染器实际使用的每顶点 float 数（<b>供跨类一致性守卫读取</b>）。
+     *
+     * <p>与 {@code CrackOverlay.vertexFloatsPerVertex()} 同理：
+     * 守卫必须能读到每个消费方的真实值，而不是靠扫源码猜。
+     */
+    public static int vertexFloatsPerVertex() {
+        return FLOATS_PER_VERTEX;
+    }
 
     /** 每立方体 6 个面。 */
     private static final int FACES_PER_BOX = 6;
@@ -199,11 +211,8 @@ public final class CombatFxRenderer {
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, (long) capacityFloats * Float.BYTES,
                 GL15.GL_STREAM_DRAW);
 
-        int stride = FLOATS_PER_VERTEX * Float.BYTES;
-        GL20.glEnableVertexAttribArray(0);
-        GL20.glVertexAttribPointer(0, 3, GL11.GL_FLOAT, false, stride, 0L);
-        GL20.glEnableVertexAttribArray(1);
-        GL20.glVertexAttribPointer(1, 4, GL11.GL_FLOAT, false, stride, 3L * Float.BYTES);
+        // 三个属性槽位统一由 VertexFormat 绑定（粒子与地形/实体/裂纹/手持物共用 voxelShader）。
+        VertexFormat.bindVoxelAttribs();
 
         GL30.glBindVertexArray(0);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
@@ -566,6 +575,14 @@ public final class CombatFxRenderer {
             out[w++] = g;
             out[w++] = b;
             out[w++] = 1.0f;    // aColor.a 是预乘明暗：碎屑不自遮挡，恒为 1
+            // S2/S3 新增：粒子/曳光/闪光都不是体素，采样纯白层
+            // （texel.rgb = 1，故画面与 S2 逐像素一致）。
+            // 必须写满 —— 少写两个 float 会让下一个顶点整体前移 8 字节。
+            out[w++] = BlockTextureLayers.NEUTRAL_WHITE;
+            out[w++] = VertexFormat.DEFAULT_AO;
+            // S3 新增：UV（纯白层上取何值都不影响结果）。
+            out[w++] = VertexFormat.DEFAULT_UV;
+            out[w++] = VertexFormat.DEFAULT_UV;
         }
         return w;
     }

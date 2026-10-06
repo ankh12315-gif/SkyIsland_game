@@ -53,7 +53,21 @@ public record AABB(double minX, double minY, double minZ,
         return new AABB(minX, minY - amount, minZ, maxX, maxY, maxZ);
     }
 
-    /** 与某个方块（占据 [bx,bx+1]×[by,by+1]×[bz,bz+1]）是否相交。 */
+    /**
+     * 与某个<b>满方块</b>（占据 [bx,bx+1]×[by,by+1]×[bz,bz+1]）是否相交。
+     *
+     * <p><b>适用范围（务必读）：</b>本方法<b>只对满方块成立</b>。
+     * 非满方块（半高台阶 / 十字面作物）必须改用
+     * {@link com.skyisland.world.World#collidesWith} ——
+     * 它会读方块的 {@link com.skyisland.world.block.BlockShape}，
+     * 对半高台阶只把下半格算作障碍、对作物返回"不相交"。
+     *
+     * <p>直接用本方法处理非满方块会造成两类错误：
+     * 半高台阶 → 撞上台阶上方的空气（"空气墙"）；
+     * 作物 → 撞上一堵看不见的墙（PRD §7 R1）。
+     * 本方法保留是因为它是<b>纯几何</b>的、可独立单测的，
+     * 且在"确定是满方块"的场合（见 {@code ChunkMesher} 的邻居剔除）仍然正确。
+     */
     public boolean intersectsBlock(int bx, int by, int bz) {
         return maxX > bx && minX < bx + 1
                 && maxY > by && minY < by + 1

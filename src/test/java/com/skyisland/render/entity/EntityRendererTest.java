@@ -24,7 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class EntityRendererTest {
 
-    private static final int FLOATS_PER_VERTEX = 7;
+    /** 引用单一真相源而非写死 7 —— 否则格式变更时这条测试会假绿。 */
+    private static final int FLOATS_PER_VERTEX = com.skyisland.render.VertexFormat.FLOATS_PER_VERTEX;
 
     private static MeleeMonster monster() {
         return new MeleeMonster(0.5, 64.0, 0.5);

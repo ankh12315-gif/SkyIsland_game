@@ -733,7 +733,8 @@ public final class Player {
         for (int bx = minX; bx <= maxX; bx++) {
             for (int by = minY; by <= maxY; by++) {
                 for (int bz = minZ; bz <= maxZ; bz++) {
-                    if (!world.hasCollisionAt(bx, by, bz) || !box.intersectsBlock(bx, by, bz)) {
+                    if (!world.collidesWith(box.minX(), box.minY(), box.minZ(),
+                                    box.maxX(), box.maxY(), box.maxZ(), bx, by, bz)) {
                         continue;
                     }
                     switch (axis) {
@@ -746,7 +747,9 @@ public final class Player {
                             if (step > 0) {
                                 position.y = by - HEIGHT - COLLISION_EPS;
                             } else {
-                                position.y = by + 1 + COLLISION_EPS;
+                                // 贴面高度取<b>碰撞体顶面</b>而非 by+1：
+                                // 半高台阶顶面在 by+0.5，写死 +1 会让玩家浮空半格。
+                                position.y = world.collisionTopAt(bx, by, bz) + COLLISION_EPS;
                             }
                             velocity.y = 0;
                         }
@@ -780,11 +783,15 @@ public final class Player {
         int minZ = (int) Math.floor(probe.minZ());
         int maxZ = (int) Math.floor(probe.maxZ());
         boolean grounded = false;
+        // 命中格的碰撞体顶面（半高台阶是 by+0.5，满方块是 by+1）
+        double groundTop = by + 1;
         for (int bx = minX; bx <= maxX && !grounded; bx++) {
             for (int bz = minZ; bz <= maxZ && !grounded; bz++) {
-                if (world.hasCollisionAt(bx, by, bz) && probe.intersectsBlock(bx, by, bz)) {
-                    grounded = true;
-                }
+if (world.collidesWith(probe.minX(), probe.minY(), probe.minZ(),
+                                probe.maxX(), probe.maxY(), probe.maxZ(), bx, by, bz)) {
+                        grounded = true;
+                        groundTop = world.collisionTopAt(bx, by, bz);
+                    }
             }
         }
         this.onGround = grounded;
@@ -792,7 +799,7 @@ public final class Player {
         // 该方块顶面 + COLLISION_EPS（与 resolveAxisCollision 的 case 1 同一套口径），
         // 坠落结算用它把前瞻探测跳过的残余间隙补回来（见 groundRestY 的注释）。
         if (grounded) {
-            this.groundRestY = by + 1 + COLLISION_EPS;
+            this.groundRestY = groundTop + COLLISION_EPS;
             if (velocity.y < 0) {
                 velocity.y = 0;
             }

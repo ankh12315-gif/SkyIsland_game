@@ -21,8 +21,12 @@ class CrackOverlayTest {
 
     private static final float EPS = 1e-4f;
 
-    /** 每段 6 顶点 × 每顶点 7 float = 42 个 float。 */
-    private static final int FLOATS_PER_SEGMENT = 6 * 7;
+    /** 每段 6 顶点 × 每顶点 FLOATS_PER_VERTEX 个 float。引用单一真相源，不写死 7。 */
+    /** 每顶点 float 数（单一真相源）。 */
+    private static final int FPV = com.skyisland.render.VertexFormat.FLOATS_PER_VERTEX;
+
+    private static final int FLOATS_PER_SEGMENT =
+            CrackOverlay.VERTS_PER_SEGMENT * com.skyisland.render.VertexFormat.FLOATS_PER_VERTEX;
 
     /** 沿法线偏移会让贴面"探出"方块面一点点，断言范围要留出这个量。 */
     private static final double OUTWARD_TOLERANCE = 0.01;
@@ -98,7 +102,7 @@ class CrackOverlayTest {
         for (int seg = 1; seg <= CrackOverlay.MAX_SEGMENTS; seg++) {
             int floats = CrackOverlay.buildVertices(hit(0, 1, 0), seg, out);
             assertEquals(seg * FLOATS_PER_SEGMENT, floats,
-                    seg + " 段的 float 个数不对（每顶点 7 float × 每段 6 顶点）");
+                    seg + " 段的 float 个数不对");
             assertTrue(floats <= out.length);
         }
     }
@@ -111,12 +115,12 @@ class CrackOverlayTest {
             int floats = CrackOverlay.buildVertices(hit(n[0], n[1], n[2]),
                     CrackOverlay.MAX_SEGMENTS, out);
             assertEquals(CrackOverlay.MAX_SEGMENTS * FLOATS_PER_SEGMENT, floats);
-            for (int v = 0; v < floats; v += 7) {
+            for (int v = 0; v < floats; v += FPV) {
                 // 顶点存的是"块内相对坐标 + 绝对 y"：还原成世界坐标再判断
                 double wx = out[v] + 10;
                 double wy = out[v + 1];
                 double wz = out[v + 2] + (-3);
-                String where = "法线(" + n[0] + "," + n[1] + "," + n[2] + ") 的第 " + (v / 7) + " 个顶点";
+                String where = "法线(" + n[0] + "," + n[1] + "," + n[2] + ") 的第 " + (v / FPV) + " 个顶点";
 
                 // 沿法线方向：面坐标 + FACE_OFFSET（向外偏，避免 z-fighting）
                 if (n[1] == 1) {
@@ -157,9 +161,11 @@ class CrackOverlayTest {
         for (int[] n : NORMALS) {
             int floats = CrackOverlay.buildVertices(hit(n[0], n[1], n[2]), 1, out);
             assertEquals(FLOATS_PER_SEGMENT, floats);
+            // 三个顶点用 FPV 推导下标，不写死 7/14 ——
+            // 否则 stride 一变就会读到一个顶点的中间字段，法线算出来毫无意义（且不会报错）。
             double ax = out[0] + 10, ay = out[1], az = out[2] - 3;
-            double bx = out[7] + 10, by = out[8], bz = out[9] - 3;
-            double cx = out[14] + 10, cy = out[15], cz = out[16] - 3;
+            double bx = out[FPV] + 10, by = out[FPV + 1], bz = out[FPV + 2] - 3;
+            double cx = out[2 * FPV] + 10, cy = out[2 * FPV + 1], cz = out[2 * FPV + 2] - 3;
             double e1x = bx - ax, e1y = by - ay, e1z = bz - az;
             double e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
             double nx = e1y * e2z - e1z * e2y;
@@ -201,7 +207,7 @@ class CrackOverlayTest {
     void colourIsConstantAndShadeNeutral() {
         float[] out = new float[CrackOverlay.CAPACITY_FLOATS];
         int floats = CrackOverlay.buildVertices(hit(0, 1, 0), 3, out);
-        for (int v = 0; v < floats; v += 7) {
+        for (int v = 0; v < floats; v += FPV) {
             for (int c = 3; c < 6; c++) {
                 assertTrue(out[v + c] >= 0f && out[v + c] <= 0.2f,
                         "裂纹颜色应接近黑，实际分量 " + out[v + c]);
@@ -219,7 +225,7 @@ class CrackOverlayTest {
         float[] out = new float[CrackOverlay.CAPACITY_FLOATS];
         RaycastHit top = new RaycastHit(10, 64, -3, 1, 0, 1, 0, 1.5, 10, 65, -3, false);
         int floats = CrackOverlay.buildVertices(top, 2, out);
-        for (int v = 0; v < floats; v += 7) {
+        for (int v = 0; v < floats; v += FPV) {
             assertTrue(out[v] >= 0f && out[v] <= 1f, "块内 x 应在 [0,1]，实际 " + out[v]);
             assertTrue(out[v + 2] >= 0f && out[v + 2] <= 1f, "块内 z 应在 [0,1]，实际 " + out[v + 2]);
             assertTrue(out[v + 1] > 60.0 && out[v + 1] < 70.0,

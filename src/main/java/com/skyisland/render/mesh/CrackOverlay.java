@@ -3,6 +3,7 @@ package com.skyisland.render.mesh;
 import com.skyisland.physics.RaycastHit;
 import com.skyisland.player.Camera;
 import com.skyisland.player.Player;
+import com.skyisland.render.VertexFormat;
 import com.skyisland.render.shader.ShaderProgram;
 import com.skyisland.util.Log;
 import org.lwjgl.opengl.GL11;
@@ -84,12 +85,29 @@ public final class CrackOverlay {
      */
     private static final float INNER_MARGIN = 0.06f;
 
-    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4)，共 7 个 float。 */
-    private static final int FLOATS_PER_VERTEX = 7;
-    /** 每段 6 个顶点（两个三角形，不用 EBO：总顶点数最多 60，索引省不下什么）。 */
-    private static final int VERTS_PER_SEGMENT = 6;
+    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerAo(vec2)。 */
+    private static final int FLOATS_PER_VERTEX = VertexFormat.FLOATS_PER_VERTEX;
+    /**
+     * 每段 6 个顶点（两个三角形，不用 EBO：总顶点数最多 60，索引省不下什么）。
+     *
+     * <p><b>public 是因为 S2 起它成了跨类契约的一部分</b>：
+     * 单测用它推导"每段应占多少 float"，从而<b>不需要在测试里再写死 7</b>。
+     */
+    public static final int VERTS_PER_SEGMENT = 6;
     /** 顶点缓冲容量（float 个数）。 */
     public static final int CAPACITY_FLOATS = MAX_SEGMENTS * VERTS_PER_SEGMENT * FLOATS_PER_VERTEX;
+
+    /**
+     * 本渲染器实际使用的每顶点 float 数（<b>供跨类一致性守卫读取</b>）。
+     *
+     * <p><b>为什么需要这个看似多余的转发方法：</b>
+     * {@link #FLOATS_PER_VERTEX} 是 private，而一致性守卫必须能<b>读到每个消费方的真实值</b> ——
+     * 若只能靠扫源码猜，那正是"某处漏改却全绿"的成因。
+     * 公开一个只读转发口，让"五者是否一致"变成可断言的事实。
+     */
+    public static int vertexFloatsPerVertex() {
+        return FLOATS_PER_VERTEX;
+    }
 
     /** 裂纹颜色：近乎黑。与 aColor.a = 1 配合 —— 裂纹不吃面明暗，它是一层覆盖物。 */
     private static final float CRACK_R = 0.05f;
@@ -116,11 +134,8 @@ public final class CrackOverlay {
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, (long) CAPACITY_FLOATS * Float.BYTES,
                 GL15.GL_STREAM_DRAW);
 
-        int stride = FLOATS_PER_VERTEX * Float.BYTES;
-        GL20.glEnableVertexAttribArray(0);
-        GL20.glVertexAttribPointer(0, 3, GL11.GL_FLOAT, false, stride, 0L);
-        GL20.glEnableVertexAttribArray(1);
-        GL20.glVertexAttribPointer(1, 4, GL11.GL_FLOAT, false, stride, 3L * Float.BYTES);
+        // 三个属性槽位统一由 VertexFormat 绑定（裂纹与地形/实体/粒子/手持物共用 voxelShader）。
+        VertexFormat.bindVoxelAttribs();
 
         GL30.glBindVertexArray(0);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
@@ -321,6 +336,13 @@ public final class CrackOverlay {
                 out[w++] = CRACK_G;
                 out[w++] = CRACK_B;
                 out[w++] = 1.0f;                     // 预乘明暗 = 1：裂纹不受面明暗影响
+                // S2/S3 新增：裂纹不是体素，采样纯白层（画面因此逐像素不变）。
+                // 必须写满 —— 少写两个 float 会让下一个顶点整体前移 8 字节。
+                out[w++] = BlockTextureLayers.NEUTRAL_WHITE;
+                out[w++] = VertexFormat.DEFAULT_AO;
+                // S3 新增：UV（纯白层上取何值都不影响结果）。
+                out[w++] = VertexFormat.DEFAULT_UV;
+                out[w++] = VertexFormat.DEFAULT_UV;
             }
         }
         return w;

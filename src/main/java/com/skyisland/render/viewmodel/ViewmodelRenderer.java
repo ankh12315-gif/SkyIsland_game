@@ -1,5 +1,6 @@
 package com.skyisland.render.viewmodel;
 
+import com.skyisland.render.VertexFormat;
 import com.skyisland.render.geom.Boxes;
 import com.skyisland.render.shader.ShaderProgram;
 import com.skyisland.util.Log;
@@ -75,11 +76,8 @@ public final class ViewmodelRenderer {
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, (long) CAPACITY_FLOATS * Float.BYTES,
                 GL15.GL_STREAM_DRAW);
 
-        int stride = FLOATS_PER_VERTEX * Float.BYTES;
-        GL20.glEnableVertexAttribArray(0);
-        GL20.glVertexAttribPointer(0, 3, GL11.GL_FLOAT, false, stride, 0L);
-        GL20.glEnableVertexAttribArray(1);
-        GL20.glVertexAttribPointer(1, 4, GL11.GL_FLOAT, false, stride, 3L * Float.BYTES);
+        // 三个属性槽位统一由 VertexFormat 绑定（手持物与地形/实体/粒子/裂纹共用 voxelShader）。
+        VertexFormat.bindVoxelAttribs();
 
         GL30.glBindVertexArray(0);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);

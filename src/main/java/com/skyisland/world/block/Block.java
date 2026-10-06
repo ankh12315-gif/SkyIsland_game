@@ -34,6 +34,21 @@ public final class Block {
     private final boolean placeable;
     private final boolean collision;
 
+    /**
+     * 几何形态（异形方块支持）。
+     *
+     * <p><b>它与 {@link #collision} 是两个正交的概念，必须分开：</b>
+     * {@code collision} 是玩法开关（"这个方块挡不挡路"），
+     * {@code shape} 是几何事实（"这个方块在空间里占多大、什么形状"）。
+     * 两者在 {@link #blocksMovement()} 里相乘，得到唯一的"是否阻挡移动"口径。
+     *
+     * <p><b>为什么这样切分能防住"看不见的墙"：</b>
+     * 作物若被误配成 {@code collision=true}，单靠布尔字段无法察觉；
+     * 但只要它的 {@code shape} 是 {@link BlockShape#CROSS}（碰撞盒为空），
+     * {@link #blocksMovement()} 仍然是 false —— 几何事实对玩法开关具有否决权。
+     */
+    private final BlockShape shape;
+
     /** 徒手破坏所需秒数；{@link Float#POSITIVE_INFINITY} 表示不可破坏。 */
     private final float hardness;
 
@@ -76,6 +91,35 @@ public final class Block {
           float colorB,
           String dropItemId,
           int dropCount) {
+        this(runtimeId, id, solid, transparent, breakable, placeable, collision,
+                hardness, lightEmission, renderType, colorR, colorG, colorB,
+                dropItemId, dropCount, BlockShape.FULL);
+    }
+
+    /**
+     * 完整构造器（可指定几何形态）。
+     *
+     * <p><b>为什么保留一个"形态 = FULL"的重载：</b>
+     * 它让<b>既有满方块注册代码一行都不用改</b>就自动获得异形能力 ——
+     * 这是"新增能力不破坏既有 17 种方块"的最强保证：不是靠测试证明没坏，
+     * 而是靠<b>它们根本不经过新代码路径</b>。
+     */
+    Block(int runtimeId,
+          String id,
+          boolean solid,
+          boolean transparent,
+          boolean breakable,
+          boolean placeable,
+          boolean collision,
+          float hardness,
+          int lightEmission,
+          RenderType renderType,
+          float colorR,
+          float colorG,
+          float colorB,
+          String dropItemId,
+          int dropCount,
+          BlockShape shape) {
         this.runtimeId = runtimeId;
         this.id = id;
         this.solid = solid;
@@ -91,6 +135,7 @@ public final class Block {
         this.colorB = colorB;
         this.dropItemId = dropItemId;
         this.dropCount = dropItemId == null ? 0 : Math.max(1, dropCount);
+        this.shape = shape == null ? BlockShape.FULL : shape;
     }
 
     // ------------------------------------------------------------ 标识
@@ -135,6 +180,74 @@ public final class Block {
     /** 是否阻挡玩家移动（与 {@link #isSolid()} 分开定义，见 TECH_DESIGN §F.4）。 */
     public boolean hasCollision() {
         return collision;
+    }
+
+    /**
+     * <b>唯一的"是否阻挡移动"口径</b>（网格与物理都必须读这一个方法）。
+     *
+     * <p>判定 = 玩法开关 {@link #hasCollision()} <b>且</b> 形态有碰撞盒
+     * {@link BlockShape#hasCollision()}。
+     *
+     * <p><b>为什么必须是两者的逻辑与，而不是直接返回 {@code collision}：</b>
+     * 作物方块（PRD §3.2.2）若只靠布尔字段表达，会留下一个真实的失败模式 ——
+     * 只要有人把它的 {@code collision} 误配成 {@code true}
+     * （"作物应该挡路吧？"是个很自然的想法），
+     * 玩家就会撞上一堵<b>看不见的墙</b>：网格是十字面（看得出是空的），
+     * 碰撞却是满格（撞得到）。加上形态这一层否决权之后，
+     * 十字面方块<b>无论布尔字段怎么配都不可能挡住玩家</b>。
+     *
+     * <p>反之（形态有碰撞盒但布尔开关为 false）仍然是通行的 ——
+     * 那正是"玻璃/树叶这类可穿过方块"的表达方式。
+     */
+    public boolean blocksMovement() {
+        return collision && shape.hasCollision();
+    }
+
+    /** 几何形态（满方块 / 十字面 / 半高台阶）。 */
+    public BlockShape shape() {
+        return shape;
+    }
+
+    /** 该方块的碰撞盒列表（局部坐标）；空数组 = 没有碰撞体。 */
+    public BlockBox[] collisionBoxes() {
+        return shape.collisionBoxes();
+    }
+
+    /**
+     * 该方块与给定 AABB 是否相交（<b>已含"是否阻挡"语义</b>）。
+     *
+     * <p>这是碰撞查询的<b>单一入口</b>：调用方不必先问 {@code hasCollision()}
+     * 再自己算相交 —— 那两件事分开写，就一定会出现某处忘了问开关、
+     * 于是无碰撞体方块被当成满格去求交（PRD §7 R1 的失败模式）。
+     *
+     * @param minX/minY/minZ 查询盒下界
+     * @param maxX/maxY/maxZ 查询盒上界
+     * @param bx/by/bz 被查询方块的格坐标
+     */
+    public boolean intersects(double minX, double minY, double minZ,
+                              double maxX, double maxY, double maxZ,
+                              int bx, int by, int bz) {
+        if (!blocksMovement()) {
+            return false;
+        }
+        for (BlockBox box : shape.collisionBoxes()) {
+            if (box.intersects(minX, minY, minZ, maxX, maxY, maxZ, bx, by, bz)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 该方块所在格是否可作为"站立面"（脚下探测用）。
+     *
+     * <p>与 {@link #blocksMovement()} 的区别：站立面要求碰撞体<b>顶面</b>存在。
+     * 半高台阶有碰撞体也有顶面，因此算站立面；
+     * 十字面没有碰撞体，因此不算 —— 玩家不能"站在"一株小麦上，
+     * 那会让作物变成隐形的半格台阶。
+     */
+    public boolean isStandable() {
+        return blocksMovement() && shape.collisionTopY() > 0;
     }
 
     /** 徒手破坏所需秒数；{@code POSITIVE_INFINITY} = 不可破坏。 */

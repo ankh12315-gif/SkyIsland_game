@@ -31,6 +31,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class MonsterModelTest {
 
+    /**
+     * 每顶点 float 数（引用单一真相源，<b>不写死 7</b>）。
+     *
+     * <p>M4-S2 之前本文件有六处硬编码 7，格式一扩展就集体变红 ——
+     * 其中两处是<b>假信号</b>：{@code flashed[i + 6]} 读到的已不是 alpha 而是 layer，
+     * 于是"闪白不得动 alpha"变成一句关于纹理层号的话。
+     */
+    private static final int FPV = com.skyisland.render.VertexFormat.FLOATS_PER_VERTEX;
+
     private static final double EPS = 1e-5;
 
     private static final int HEAD = MonsterModel.PART_HEAD;
@@ -421,7 +430,8 @@ class MonsterModelTest {
 
         assertEquals(MonsterModel.PART_COUNT * EntityRenderer.floatsPerBox(), written,
                 "一只怪必须正好写出 PART_COUNT 个盒体（多一个说明 parts 表被加长而缓冲没跟上）");
-        assertEquals(written / 7 / 36, MonsterModel.PART_COUNT);
+        assertEquals(written / FPV / 36, MonsterModel.PART_COUNT,
+                "顶点数必须与盒体数一致（36 顶点/盒）");
     }
 
     /**
@@ -488,7 +498,7 @@ class MonsterModelTest {
             double cx = monster.position().x;
             double cy = monster.position().y;
             double cz = monster.position().z;
-            for (int i = 0; i < written; i += 7) {
+            for (int i = 0; i < written; i += FPV) {
                 double dx = out[i] - cx;
                 double worldDy = out[i + 1] - cy;   // 离脚底的世界高度
                 double dz = out[i + 2] - cz;
@@ -546,19 +556,21 @@ class MonsterModelTest {
         renderer.buildMonsterVertices(monster, 0, 0, 0f, plain, 0);
         renderer.buildMonsterVertices(monster, 0, 0, 1f, flashed, 0);
 
-        for (int i = 0; i < plain.length; i += 7) {
+        for (int i = 0; i < plain.length; i += FPV) {
             assertTrue(flashed[i + 3] >= plain[i + 3] - 1e-6,
-                    "闪白后红色分量不得变暗（第 " + (i / 7) + " 个顶点）");
-            assertTrue(flashed[i + 6] > 0.99f, "闪白不得动 alpha（实体恒为不透明）");
+                    "闪白后红色分量不得变暗（第 " + (i / FPV) + " 个顶点）");
+            assertTrue(flashed[i + 6] > 0.99f,
+                    "闪白不得动 alpha（实体恒为不透明）—— 注意这里读的是 aColor.a，"
+                            + "不是 layer；stride 扩展后用魔数下标会读到别的字段");
         }
         // 至少要有相当比例的顶点真的变亮了 —— 否则"闪白只作用在一个 part 上"也能通过
         int brighter = 0;
-        for (int i = 0; i < plain.length; i += 7) {
+        for (int i = 0; i < plain.length; i += FPV) {
             if (flashed[i + 3] > plain[i + 3] + 1e-3) {
                 brighter++;
             }
         }
-        assertTrue(brighter > plain.length / 7 * 0.5,
+        assertTrue(brighter > plain.length / FPV * 0.5,
                 "闪白必须覆盖大多数部件（实测 " + brighter + " 个顶点变亮）");
     }
 

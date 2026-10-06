@@ -1,5 +1,7 @@
 package com.skyisland.render.mesh;
 
+import com.skyisland.render.VertexFormat;
+
 /**
  * 一个区块构建出的网格数据（纯 CPU，<b>不含任何 GL 对象</b>）。
  *
@@ -8,16 +10,22 @@ package com.skyisland.render.mesh;
  * 若把 {@code build} 写成"直接往 VBO 里写"，网格化的正确性就只能靠肉眼看画面来验证 ——
  * 而"某个面莫名其妙少了一个"这种错误在画面上极难定位。
  *
- * <p><b>顶点格式（交错，stride = 28 字节 = 7 个 float）：</b>
+ * <p><b>顶点格式（交错，stride = 36 字节 = 9 个 float）：</b>
  * <pre>
  *   offset  0 : position  vec3  区块局部坐标，值域 [0,16]
- *   offset 12 : color     vec4  rgb = 方块顶点色，a = 预乘明暗（面明暗 × 光照）
+ *   offset 12 : colorvec4  rgb = 方块顶点色，a = 预乘明暗（面明暗 × 光照）
+ *   offset 28 : layerAo   vec2  x = 纹理数组层号，y = 环境光遮蔽
  * </pre>
- * 不含 UV / 纹理层号：M1 使用顶点色作为占位美术，TextureArray 顺延至 M2
- * （TECH_DESIGN_v0.1.1 §S′，已登记为技术债）。
+ * 不含 UV：每面 UV 取该层内的满幅区域（0..1），因此不需要独立的 UV 属性。
+ * 纹理数组本体在 S3 接入；<b>S2 期间 layer 一律为 0，画面与 S1 一致</b>。
+ *
+ * <p><b>stride 的唯一真相源是 {@link com.skyisland.render.VertexFormat}</b>，
+ * 本类不得自行写死数字 —— 本着色器被五个渲染器共用，
+ * 少改一个不会编译报错，只会让它静默读到别人的字节。
+ * 守卫见 {@code VertexFormatConsistencyTest}。
  *
  * @param opaqueVertices      不透明子网格顶点
- * @param opaqueIndices       不透明子网格索引
+ * @param opaqueIndices不透明子网格索引
  * @param transparentVertices 透明子网格顶点
  * @param transparentIndices  透明子网格索引
  * @param opaqueFaceCount     不透明面数（统计用，与顶点数互为校验）
@@ -27,11 +35,16 @@ public record MeshData(float[] opaqueVertices, int[] opaqueIndices,
                        float[] transparentVertices, int[] transparentIndices,
                        int opaqueFaceCount, int transparentFaceCount) {
 
-    /** 顶点浮点数个数（pos 3 + color 4）。 */
-    public static final int FLOATS_PER_VERTEX = 7;
+    /**
+     * 顶点浮点数个数（pos 3 + color 4 + layerAo 2）。
+     *
+     * <p><b>刻意委托给 {@link com.skyisland.render.VertexFormat}而不是写 {@code 7}：</b>
+     * 这个常量在本步之前的正确值就是 7，写死它会让下一次格式变更<b>静默漏改</b>。
+     */
+    public static final int FLOATS_PER_VERTEX = VertexFormat.FLOATS_PER_VERTEX;
 
     /** 顶点字节数。 */
-    public static final int VERTEX_STRIDE_BYTES = FLOATS_PER_VERTEX * Float.BYTES;
+    public static final int VERTEX_STRIDE_BYTES = VertexFormat.VERTEX_STRIDE_BYTES;
 
     /** 每个面 4 个顶点。 */
     public static final int VERTICES_PER_FACE = 4;

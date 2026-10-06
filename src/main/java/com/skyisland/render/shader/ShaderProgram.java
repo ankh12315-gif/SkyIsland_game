@@ -165,6 +165,27 @@ public final class ShaderProgram {
         }
     }
 
+    /**
+     * 设置 {@code int} uniform —— 目前唯一用途是<b>采样器的纹理单元号</b>。
+     *
+     * <p><b>为什么必须有它，且必须"逐 pass"重设</b>：
+     * {@code glUniform1i} 写的是<b>当前 program</b> 的 uniform 值，
+     * 而采样器单元是 program 状态而非全局状态。
+     * 换到另一个 program（地形 → 手持物，它们各自 {@code shader.bind()}）时，
+     * 采样器会退回默认单元 0 —— 那里通常绑着 UI 纹理，
+     * 症状是"方块显示出背包面板的图案"，且**不报任何错**。
+     *
+     * <p>它同时也是 {@code sampler2DArray} 唯一的绑定入口：
+     * 声明了 {@code uniform sampler2DArray} 但从不告知单元号，
+     * GLSL 默认取 0，同样不报错。
+     */
+    public void setInt(String name, int value) {
+        int location = uniformLocation(name);
+        if (location >= 0) {
+            GL20.glUniform1i(location, value);
+        }
+    }
+
     /** 便捷重载：把 JOML 矩阵直接喂进去（JOML 的矩阵本身就是列主序）。 */
     public void setMatrix4f(String name, org.joml.Matrix4fc matrix) {
         try (MemoryStack stack = MemoryStack.stackPush()) {

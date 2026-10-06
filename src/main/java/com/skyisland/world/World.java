@@ -247,9 +247,47 @@ public final class World {
         return blockIdAt(x, y, z) == BlockRegistry.AIR_RUNTIME_ID;
     }
 
-    /** 是否阻挡移动（碰撞判定口径，TECH_DESIGN §F.4）。 */
+    /**
+     * 是否阻挡移动（碰撞判定口径，TECH_DESIGN §F.4）。
+     *
+     * <p><b>刻意不直接返回 {@code block.hasCollision()}：</b>
+     * 那样"作物误配成 collision=true"就会造出一堵看不见的墙（PRD §7 R1）。
+     * 这里走 {@link Block#blocksMovement()}，让<b>形态对玩法开关有否决权</b>。
+     */
     public boolean hasCollisionAt(int x, int y, int z) {
-        return blockAt(x, y, z).hasCollision();
+        return blockAt(x, y, z).blocksMovement();
+    }
+
+    /**
+     * 指定格坐标处的方块是否与给定 AABB 相交（<b>已含"是否阻挡"语义</b>）。
+     *
+     * <p>这是碰撞查询的<b>单一入口</b>：调用方不应先问
+     * {@link #hasCollisionAt(int, int, int)} 再自己按满格算相交 ——
+     * 半高台阶那样做会把台阶上方的空气也当成障碍（玩家撞上"空气墙"）。
+     *
+     * @param minX/minY/minZ 查询盒下界
+     * @param maxX/maxY/maxZ 查询盒上界
+     * @param bx/by/bz 被查询方块的格坐标
+     */
+    public boolean collidesWith(double minX, double minY, double minZ,
+                                 double maxX, double maxY, double maxZ,
+                                 int bx, int by, int bz) {
+        return blockAt(bx, by, bz).intersects(minX, minY, minZ, maxX, maxY, maxZ, bx, by, bz);
+    }
+
+    /**
+     * 指定格坐标处方块的<b>碰撞体顶面</b>世界 y 坐标；无碰撞体时返回 {@code by}。
+     *
+     * <p><b>为什么不能用 {@code by + 1} 代替：</b>
+     * 满方块恰好是 {@code by + 1}，但半高台阶是 {@code by + 0.5}。
+     * 落地吸附与站立高度都用这个值 —— 写死 {@code +1} 会让玩家
+     * "站到台阶上却悬在半空"（视觉上浮空 0.5 格）。
+     *
+     * <p>无碰撞体（作物）返回 {@code by}，让吸附落在格底 ——
+     * 作物本不该被撞到，这个值只是不让求解器除零/失控。
+     */
+    public double collisionTopAt(int bx, int by, int bz) {
+        return by + blockAt(bx, by, bz).shape().collisionTopY();
     }
 
     /** 是否为实体方块（支撑判定口径）。 */
