@@ -286,12 +286,46 @@ public final class IslandWorldGenerator implements WorldGenerator {
     // 资源核心（PRD 4.6）
     // ------------------------------------------------------------------
 
-    /** 石矿岛核心刷新周期（秒）与单次数量 —— PRD 4.6 参数表（MVP 只做石矿岛）。 */
-    public static final int CORE_REGEN_PERIOD_SECONDS = 180;
-    public static final int CORE_REGEN_PER_RUN = 1;
-    public static final int CORE_REGEN_HALF_SPAN = 2;   // 5×5 水平范围
-    public static final int CORE_REGEN_MIN_DY = -2;
-    public static final int CORE_REGEN_MAX_DY = 1;
+    /**
+     * 每座资源岛的再生周期（秒），PRD 4.6 参数表。
+     *
+     * <p>★ <b>唯一事实源已迁到 {@code ResourceCoreRegen}</b>：
+     * 本类曾经在这里定义一份，而当时<b>没有任何消费者</b> ——
+     * 那正是这个项目明令禁止的死代码（「写了不接线」）。
+     * 现在真正驱动再生的是 {@code ResourceCoreRegen}，它需要知道每座岛的
+     * 参数，而本类是唯一知道"哪座岛在哪儿、是什么类型"的地方。
+     * <p>⇒ 保留这三个方法作为<b>参数查询口</b>，数值直接转发，
+     * <b>不在这里再写第二份常量</b>。任何"两个地方各有一份速率"的写法
+     * 都会让速率判据只能验到其中一处。
+     *
+     * @see com.skyisland.world.ResourceCoreRegen
+     */
+    public static int coreRegenPeriodSeconds(Kind kind) {
+        return com.skyisland.world.ResourceCoreRegen.periodSecondsOf(
+                regenKindOf(kind));
+    }
+
+    /** 该岛核心再生哪种矿石。 */
+    public static int coreRegenOre(Kind kind) {
+        return com.skyisland.world.ResourceCoreRegen.oreOf(regenKindOf(kind));
+    }
+
+    /** 该岛核心的导出量（格/小时）—— 用于核对"≤ 采矿速率的 1/50"。 */
+    public static int coreRegenPerHour(Kind kind) {
+        return com.skyisland.world.ResourceCoreRegen.gramsPerHourOf(
+                regenKindOf(kind));
+    }
+
+    /** 生成器的岛类型 → 再生模块的岛类型（两个枚举刻意不共用，见各自说明）。 */
+    private static com.skyisland.world.ResourceCoreRegen.IslandKind regenKindOf(Kind kind) {
+        return switch (kind) {
+            case MAIN -> com.skyisland.world.ResourceCoreRegen.IslandKind.MAIN;
+            case STONE -> com.skyisland.world.ResourceCoreRegen.IslandKind.STONE;
+            case FOREST -> com.skyisland.world.ResourceCoreRegen.IslandKind.FOREST;
+            case METAL -> com.skyisland.world.ResourceCoreRegen.IslandKind.METAL;
+            case CRYSTAL -> com.skyisland.world.ResourceCoreRegen.IslandKind.CRYSTAL;
+        };
+    }
 
     // ------------------------------------------------------------------
     // 生成

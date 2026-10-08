@@ -98,6 +98,20 @@ tmp/s3work/*
 !tmp/extract_play_exec.js
 !tmp/rv_play_sync.js
 
+# --- 单类测试执行器 + 资源核心反向验证脚本, MUST stay tracked ---
+# WHY: tmp/mvn_test_one.js 把「跑哪个测试类」与「怎么从输出里读出失败的断言名」
+#   两件事固化成一个入口。反向验证脚本要反复"注入断线 → 跑一条测试 → 看哪条红了"，
+#   直接调 mvn 的话每次起一个 JVM 且输出要自己从 surefire 报告里挖 ——
+#   而**"哪条断言红了"正是反向验证的归因依据**，读错就等于把断线归因到无关断言
+#   （本轮实测：注入 C 先撞红的是 occupiedCells… 而不是范围那条，
+#   若归因正则只写一条，就会误判成"注入改错了东西"）。
+#   rv_core_regen.js 则是资源核心再生（PRD 4.6）的 5 条断线注入器。
+#   两个都不入库 = 换个克隆就没有反向验证能力，而症状是"全绿"——
+#   正是本项目 M2.1 一次抓出 8 处「已定义、从未被调用」时缺的那类工具。
+# Guard: ResourceCoreWiringTest#theReverseVerificationScriptsAreTracked
+!tmp/mvn_test_one.js
+!tmp/rv_core_regen.js
+
 # --- surefire 报告读取器, MUST stay tracked ---
 # WHY: 当 `mvn` 的失败输出被 `[ERROR]` 前缀淹没、或一次构建里有很多个测试类
 # 都红了时, "哪个用例红了、消息是什么"只能从 target/surefire-reports/*.xml 里读。

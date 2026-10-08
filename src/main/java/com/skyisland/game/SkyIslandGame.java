@@ -55,6 +55,7 @@ import com.skyisland.world.Chunk;
 import com.skyisland.world.ChunkStreamer;
 import com.skyisland.world.DayClock;
 import com.skyisland.world.DayPhase;
+import com.skyisland.world.ResourceCoreRegen;
 import com.skyisland.world.World;
 import com.skyisland.world.block.Block;
 import com.skyisland.world.block.BlockRegistry;
@@ -566,6 +567,14 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      * 而那次重置的现场是"玩家新建了一个世界"，看起来完全无害。
      */
     private DayClock dayClock;
+
+    /**
+     * M3 资源核心慢速再生（PRD 4.6）。<b>仅产品世界装配</b>，自测为 {@code null}。
+     *
+     * <p>具体类而非接口：只有一个实现，且本类要读它的可观测计数
+     * （进测量摘要）而不是替换它。
+     */
+    private com.skyisland.world.ResourceCoreRegen coreRegen;
     /** 表现层种子的递增源：让"同一次运行"里的粒子分布可复现。 */
     private long fxSeedCounter;
 
@@ -2548,6 +2557,11 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //   不重置的话，玩家在第 3 天夜里新建世界会直接站在几乎全黑的夜里，
         //   看上去像"世界坏了"。
         dayClock = new DayClock(dayClock.totalSeconds());
+        // ★ "新建世界"也要重装核心：世界刚被清空重建，
+        //   而 attachStreaming 内部的 attachResourceCores 只在装配期跑一次。
+        //   不重装的话，玩家新建世界后资源核心就停止再生了 ——
+        //   而症状是"核心还在、就是不长矿"，极难归因（它看起来像参数问题）。
+        coreRegen = null;
         attachStreaming(TestWorldGenerator.spawnX(), TestWorldGenerator.spawnZ());
         warmUpMeshes();
 
@@ -2598,6 +2612,50 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //   让区块在它脚下消失会把"断言红"变成"偶发红"，而偶发红没有诊断价值。
         chunkStreamer.setUnloadEnabled(!isAutoVerification());
         chunkStreamer.reset(centerX, centerZ);
+        attachResourceCores();
+    }
+
+    /**
+     * 装配资源核心慢速再生（PRD 4.6「三重防软锁」的第② 条）。
+     *
+     * <p>★ <b>只在产品世界装配</b>：自测跑的是 {@code TestWorldGenerator}，
+     * 那块平台上恰好也放了一个 resource_core（用于验证"不可破坏"拒绝路径）。
+     * 若那里也驱动再生，自测会周期性地长出矿石 ——
+     * 而 M1 自测断言的"挖掉之后仍然是空气"这类状态会被后台动作改写。
+     * <p>⇒ 判据走 {@link M1Config#useProductWorld()}，与生成器同一道闸门。
+     * 不写"selfTest == null"这种散判：新增自测时它会被漏掉
+     * （本项目为此专门写过守卫，见 S8A 报告 §7）。
+     */
+    private void attachResourceCores() {
+        if (!config.useProductWorld()) {
+            return;
+        }
+        coreRegen = new ResourceCoreRegen(world);
+        com.skyisland.world.gen.IslandWorldGenerator gen =
+                (com.skyisland.world.gen.IslandWorldGenerator) world.generator();
+        for (com.skyisland.world.gen.IslandWorldGenerator.Island island
+                : com.skyisland.world.gen.IslandWorldGenerator.ISLANDS) {
+            if (island.kind() == com.skyisland.world.gen.IslandWorldGenerator.Kind.MAIN) {
+                continue;   // 主岛无资源核心（PRD 4.6 表只列 4 座资源岛）
+            }
+            coreRegen.register(new ResourceCoreRegen.IslandCore(island.key(),
+                    regenKindOf(island.kind()),
+                    island.centerX(),
+                    Coords.WORLD_SURFACE_BLOCK_Y + 1,
+                    island.centerZ()));
+        }
+        Log.info("[世界] 资源核心再生已装配：%d 个核心（石/森/金/晶 四岛）", coreRegen.coreCount());
+    }
+
+    private static ResourceCoreRegen.IslandKind regenKindOf(
+            com.skyisland.world.gen.IslandWorldGenerator.Kind kind) {
+        return switch (kind) {
+            case MAIN -> ResourceCoreRegen.IslandKind.MAIN;
+            case STONE -> ResourceCoreRegen.IslandKind.STONE;
+            case FOREST -> ResourceCoreRegen.IslandKind.FOREST;
+            case METAL -> ResourceCoreRegen.IslandKind.METAL;
+            case CRYSTAL -> ResourceCoreRegen.IslandKind.CRYSTAL;
+        };
     }
 
     /** 加载半径；{@code -Dskyisland.chunkRadius=N} 可覆盖（调参与压测用）。 */
@@ -2893,6 +2951,17 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //   因此"即将进入的区块"总是提前很久就生成好了。
         if (chunkStreamer != null) {
             chunkStreamer.update(player.position().x, player.position().z);
+        }
+
+        // ---- M3：资源核心慢速再生（PRD 4.6）----
+        // ★ 排在物理之前、且用**固定步长的 dt**：本类的速率判据
+        //   （≤ 采矿速率的 1/50）只有在"逻辑步恒为 60 Hz"时才成立 ——
+        //   换成帧间隔的话，同一段游戏时长会因负载抖动而产出不同的矿量，
+        //   判据就会随机地红。
+        //   而它排在物理之前，是因为它会改方块：新建的矿石必须在
+        //   玩家同一逻辑步的碰撞判定里就已经存在。
+        if (coreRegen != null) {
+            coreRegen.tick(fixedDt);
         }
 
         // ---- 物理 / 交互 ----
@@ -4332,6 +4401,20 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             sb.append("stream_chunks_drop = ").append(chunkStreamer.unloadCount()).append('\n');
         }
         sb.append("delta_applied      = ").append(world.deltaAppliedCount()).append('\n');
+        // ★ M3：资源核心再生读数。**必须打，且必须成组** ——
+        //   core_count=0 就说明没装配（自测世界），那是设计内；
+        //   但如果 core_count>0 而 regen_runs 在一个长窗口里恒为 0，
+        //   那就是"装了却没在跑"，与本项目反复修的"写了不接线"同类。
+        //   skipped_* 四项分列的理由：占用 / 区块未加载 / 无候选是三种
+        //   不同原因，合成一个计数就分不出"该调参"还是"玩家堵住了"。
+        if (coreRegen != null) {
+            sb.append("core_count         = ").append(coreRegen.coreCount()).append('\n');
+            sb.append("regen_runs         = ").append(coreRegen.regenRuns()).append('\n');
+            sb.append("regen_ores         = ").append(coreRegen.oresPlaced()).append('\n');
+            sb.append("regen_skip_occup   = ").append(coreRegen.skippedOccupied()).append('\n');
+            sb.append("regen_skip_nochunk = ").append(coreRegen.skippedChunkNotLoaded()).append('\n');
+            sb.append("regen_skip_nocand  = ").append(coreRegen.skippedNoCandidate()).append('\n');
+        }
         // ★ M5a：昼夜读数。与内存/帧读数同一次输出，避免"要看两处"。
         sb.append("day_seconds        = ")
                 .append(String.format("%.1f", dayClock.timeSeconds())).append('\n');
