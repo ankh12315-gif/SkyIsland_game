@@ -38,7 +38,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const PROJ = 'F:/minecraftspace';
+const PROJ = process.env.SKYISLAND_PROJ || 'F:/minecraftspace';
 const LAUNCHER = path.join(PROJ, 'launcher');
 const BUILD = path.join(LAUNCHER, 'build');
 const MINGW = process.env.MINGW_DIR || 'D:\\mingw64';
@@ -152,5 +152,8 @@ build('SkyIsland-console.exe', ['-DSKYISLAND_KEEP_CONSOLE=1']);
 
 console.log('[build_launcher] done.');
 console.log('[build_launcher] To publish the Desktop entry point, copy SkyIsland.exe');
-console.log('[build_launcher] to the Desktop. The .exe is NOT tracked by git;');
-console.log('[build_launcher] whoever clones must run this script.');
+console.log('[build_launcher] to the Desktop AS "SkyIsland 启动.exe". The .exe is NOT');
+console.log('[build_launcher] tracked by git; whoever clones must run this script.');
+console.log('[build_launcher] The Desktop copy is a COPY, not a link -- remember to');
+console.log('[build_launcher] re-copy after any rebuild, or you will be testing the');
+console.log('[build_launcher] previous binary (that exact trap cost two milestones).');

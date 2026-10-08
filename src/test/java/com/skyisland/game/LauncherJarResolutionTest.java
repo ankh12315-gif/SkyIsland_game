@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 启动器 / 门禁运行器的 <b>jar 解析守卫</b>的回归守卫。
  *
  * <h2>它守的是一个"守卫自己写错、却一直没人跑过"的坑</h2>
- * 2026-10-03 主理人双击 {@code play-m3.bat} 撞到：
+ * 2026-10-03 主理人双击 {@code play.bat} 撞到：
  * <pre>
  *   [ERROR] Expected exactly 1 jar in target\, found 2.
  * </pre>
@@ -45,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <b>不支持</b> —— 它匹配一切，把别名也数进去（{@code JARCOUNT=2}）。
  * 换句话说，"源码里有排除逻辑"这条扫描断言<b>照样会绿</b>，而守卫仍然是坏的。
  *
- * <p>因此本类把 {@code play-m3.bat} 里那一段<b>原样抽出来</b>，
+ * <p>因此本类把 {@code play.bat} 里那一段<b>原样抽出来</b>，
  * 喂一个<b>合成夹具目录</b>（两个同名前缀的 jar），再用真实的 {@code cmd /c} 跑它，
  * 断言它真的解析出 1 个、并且选中的那个<b>不是</b>别名。
  * 再加一条反向用例：两个真 jar 时必须报"2"（证明它不是永远返回 1 的假绿）。
@@ -55,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class LauncherJarResolutionTest {
 
-    private static final Path LAUNCHER = Path.of("play-m3.bat");
+    private static final Path LAUNCHER = Path.of("play.bat");
     private static final Path FIXTURE_ROOT = Path.of("tmp", "__jar_resolve_fixture");
     private static final Path FIXTURE_TARGET = FIXTURE_ROOT.resolve("target");
     private static final Path SCRATCH_BAT = Path.of("tmp", "_jar_resolve_probe.bat");
@@ -95,7 +95,7 @@ class LauncherJarResolutionTest {
     }
 
     /**
-     * 把 {@code play-m3.bat} 里的 jar 解析块抽成一份可独立运行的探针。
+     * 把 {@code play.bat} 里的 jar 解析块抽成一份可独立运行的探针。
      *
      * <p><b>块边界必须包含 {@code exit /b 3} 之后那一行</b>（收尾的右括号）：
      * 少了它，cmd 的括号不配对，会直接以 255 退出且<b>不打印任何东西</b> ——
@@ -112,7 +112,7 @@ class LauncherJarResolutionTest {
                 break;
             }
         }
-        assertTrue(start >= 0, "play-m3.bat 里找不到 'set \"JAR=\"' —— 启动器结构变了，本用例需要跟着改");
+        assertTrue(start >= 0, "play.bat 里找不到 'set \"JAR=\"' —— 启动器结构变了，本用例需要跟着改");
 
         int exit = -1;
         for (int i = start; i < lines.length; i++) {
@@ -121,7 +121,7 @@ class LauncherJarResolutionTest {
                 break;
             }
         }
-        assertTrue(exit >= 0, "play-m3.bat 里找不到 'exit /b 3' —— 守卫被删掉了？");
+        assertTrue(exit >= 0, "play.bat 里找不到 'exit /b 3' —— 守卫被删掉了？");
 
         // 守卫本体（`if not "%JARCOUNT%"=="1"` …）单独定位。
         // ★ 探针的计数行必须插在<b>守卫之前</b>：负向用例里守卫会 `exit /b 3`，
@@ -135,7 +135,7 @@ class LauncherJarResolutionTest {
             }
         }
         assertTrue(guard > start,
-                "play-m3.bat 里找不到唯一性校验行 `if not \"%JARCOUNT%\"==\"1\"` —— "
+                "play.bat 里找不到唯一性校验行 `if not \"%JARCOUNT%\"==\"1\"` —— "
                         + "守卫被改弱了？（本类的负向用例正是为了钉住它还在）");
 
         StringBuilder probe = new StringBuilder();

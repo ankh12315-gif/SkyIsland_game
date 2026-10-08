@@ -39,7 +39,6 @@ tmp/*
 !tmp/run_frozen_gate.js
 !tmp/run_m2_smoke.js
 !tmp/gen_play_bat.js
-!tmp/gen_play_m3_bat.js
 !tmp/run_gate.js
 !tmp/scan_gate.js
 # --- PowerShell tooling, MUST stay tracked ---
@@ -84,6 +83,20 @@ tmp/s3work/*
 # binary for two whole milestones while play-m3.bat was being fixed next to it.
 # Guard: NativeLauncherWiringTest#theLauncherHasATrackedBuildScript
 !tmp/build_launcher.js
+
+# --- 游玩入口的同步守卫 + 桌面部署器, MUST stay tracked ---
+# WHY: play.bat 与 launcher/skyisland_launcher.c 是**同一个**游玩入口的两种实现
+#   （.bat 与 .exe）。它们**历史上真的漂移过**：桌面 exe 是一份冻结的 09-23 二进制，
+#   世界名还停在 m21-play，而 .bat 早就改成 m3-play —— 症状是"桌面按钮进的是一个
+#   只有手枪的世界"，而日志里每一行都正常，且全部门禁、单测都是绿的。
+#   两个入口各自"符合自己的定义"，没有任何检查会红。
+#   2026-10-08 换了世界名（生成器换了，存档必须跟着换），于是补上这条守卫。
+#   deploy_desktop.js 则把 exe 复制到桌面并**核对 sha256** —— 桌面上那份是
+#   COPY 不是链接，"忘了重新复制"是这个项目已经付过两次学费的故障。
+!tmp/check_play_sync.js
+!tmp/deploy_desktop.js
+!tmp/extract_play_exec.js
+!tmp/rv_play_sync.js
 
 # --- surefire 报告读取器, MUST stay tracked ---
 # WHY: 当 `mvn` 的失败输出被 `[ERROR]` 前缀淹没、或一次构建里有很多个测试类

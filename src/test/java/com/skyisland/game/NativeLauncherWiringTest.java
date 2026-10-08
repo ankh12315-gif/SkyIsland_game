@@ -26,12 +26,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * </pre>
  * 后果是：<b>桌面的入口点开的是另一个世界</b> —— 那个存档经过 12 次死亡后子弹已打光，
  * 背包里只剩一把手枪 + 圆石 + 泥土。看不到 SMG、看不到步枪、看不到材料包，
- * 而所有门禁、单测、{@code play-m3.bat} 全部是绿的。
+ * 而所有门禁、单测、{@code play.bat} 全部是绿的。
  * <p>
  * 更糟的一层：{@code .gitignore} 排除了 {@code launcher/*.exe}
  * （为了避免 300 KB 二进制 diff），于是<b>源码是唯一的入库产物</b>，
  * "重编"这一步<b>没有任何东西会提醒你去做</b>。
- * 于是 {@code play-m3.bat} 每次都在修，桌面那个 exe 一直躺着不动 ——
+ * 于是 {@code play.bat} 每次都在修，桌面那个 exe 一直躺着不动 ——
  * 这就是"两处入口口径漂移"，而本项目最贵的一次假绿灯正是同一形状。
  *
  * <h2>为什么三条断言都在读 C 源码，而不是读编出来的 exe</h2>
@@ -107,39 +107,54 @@ class NativeLauncherWiringTest {
      * 而它在 2026-10-03 之前一直开的是 {@code m21-play}。
      */
     @Test
-    void theNativeLauncherPointsAtTheM3PlayWorldNotTheM21One() throws IOException {
+    void theNativeLauncherPointsAtTheCurrentPlayWorldNotTheM21One() throws IOException {
         String src = cWithoutComments();
 
-        assertTrue(src.contains("kWorldName = L\"m3-play\""),
-                "★ 桌面启动器的世界名必须是 m3-play —— 2026-10-03 之前它是 m21-play，"
-                        + "于是桌面入口开的是一个子弹已打光、只剩一把手枪的老存档，"
-                        + "而 play-m3.bat 与全部门禁都是绿的。"
+        // ★ 2026-10-08：世界名随**世界生成器**一起换掉了（M3 → islands-play）。
+        //   换名的理由不是"版本号变了"，而是生成器变了：存档只是
+        //   "在生成结果之上的方块增量"，拿旧存档套新地形 = 得到一个
+        //   没人挖过、谁也解释不了的破洞世界。
+        //   这条断言因此**不钉死某个字面量**，只钉三件事：
+        //     ① 世界名是 islands-play（当前产品世界）
+        //     ② 存档与设置路径跟它同步
+        //     ③ 老的 m21 / m3 字样不得留在可执行代码里
+        //   理由：把版本名写进断言，就等于让"下次再换名"必须先改测试 ——
+        //   而那种"改名字就得改测试"的耦合，正是本类第 5 条注释里
+        //   记的那个"冻结二进制没人重建"故障的同一个根。
+        assertTrue(src.contains("kWorldName = L\"islands-play\""),
+                "★ 桌面启动器的世界名必须是 islands-play —— 它对应 PRD 4.2 的空岛世界"
+                        + "（主岛 + 四座资源岛 + 开局小屋）。2026-10-03 之前是 m21-play，"
+                        + "2026-10-08 之前是 m3-play（那个建在已废弃的测试平台上）。"
                         + "（判据读的是去掉注释后的源码：文件头解释过这些常量。）");
 
-        assertTrue(src.contains("tmp\\\\m3-play-saves") || src.contains("tmp\\m3-play-saves"),
-                "存档目录必须同步改成 tmp\\m3-play-saves，否则换个目录等于把旧存档的"
-                        + "子弹耗尽状态带进 M3 试玩");
+        assertTrue(src.contains("islands-play-saves"),
+                "存档目录必须跟着世界名同步，否则就等于把旧存档带进新地形");
 
-        assertTrue(src.contains("tmp\\\\m3-play-settings.json") || src.contains("tmp\\m3-play-settings.json"),
+        assertTrue(src.contains("islands-play-settings.json"),
                 "设置文件路径必须同步");
 
-        // 反向：m21 字样不得再出现在可执行代码里（注释里可以，因为它在讲历史）。
+        // 反向：任何**已废弃的**世界名字样都不得再出现在可执行代码里
+        //（注释里可以，因为注释在讲这段历史）。
+        // ★ m3 也要查：它不是"更老的版本"，而是**建在已废弃的测试平台上**
+        //   的世界名 —— 留着它同样会让桌面入口开一个地形对不上的存档。
         List<String> stale = new ArrayList<>();
         int line = 0;
         for (String l : src.split("\r?\n")) {
             line++;
-            if (l.contains("m21")) {
+            if (l.contains("m21") || l.contains("m3-play")) {
                 stale.add("line " + line + ": " + l.trim());
             }
         }
         assertTrue(stale.isEmpty(),
-                "去掉注释后的源码里不该再有 m21 —— 桌面入口必须和 play-m3.bat 同世界。发现：" + stale);
+                "去掉注释后的源码里不该再有 m21 / m3-play —— 桌面入口必须和 play.bat 同世界。"
+                        + "（m3-play 建在已废弃的 TestWorldGenerator 测试平台上，"
+                        + "拿它的存档套上空岛地形会得到一个破洞世界。）发现：" + stale);
     }
 
     // ============================================================ ② 试玩开关
 
     /**
-     * ★ 桌面启动器必须带与 {@code play-m3.bat} <b>完全相同</b>的两个试玩开关。
+     * ★ 桌面启动器必须带与 {@code play.bat} <b>完全相同</b>的两个试玩开关。
      *
      * <p>不一致的后果是"两处入口给出两个游戏"：无限后备、DEV 装备（步枪 + 材料包）。
      * 门禁与 bat 都有这两个开关，exe 没有 —— 那桌面入口就成了唯一一个
@@ -151,7 +166,7 @@ class NativeLauncherWiringTest {
 
         assertTrue(src.contains("-Dskyisland.infiniteReserve=true"),
                 "★ 桌面启动器必须带 -Dskyisland.infiniteReserve=true —— "
-                        + "play-m3.bat 有，缺了它两处入口的后备弹药口径就不同"
+                        + "play.bat 有，缺了它两处入口的后备弹药口径就不同"
                         + "（判据读去掉注释后的源码，文件头写了这个参数名。）");
 
         assertTrue(src.contains("-Dskyisland.loadout=dev"),
@@ -170,7 +185,7 @@ class NativeLauncherWiringTest {
     /**
      * ★ jar 解析必须<b>排除 shade 插件的字节相同别名</b>，且用定长尾比较。
      *
-     * <p>桌面 exe 复现了和 {@code play-m3.bat} <b>一字不差</b>的故障
+     * <p>桌面 exe 复现了和 {@code play.bat} <b>一字不差</b>的故障
      * （{@code Expected exactly 1 jar ... found 2}）—— 实测方式是：把
      * {@code target/} 里的主 jar 复制一份成 {@code -shaded.jar} 再跑它。
      * 所以修复规则必须与 bat 那一版<b>同源</b>，不能各写各的。
@@ -194,11 +209,11 @@ class NativeLauncherWiringTest {
                         + "但源码里那个 skyisland- 前缀检查要留着并被显式说明，"
                         + "否则会有人以为它被漏了）");
 
-        // 失败信息必须列出目录内容：play-m3.bat 那一版补了 `dir /b`，
+        // 失败信息必须列出目录内容：play.bat 那一版补了 `dir /b`，
         // 理由是"守卫的价值有一半在失败信息里"，这里必须同样。
         assertTrue(src.contains("Which is actually there"),
                 "jar 不唯一时的报错必须把 target\\ 的实际内容列出来，"
-                        + "而不是只说一个数字（与 play-m3.bat 的 `dir /b` 同源理由）");
+                        + "而不是只说一个数字（与 play.bat 的 `dir /b` 同源理由）");
     }
 
     // ============================================================ ④ JDK 口径
@@ -208,7 +223,7 @@ class NativeLauncherWiringTest {
      *
      * <p>实测 2026-10-03：老 exe 的查找顺序是 {@code SKYISLAND_JDK > JAVA_HOME > 内置}，
      * 而本机 {@code JAVA_HOME} 指向 <b>jdk-23</b>，于是桌面入口跑的是 Java 23，
-     * 而所有日志、门禁、{@code play-m3.bat} 说的都是 25。
+     * 而所有日志、门禁、{@code play.bat} 说的都是 25。
      * 这种差异不会立刻炸，它会在某个版本相关的行为上炸，而那时证据里
      * <b>没有任何一处</b>指向真正的原因。
      */
@@ -263,7 +278,7 @@ class NativeLauncherWiringTest {
 
         // .exe 不入库是刻意的，rc 里的版本与描述却必须跟着口径更新。
         String rc = Files.readString(RC_SOURCE, StandardCharsets.UTF_8);
-        assertTrue(rc.contains("play-m3.bat"),
+        assertTrue(rc.contains("play.bat"),
                 "rc 的 Comments 还在说 mimics play-m2.bat —— 口径改了、资源里的说明也要改，"
                         + "否则在属性页里读到的仍是 M2 的故事");
     }
@@ -271,7 +286,7 @@ class NativeLauncherWiringTest {
     // ============================================================ ⑥ 两处入口不许漂移
 
     /**
-     * ★ {@code play-m3.bat} 与桌面 exe 的世界名/开关必须<b>一致</b>。
+     * ★ {@code play.bat} 与桌面 exe 的世界名/开关必须<b>一致</b>。
      *
      * <p>这是本类的落点：前五条各自守一个字段，这一条守<b>关系</b>。
      * 历史上两者已经漂移过一次（bat 早就 m3-play / dev，exe 还是 m21-play / 无开关），
@@ -279,8 +294,8 @@ class NativeLauncherWiringTest {
      */
     @Test
     void theBatAndTheExeAgreeOnWorldAndSwitches() throws IOException {
-        Path bat = Path.of("play-m3.bat");
-        assertTrue(Files.exists(bat), "找不到 play-m3.bat，无法比对两个入口");
+        Path bat = Path.of("play.bat");
+        assertTrue(Files.exists(bat), "找不到 play.bat，无法比对两个入口");
 
         // 纯 ASCII 的 .bat 用 ISO-8859-1 读回来（1 字节 → 1 字符），
         // 顺便保证本断言不会因为编码问题误判。
@@ -295,7 +310,7 @@ class NativeLauncherWiringTest {
                 break;
             }
         }
-        assertNotEquals(null, batJavaLine, "play-m3.bat 里找不到启动 java 的那一行（结构变了？）");
+        assertNotEquals(null, batJavaLine, "play.bat 里找不到启动 java 的那一行（结构变了？）");
 
         assertTrue(batJavaLine.contains("-Dskyisland.loadout=dev")
                         && cSrc.contains("-Dskyisland.loadout=dev"),
@@ -304,10 +319,74 @@ class NativeLauncherWiringTest {
                         && cSrc.contains("-Dskyisland.infiniteReserve=true"),
                 "两个入口都必须带 infiniteReserve=true");
 
-        assertTrue(batJavaLine.contains("m3-play") && cSrc.contains("m3-play"),
-                "两个入口都必须开 m3-play 世界");
-
+        // ★ 世界名：两边都必须是 islands-play，且都**不含**已废弃的名字。
+        //
+        //   为什么把 m3-play 也算"废弃"：它不是"更老的版本"，而是建在
+        //   已废弃的 TestWorldGenerator 测试平台上的世界名。留着它，
+        //   桌面入口就会开一个"存档增量 + 空岛地形"的破洞世界。
+        assertTrue(batJavaLine.contains("islands-play") && cSrc.contains("islands-play"),
+                "两个入口都必须开 islands-play 世界（PRD 4.2 空岛世界）");
+        assertFalse(batJavaLine.contains("m3-play") || cSrc.contains("m3-play"),
+                "任一入口还带着 m3-play 就是漂移 —— 那个世界建在已废弃的测试平台上，"
+                        + "它的存档叠到空岛地形上会得到一个没人挖过的破洞世界");
         assertFalse(batJavaLine.contains("m21") || cSrc.contains("m21"),
                 "任一入口还带着 m21 就是漂移");
+    }
+
+    // ============================================================ ⑦ 桌面部署器
+
+    /**
+     * ★ 桌面部署必须入库，且必须核对 sha256。
+     *
+     * <p>为什么这是本类的第 7 条而不是"顺手做掉"：桌面上那份 exe 是
+     * <b>COPY</b>，不是链接。所以"源码改了、桌面那份没重新复制"这件事
+     * <b>没有任何东西会提醒你</b> —— 症状是主理人双击后跑的是上一次的二进制，
+     * 而日志里版本号、门禁、单测全都正常。
+     * <p>这个故障本项目已经付过两次学费（见类注释），所以部署器必须
+     * ①入库 ②复制后核对字节 ③提示它是 copy 不是 link。
+     */
+    @Test
+    void theDesktopDeployerIsTrackedAndVerifiesItsOwnCopy() throws IOException {
+        Path deploy = Path.of("tmp", "deploy_desktop.js");
+        assertTrue(Files.exists(deploy),
+                "找不到 " + deploy + " —— 桌面 exe 不入库（.gitignore 排除 *.exe），"
+                        + "所以部署步骤必须入库，否则换台机器就没有桌面入口");
+
+        String gitignore = Files.readString(Path.of(".gitignore"), StandardCharsets.UTF_8);
+        assertTrue(gitignore.contains("!tmp/deploy_desktop.js"),
+                "tmp/deploy_desktop.js 必须在 .gitignore 的白名单里"
+                        + "（tmp/* 被整体忽略，白名单必须显式放行）");
+        assertTrue(gitignore.contains("!tmp/check_play_sync.js"),
+                "tmp/check_play_sync.js 同理 —— 它守的正是本次修的那个漂移");
+
+        String js = Files.readString(deploy, StandardCharsets.UTF_8);
+        assertTrue(js.contains("sha256"),
+                "★ 部署器复制完必须核对 sha256 —— 不核对等于没验。"
+                        + "「忘了重新复制桌面那份」是本项目付过两次学费的故障");
+        assertTrue(js.contains("copyFileSync") && js.contains("renameSync"),
+                "必须用 copy(新入口) + rename(旧入口 -> .bak)，而不是直接删旧文件："
+                        + "桌面 exe 不在 git 里，删掉就再也拿不回来那份二进制");
+    }
+
+    /**
+     * ★ 两个入口的一致性必须<b>跨文件</b>核对 —— 这里只守它"存在且带反向验证"。
+     *
+     * <p>真正的字段比对在 {@code tmp/check_play_sync.js}（可以单独跑）。
+     * 放在这里是双保险：脚本被误删时这条会红，而字段漂移时脚本会红。
+     */
+    @Test
+    void thePlaySyncGuardIsTrackedAndCarriesItsOwnReverseVerification() throws IOException {
+        Path guard = Path.of("tmp", "check_play_sync.js");
+        assertTrue(Files.exists(guard), "找不到 " + guard);
+
+        String js = Files.readString(guard, StandardCharsets.UTF_8);
+        assertTrue(js.contains("'play.bat'") || js.contains("\"play.bat\""),
+                "守卫必须显式读 play.bat —— 只读另一个文件就守不住'两者一致'这件事");
+        assertTrue(js.contains("skyisland_launcher.c"),
+                "守卫必须读 skyisland_launcher.c（exe 那一侧）");
+        assertTrue(js.contains("RV ok") || js.contains("wouldFail"),
+                "★ 守卫必须带反向验证：注入一个漂移的世界名并确认自己会红。"
+                        + "一个从不失败的检查，与没有检查是同一件东西"
+                        + "（本项目为「断言在失败场景下仍能通过」付过学费）");
     }
 }

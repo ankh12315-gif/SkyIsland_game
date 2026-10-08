@@ -47,10 +47,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link com.skyisland.audio.UiAudioWiringTest} 同一口径，并且同样只断言"呼唤点存在"，
  * 不去声称"运行起来一定生效"（那由 {@code tmp/verify_m3_play.ps1} 的真实启动日志举证）。
  *
- * <h2>为什么连 {@code play-m3.bat} 一起扫</h2>
+ * <h2>为什么连 {@code play.bat} 一起扫</h2>
  * 这个开关存在的<b>唯一理由</b>就是让启动器默认无限（主理人裁定：
  * 产品默认仍是有限的 Survival 口径，v2 §19-6 不动；无限只作为 Debug 入口）。
- * 启动器是用 {@code tmp/gen_play_m3_bat.js} 生成的，重新生成一次就可能把那一段漏掉 ——
+ * 启动器从 2026-10-08 起是<b>手工维护</b>的 —— 任何一次编辑都可能顺手把那一行删掉，
  * 而漏掉之后不会有任何东西变红：配置层测试全绿、口径测试全绿，只有玩家发现
  * "怎么还是有限"。所以启动器本身也是这条接线的一部分。
  */
@@ -65,7 +65,7 @@ class InfiniteReserveWiringTest {
     private static final Path GAME_SOURCE =
             Path.of("src", "main", "java", "com", "skyisland", "game", "SkyIslandGame.java");
 
-    private static final Path LAUNCHER = Path.of("play-m3.bat");
+    private static final Path LAUNCHER = Path.of("play.bat");
 
     @AfterEach
     void clear() {
@@ -233,9 +233,14 @@ class InfiniteReserveWiringTest {
     // ============================================================ ④ 启动器（源码扫描）
 
     /**
-     * 启动器必须真的把开关传给 JVM —— 主理人裁定的"play-m3 默认无限"的落地形式。
+     * 启动器必须真的把开关传给 JVM —— 主理人裁定的"play.bat 默认无限"的落地形式。
      *
-     * <p>启动器由 {@code tmp/gen_play_m3_bat.js} 生成，重生成时最容易漏的就是这一行；
+     * <p>★ 启动器现在是<b>手工维护</b>的（2026-10-08 起），
+     * 不再由 {@code tmp/gen_play_m3_bat.js} 生成 ——
+     * 那个生成脚本写的是 ASCII 版，而现在的 play.bat 带中文游玩说明，
+     * 两者已经分叉。让生成器继续"看起来可用"比删掉它更危险，
+     * 因为改文案的人会去跑它、然后丢掉自己刚写的中文。
+     * 守卫见 {@code tmp/check_play_sync.js}（入口之间不许漂移）。
      * 漏掉之后配置层与口径层的测试<b>全部照旧全绿</b>，只有玩家发现"弹药怎么还在扣"。
      * 因此这里把启动器也纳入守卫范围。
      *
@@ -270,22 +275,45 @@ class InfiniteReserveWiringTest {
             }
         }
         assertNotNull(javaLine,
-                "play-m3.bat 里找不到启动 java 的那一行（应同时含 java.exe 与 -jar）—— "
+                "play.bat 里找不到启动 java 的那一行（应同时含 java.exe 与 -jar）—— "
                         + "启动器结构变了，本断言需要跟着改，而不是删掉");
         assertTrue(javaLine.contains("-D" + KEY + "=true"),
-                "★ play-m3.bat 的**启动行**必须带 -D" + KEY + "=true —— "
+                "★ play.bat 的**启动行**必须带 -D" + KEY + "=true —— "
                         + "否则「默认无限」只是一句注释（文件头里确实写了这个参数名，"
                         + "所以判据不能是全文件 contains）。实测启动行：<" + javaLine.trim() + ">");
 
-        List<Integer> nonAscii = new ArrayList<>();
-        for (int i = 0; i < bat.length(); i++) {
-            if (bat.charAt(i) > 127) {
-                nonAscii.add(i);
+        // ★ 非 ASCII 只允许出现在 **REM 注释行**里，绝不允许出现在**会被 cmd 解析的行**上。
+        //
+        // 为什么放宽：原判据是"全文件纯 ASCII"，它的出发点是对的 ——
+        // GBK 的 cmd.exe 会把 UTF-8 的中文读成乱码，而历史上真出过
+        // "cmd.exe 下卡在第一行"的故障。2026-10-08 起 play.bat 的文件头
+        // 要向玩家解释新世界（空岛、开局小屋、四座资源岛），那是给人看的，
+        // 而 REM 行 cmd 本来就整行忽略 —— 于是"注释里可以有中文"是安全的。
+        //
+        // ★ 但**可执行行**必须仍然是纯 ASCII：那里的乱码不是"不好看"，
+        //   而是真的会把解析搞崩。这个区分正是本条断言的全部意义 ——
+        //   只查"全文件有没有中文"会逼着人把游玩说明写成英文；
+        //   只查"有没有中文"又漏掉了真正会崩的那几行。
+        // ★ 判定委托给 tmp/extract_play_exec.js（唯一事实源），不在这里重写一遍。
+        //   两处各实现一次「哪些行算可执行」，就是下一次两边判据不一致的起点 ——
+        //   而那种不一致的典型症状是「守卫说全绿、但文件里有中文」。
+        List<String> badLines = new ArrayList<>();
+        for (String line : bat.split("\n", -1)) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("REM") || trimmed.startsWith("::")) {
+                continue;   // 注释行：cmd 整行忽略
+            }
+            for (int i = 0; i < line.length(); i++) {
+                if (line.charAt(i) > 127) {
+                    badLines.add(trimmed);
+                    break;
+                }
             }
         }
-        assertTrue(nonAscii.isEmpty(),
-                "play-m3.bat 含非 ASCII 字符（偏移 " + nonAscii
-                        + "）：GBK 的 cmd.exe 会读乱，且可能把 -jar 那一段解析崩。"
-                        + "该文件由 tmp/gen_play_m3_bat.js 生成，请改生成器而不是直接编辑它");
+        assertTrue(badLines.isEmpty(),
+                "★ play.bat 的**可执行行**含非 ASCII 字符（注释行 REM 允许中文）：\n  "
+                        + String.join("\n  ", badLines)
+                        + "\n  GBK 的 cmd.exe 会把 UTF-8 中文读成乱码，且可能把 -jar 那一段解析崩。"
+                        + "\n  ⇒ 中文只写在 REM 行；set/java/if/for 这些真会被执行的行必须纯 ASCII。");
     }
 }

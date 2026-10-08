@@ -22,9 +22,9 @@
  *    5. run  <java> --enable-native-access=ALL-UNNAMED <extra args>
  *              -Dskyisland.infiniteReserve=true
  *              -Dskyisland.loadout=dev
- *              -Dskyisland.worldName=m3-play
- *              -Dskyisland.settingsFile=<proj>\tmp\m3-play-settings.json
- *              -Dskyisland.saveDir=<proj>\tmp\m3-play-saves
+ *              -Dskyisland.worldName=islands-play
+ *              -Dskyisland.settingsFile=<proj>\tmp\islands-play-settings.json
+ *              -Dskyisland.saveDir=<proj>\tmp\islands-play-saves
  *              -jar <jar>
  *       (extra args land before the fixed -D switches, exactly as in the .bat,
  *        so the fixed ones always win)
@@ -64,13 +64,33 @@
 
 static const wchar_t* const kDefaultProjectDir = L"F:\\minecraftspace";
 static const wchar_t* const kDefaultJdkDir = L"D:\\software\\jdk-25";
-/* M3 play world. The old values (m21-play / tmp\m21-play-*) came from the M2.1
- * era and were the reason the Desktop entry point kept launching a world with a
- * single pistol and no rifles: the file was a frozen 09-23 binary that nobody
- * rebuilt after the world name moved. */
-static const wchar_t* const kWorldName = L"m3-play";
-static const wchar_t* const kSaveRelDir = L"tmp\\m3-play-saves";
-static const wchar_t* const kSettingsRel = L"tmp\\m3-play-settings.json";
+
+/* ---------------------------------------------------------------------------
+ * Play world identity.
+ *
+ * ★ 2026-10-08: the world name moved again, from "m3-play" to "islands-play".
+ *
+ * WHY a new name instead of keeping m3-play (and why this matters):
+ *   the world *generator* changed. M1–M5 ran TestWorldGenerator (a 64x64 test
+ *   platform); 2026-10-08 added IslandWorldGenerator (PRD 4.2: main island
+ *   32x32 + four resource islands + starter hut). A save is only "just a set of
+ *   block deltas on top of whatever the generator makes" -- so reusing the old
+ *   save would apply the old world's dug-out cells and placed blocks on top of
+ *   the NEW terrain. The result is not a crash and not a clean start: it is a
+ *   world with holes in it that nobody placed and cannot explain.
+ *   ⇒ A generator change requires a new save dir, exactly like a
+ *     saveVersion bump requires migration. `SaveManager` warns when
+ *     generatorId/generatorVersion differ, but "warned and loaded anyway" is
+ *     not the outcome we want on a play entry point.
+ *
+ * The Desktop button is also RENAMED (SkyIsland 启动.exe, no version number in
+ * the name). It used to say "M3" while actually loading the M4 island world --
+ * a name that lies is worse than no name, because it dates the moment it stops
+ * being true. See docs/testing/WORLD_ISLAND_GENERATOR_REPORT.md.
+ * ------------------------------------------------------------------------- */
+static const wchar_t* const kWorldName = L"islands-play";
+static const wchar_t* const kSaveRelDir = L"tmp\\islands-play-saves";
+static const wchar_t* const kSettingsRel = L"tmp\\islands-play-settings.json";
 
 /* Play switches, kept in lockstep with play-m3.bat. Both are "fail towards the
  * product default": without them this entry point would silently differ from
@@ -418,7 +438,11 @@ int main(void) {
                 FindClose(lh);
             }
         }
-        w_add(msg, MAXP * 2, L"\nRebuild with:\n    node tmp/build.js clean package");
+        w_add(msg, MAXP * 2,
+          L"\nThis is expected right after a world-generator change: the play save\n"
+          L"dir was renamed with it (the old one holds block deltas that no longer\n"
+          L"match the terrain). If you see this on a normal launch, rebuild with:\n"
+          L"    node tmp/build.js clean package");
         fail(msg, 3);
     }
 

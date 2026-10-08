@@ -33,7 +33,7 @@ BEGIN
             VALUE "OriginalFilename", "SkyIsland.exe"
             VALUE "ProductName",      "SkyIsland"
             VALUE "ProductVersion",   "0.3.2-M2_2-UI-INVENTORY"
-            VALUE "Comments",         "Native launcher: mirrors play-m3.bat, adds the game icon."
+            VALUE "Comments",         "Native launcher: mirrors play.bat, adds the game icon."
         END
     END
     BLOCK "VarFileInfo"

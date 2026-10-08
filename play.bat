@@ -1,9 +1,31 @@
 @echo off
 setlocal enabledelayedexpansion
 REM ===========================================================================
-REM  SkyIsland - M3 Weapon Generalization  (pistol + SMG)   (double-click me)
+REM  SkyIsland - play entry point   (double-click me)
 REM
-REM  WHAT IS NEW IN M3:
+REM  *** THE WORLD CHANGED ON 2026-10-08. READ THIS FIRST. ***
+REM  You now spawn on a SKYBLOCK ISLAND, not on the old test platform:
+REM    - main island 32x32 at (0,0), grass on top, 8-14 blocks thick, void below
+REM    - FOUR resource islands you can walk to (or bridge to):
+REM        stone island  (48,0)  14x14  coal + iron + stone
+REM        forest island (-44,12) 14x14  trees
+REM        metal island  (10,-48) 12x12 iron + copper + gold
+REM        crystal island(-6,52) 10x10 crystal (rare)
+REM    - a HALF-FINISHED STARTER HUT at the centre of the main island:
+REM        plank floor, walls, plank roof with ONE square left unfinished,
+REM        a door opening on the south side, one glass window north and south.
+REM        You spawn INSIDE it. Walk out the south door.
+REM    - one unbreakable RESOURCE CORE glows at each resource island centre.
+REM  This is PRD section 4.2 / 4.3 / 5.7. See
+REM    docs/testing/WORLD_ISLAND_GENERATOR_REPORT.md for what is asserted.
+REM
+REM  The save dir was RENAMED (m3-play -> islands-play) for a reason, not a
+REM  detail: a save is only "block deltas on top of whatever the generator
+REM  makes", so reusing the old save would stamp holes in the new terrain that
+REM  nobody dug and nobody can explain. Old save: tmp\m3-play-saves (abandoned,
+REM  not deleted, in case you want to look).
+REM
+REM  WHAT WAS NEW IN M3 (guns and crafting, all still true):
 REM    1) TWO GUNS. Your starting gear is now BOTH guns:
 REM         hotbar 1 = PISTOL  SINGLE  8 dmg  12-round mag  1.2 s reload
 REM         hotbar 2 = PISTOL AMMO x24  (shared by BOTH guns)
@@ -45,6 +67,13 @@ REM       These numbers are marked as "tunable in playtest" - say so if the
 REM       difference feels wrong.
 REM
 REM  DO THESE FIRST (each one is a claim that must be checked):
+REM    0. LOOK AROUND BEFORE YOU DO ANYTHING ELSE.
+REM       You spawn inside the starter hut on the main island. Turn around.
+REM       You should see plank walls, a glass window, and a door opening to the
+REM       south. Walk out of it, and you are on a 32x32 grass island with
+REM       NOTHING under you but sky.
+REM       If you instead spawn on a flat 64x64 platform with a 3-block wall and
+REM       a pit in it, you are running an OLD jar - rebuild, do not report a bug.
 REM    1. press 3            -> the SMG is in your hand: different silhouette
 REM                             and a different backpack icon than the pistol.
 REM    2. ONE CLICK, then HOLD LMB:
@@ -66,10 +95,10 @@ REM       holding DOES keep firing (AUTO).
 REM
 REM  WHY THIS LAUNCHER IS SEPARATE FROM play-m2.bat:
 REM    Starting gear is granted ONLY on a brand new world. This launcher uses
-REM    its own world name and its own save dir (tmp\m3-play-saves), so the
+REM    its own world name and its own save dir (tmp\islands-play-saves), so the
 REM    first run is guaranteed to be a new world and to grant both guns.
-REM    The M2.1 save (tmp\m21-play-saves) contains NO SMG - reusing it would
-REM    show you a pistol only. Do not reuse it to judge M3.
+REM    The old m3-play save was built on the TEST PLATFORM, which no longer
+REM    exists - do not reuse it.
 REM
 REM  KEYS: number keys switch hotbar / LMB fire / RMB aim / R reload /
 REM        F2 screenshot  F3 debug overlay  F4 spawn monster  F5 save
@@ -85,8 +114,13 @@ REM ===========================================================================
 
 set "JDK_HOME=D:\software\jdk-25"
 set "PROJ=%~dp0"
-set "WORLD=m3-play"
-set "SAVE=%PROJ%tmp\m3-play-saves"
+REM  ★ Renamed 2026-10-08 together with the world generator (see the header).
+REM    Keep this in lockstep with launcher\skyisland_launcher.c - the .exe and
+REM    this .bat are two entry points to the SAME play world, and when they
+REM    disagree you end up with two saves that each look "wrong" for a
+REM    different reason.
+set "WORLD=islands-play"
+set "SAVE=%PROJ%tmp\islands-play-saves"
 
 if not exist "%JDK_HOME%\bin\java.exe" (
   echo [ERROR] JDK 25 not found at "%JDK_HOME%".
@@ -148,15 +182,19 @@ if exist "%SAVE%\%WORLD%\level.json" (
 cd /d "%PROJ%"
 
 echo.
-echo [INFO] Launching SkyIsland M3 - pistol + SMG
+echo [INFO] Launching SkyIsland - skyblock islands world
 echo [INFO] Jar      : %JAR%
 echo [INFO] World    : %WORLD%
 echo [INFO] Save dir : %SAVE%
 echo.
+echo [INFO] YOU SPAWN INSIDE THE STARTER HUT on the main island.
+echo [INFO] Walk out the south door, then look around: void under you,
+echo [INFO] and four resource islands at (48,0) (-44,12) (10,-48) (-6,52).
 echo [INFO] Starting gear: 1=pistol  2=pistol ammo x24  3=SMG
 echo [INFO]         (DEV loadout)     4=rifle  5=rifle ammo x20  + material kit
 echo [INFO] Reserve    : INFINITE (Debug caliber, v2 sec 19-7)
-echo [INFO] Check first:  press 3  then  compare one-click vs hold-LMB
+echo [INFO] Check first:  look around before anything else
+echo [INFO]              press 3  then  compare one-click vs hold-LMB
 echo [INFO]              press E  then  craft in the RIGHT column
 echo.
 
@@ -166,7 +204,7 @@ REM  finite Survival caliber. See the REM header item 4 for why.
 REM  -Dskyisland.loadout=dev           -> DEV / TEST loadout: adds the rifle,
 REM  rifle ammo and the transition material kit (see header item 2). Remove it
 REM  to play the formal Survival loadout: two guns, no rifle, no kit.
-"%JDK_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED %* -Dskyisland.worldName=%WORLD% -Dskyisland.settingsFile=tmp\m3-play-settings.json -Dskyisland.saveDir="%SAVE%" -Dskyisland.infiniteReserve=true -Dskyisland.loadout=dev -jar "%JAR%"
+"%JDK_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED %* -Dskyisland.worldName=%WORLD% -Dskyisland.settingsFile=tmp\islands-play-settings.json -Dskyisland.saveDir="%SAVE%" -Dskyisland.infiniteReserve=true -Dskyisland.loadout=dev -jar "%JAR%"
 set "RC=%ERRORLEVEL%"
 
 echo.

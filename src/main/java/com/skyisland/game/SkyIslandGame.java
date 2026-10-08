@@ -378,7 +378,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                     //   （唯一设成 PROTOTYPE 的地方是战斗自测路径）。
                     parseInfiniteReserve(System.getProperty("skyisland.infiniteReserve")),
                     // ★ 开局装备口径：默认 SURVIVAL（正式玩法，v2 的 M3 范围 = 两把枪）。
-                    //   步枪与过渡材料包只属于 DEV / TEST 口径：门禁与 play-m3.bat 显式传 dev。
+                    //   步枪与过渡材料包只属于 DEV / TEST 口径：门禁与 play.bat 显式传 dev。
                     //   详见 Loadout 的类注释（"为什么必须拆开"）。
                     parseLoadout(System.getProperty(Loadout.SYSTEM_PROPERTY)),
                     // ★ M4-S6：游戏模式。默认 SURVIVAL（PRD §4.1 缺省即生存）。
@@ -1369,7 +1369,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //   M3 的正式范围是 v2 的两把枪（手枪 + 冲锋枪）。步枪是"为验证步枪链"才放行的，
         //   把一把尚未进入正式获取链的枪发进每一局正式新游戏，等于用测试内容污染玩法。
         //   因此这一段（以及下面的材料包）只在 {@link Loadout#DEV} 下执行 ——
-        //   门禁与 play-m3.bat 显式传 -Dskyisland.loadout=dev，真人试玩走的正是这条路径。
+        //   门禁与 play.bat 显式传 -Dskyisland.loadout=dev，真人试玩走的正是这条路径。
         //
         // 步枪弹按与手枪同一条规则给：2 × 弹匣容量（PRD：手枪"初始物资 = 2 个满弹匣"）。
         int rifleAmmo = 2 * ItemRegistry.rifle().gun().magazineSize();

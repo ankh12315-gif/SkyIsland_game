@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * PowerShell 取证脚本的<b>文件编码守门人</b>。
  *
  * <h2>它守的是一个"坏了但没人发现"的坑</h2>
- * 2026-10-03 修完 {@code play-m3.bat} 的 jar 解析之后，我顺手给
+ * 2026-10-03 修完 {@code play.bat} 的 jar 解析之后，我顺手给
  * {@code tmp/verify_m3_play.ps1} 加了一段中文注释（解释为什么不再写死 jar 版本号）。
  * 结果脚本<b>直接跑不动</b>，报了一整屏解析错误：
  *

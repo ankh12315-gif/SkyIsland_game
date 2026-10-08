@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>ui 的合成阶段要用过渡材料包把 R01 / R03 / R06 真的合一遍；</li>
  *   <li>m1 沿用 DEV 以免唯一一条发放路径的行为在无人注意时变化。</li>
  * </ul>
- * 而 {@code play-m3.bat} 是真人试玩的唯一入口，也必须显式带 {@code dev}。
+ * 而 {@code play.bat} 是真人试玩的唯一入口，也必须显式带 {@code dev}。
  * 这些文件各自被脚本生成 / 手工编辑，漏掉那一段不会让任何行为测试变红 ——
  * 只会让门禁在某天突然红在"步枪不见了"上。因此它们也是这条接线的一部分。
  */
@@ -51,7 +51,7 @@ class LoadoutWiringTest {
     private static final Path GAME_SOURCE =
             Path.of("src", "main", "java", "com", "skyisland", "game", "SkyIslandGame.java");
 
-    private static final Path LAUNCHER = Path.of("play-m3.bat");
+    private static final Path LAUNCHER = Path.of("play.bat");
     private static final Path GATE_PS = Path.of("tmp", "run_gate_ps.ps1");
     private static final Path GATE_JS = Path.of("tmp", "run_frozen_gate.js");
 
@@ -181,7 +181,7 @@ class LoadoutWiringTest {
     // ============================================================ ⑤ 启动器与门禁
 
     /**
-     * {@code play-m3.bat} 的<b>启动行</b>必须带 {@code -Dskyisland.loadout=dev}。
+     * {@code play.bat} 的<b>启动行</b>必须带 {@code -Dskyisland.loadout=dev}。
      *
      * <p>判据锚定到启动行而不是全文件：与 {@link InfiniteReserveWiringTest} 同一个坑 ——
      * 文件头的 {@code REM} 说明里会明文解释这个参数，全文件 {@code contains}
@@ -199,9 +199,9 @@ class LoadoutWiringTest {
                 break;
             }
         }
-        assertNotNull(javaLine, "play-m3.bat 里找不到启动 java 的那一行（应同时含 java.exe 与 -jar）");
+        assertNotNull(javaLine, "play.bat 里找不到启动 java 的那一行（应同时含 java.exe 与 -jar）");
         assertTrue(javaLine.contains("-D" + KEY + "=dev"),
-                "★ play-m3.bat 的**启动行**必须带 -D" + KEY + "=dev —— "
+                "★ play.bat 的**启动行**必须带 -D" + KEY + "=dev —— "
                         + "否则真人试玩走的是正式口径，看不到步枪也拿不到材料包，"
                         + "而本轮要验证的正是这两样。实测启动行：<" + javaLine.trim() + ">");
     }

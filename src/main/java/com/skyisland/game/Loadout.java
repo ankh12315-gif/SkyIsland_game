@@ -19,7 +19,7 @@ package com.skyisland.game;
  *   <li>{@link #SURVIVAL} —— <b>正式口径，产品默认</b>：M3 的两把枪（手枪 + 冲锋枪）与弹药，
  *       不含步枪、不含材料包；</li>
  *   <li>{@link #DEV} —— <b>DEV / TEST 口径</b>：在 Survival 之上追加步枪、步枪弹与
- *       {@code DEV / TRANSITION MATERIAL KIT}。门禁与 {@code play-m3.bat} 用它。</li>
+ *       {@code DEV / TRANSITION MATERIAL KIT}。门禁与 {@code play.bat} 用它。</li>
  * </ul>
  *
  * <h2>为什么"缺 / 写错一律留在 SURVIVAL"</h2>
