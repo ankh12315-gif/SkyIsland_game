@@ -85,6 +85,18 @@ tmp/s3work/*
 # Guard: NativeLauncherWiringTest#theLauncherHasATrackedBuildScript
 !tmp/build_launcher.js
 
+# --- surefire 报告读取器, MUST stay tracked ---
+# WHY: 当 `mvn` 的失败输出被 `[ERROR]` 前缀淹没、或一次构建里有很多个测试类
+# 都红了时, "哪个用例红了、消息是什么"只能从 target/surefire-reports/*.xml 里读。
+# 这个脚本的价值全在**用 XML 解析器而不是正则** —— 它的文件头记录了原因：
+# 正则切标签会把自闭合的 `<testcase ... />`（即**通过**的用例）当成开标签,
+# 一路吞到后面某个失败用例的 `</testcase>`, 于是把失败的名字配成前一个通过用例
+# 的名字。实测因此报错过一次："红是真的, 名字全错"。
+# ⇒ 它是"红灯到底在哪"的取证通道, 与 run_frozen_gate.js 同级, 必须入库。
+# 放 tools/ 而不是 tmp/: 它服务的是**全量构建**(tmp/ 只留门禁与试玩工具),
+# 且 tmp/* 已被整体忽略, 新增文件极易再次漏登记。
+!tools/xmlred.js
+
 # =====================================================================
 # launcher/ — native Windows .exe entry point.
 # STRATEGY: track the SOURCE (C launcher, .rc, manifest, icon builder,
