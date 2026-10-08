@@ -430,6 +430,36 @@ class NativeLauncherWiringTest {
      * 它的同步守卫。缺任何一条都会让"两个入口"以某种形态复活。
      */
     @Test
+    void theDesktopFreshnessCheckIsTrackedAndDoesRealComparison() throws IOException {
+        Path check = Path.of("tmp", "check_desktop_fresh.js");
+        assertTrue(Files.exists(check),
+                "找不到 " + check + " —— 它守的是「有没有人去跑部署器」这缺的一环。"
+                        + "deploy_desktop.js 只守复制过程不出错，守不了「没人调用它」。"
+                        + "2026-10-08 晚上就因此让桌面那份落后近一小时，主理人直接发现");
+
+        String gitignore = Files.readString(Path.of(".gitignore"), StandardCharsets.UTF_8);
+        assertTrue(gitignore.contains("!tmp/check_desktop_fresh.js"),
+                "tmp/check_desktop_fresh.js 必须在 .gitignore 的白名单里 —— "
+                        + "守卫不入库 = 换个克隆就没有它，而症状是「一切全绿」");
+
+        String js = Files.readString(check, StandardCharsets.UTF_8);
+        assertTrue(js.contains("sha256") || js.contains("createHash"),
+                "★ 必须真的按字节比对（sha256）—— 按时间戳比会漏掉"
+                        + "「重新复制了同内容却仍是旧构建」这种情形");
+        assertTrue(js.contains("SkyIsland.exe") && js.contains("SkyIsland 启动.exe"),
+                "必须同时读 launcher/ 与桌面那两份，才能发现漂移");
+
+        // ★ 「桌面不存在」必须**明说**，不能静默跳过 ——
+        //   一个"找不到桌面就当通过"的检查会让人以为它在跑，
+        //   而那正是本项目反复吃亏的那一类（守卫看起来存在、实际什么都不验）。
+        assertTrue(js.contains("SKIP"),
+                "★ 桌面不存在时必须打印 SKIP 并解释「这不是已确认新鲜」，"
+                        + "不得静默跳过 —— 静默绿会让人以为这条守卫在生效");
+        assertTrue(js.contains("deploy_desktop.js"),
+                "失败提示必须告诉人跑什么 —— 只说 FAIL 不说怎么修，等于把排查成本转嫁给对方");
+    }
+
+    @Test
     void thereIsExactlyOnePlayEntryPoint() throws IOException {
         // ---- ① 造入口的 .bat 不得复活 ----
         assertFalse(Files.exists(Path.of("play-creative.bat")),

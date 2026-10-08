@@ -98,6 +98,18 @@ tmp/s3work/*
 !tmp/extract_play_exec.js
 !tmp/rv_play_sync.js
 
+# --- 桌面入口新鲜度检查, MUST stay tracked ---
+# WHY: 桌面上「SkyIsland 启动.exe」是 **COPY 不是链接**。
+#   deploy_desktop.js 守的是「复制过程没出错」，
+#   **守不了「到底有没有人去调用它」** —— 那正是缺的那一环。
+#   本项目已为这个故障付过两次学费；2026-10-08 晚上又发生一次：
+#   连续几轮改了 C 与 Java，每次都跑了 build_launcher.js，
+#   但没人跑 deploy_desktop.js，于是桌面那份落后近一小时，
+#   由主理人直接发现「我桌面的启动还没改好好像」。
+#   ⇒ 与 build_launcher.js / deploy_desktop.js 同级，必须入库。
+# Guard: NativeLauncherWiringTest#theDesktopFreshnessCheckIsTrackedAndDoesRealComparison
+!tmp/check_desktop_fresh.js
+
 # --- IME 桥的 C 源与其反向验证脚本, MUST stay tracked ---
 # WHY: 中文 Windows 的输入法默认开着「用 SHIFT 切换中/英文」，游戏窗口挂着
 #   IME 上下文时按 SHIFT 切的是输入法状态 —— 飞行下降键静默失灵。
