@@ -67,16 +67,33 @@ class CreativePanelWiringTest {
     @Test
     void thePanelGateReadsThePersistedModeNotTheConfigValue() {
         String start = SourceScan.withoutComments(game());
-        int at = start.indexOf("CreativePalette.build()");
-        assertTrue(at >= 0, "找不到 CreativePalette.build() 的调用点：创造面板从未被构建");
-        // 取该调用点之前 600 字符（覆盖 if 条件那一行）
-        String window = start.substring(Math.max(0, at - 600), at);
-        assertTrue(window.contains("effectiveGameMode()"),
-                "构建面板的门控没有读 effectiveGameMode()；"
-                        + "必须由存档定死的模式门控（PRD 4.3 模式锁定），否则配置开关能绕过它");
+
+        // ★ 2026-10-08 创造会话落地后本条变红过。原因是布局重构：原来
+        //   `CreativePalette.build()` 就写在 `if (effectiveGameMode() == CREATIVE)`
+        //   里面，现在它被抽进 `buildCreativeView()`，与门控分处两个方法。
+        //   值得记的不是"放宽窗口长度"—— 那治不了根：面板一旦抽成独立方法，
+        //   "它离门控有多远"就不再是有意义的判据了。
+        //   ⇒ 改判**结构**而不判距离：门控点必须**先于**构建点出现，
+        //     且两者之间不得出现 config.gameMode()。
+        //     这样重构抽方法不会红，而"用配置值门控面板"仍然会红。
+        int gate = start.indexOf("saveManager.effectiveGameMode()");
+        assertTrue(gate >= 0,
+                "找不到 saveManager.effectiveGameMode()：面板门控必须由存档定死的模式决定");
+
+        int build = start.indexOf("buildCreativeView()");
+        assertTrue(build >= 0,
+                "找不到 buildCreativeView() 的调用点：创造面板从未被构建");
+        assertTrue(build > gate,
+                "★ 面板构建必须发生在 effectiveGameMode() 门控之后 —— "
+                        + "PRD 4.3 模式锁定要求由存档定死，门控在构建之后等于没有门控");
+
+        String window = start.substring(gate, build);
         assertFalse(window.contains("config.gameMode()"),
                 "构建面板的门控读了 config.gameMode()：那只是「尚未定死时的缺省来源」，"
                         + "用它门控会让已定死为创造的世界凭空失去面板");
+        assertTrue(start.contains("CreativePalette.build()"),
+                "★ 面板本体的构建代码必须仍在（buildCreativeView 里），"
+                        + "否则上面全部判据都在守一个不存在的东西");
     }
 
     /** 对照：banner 阶段<b>确实</b>读的是配置值。两条断言合起来才证明"两个取值器没有合并"。 */

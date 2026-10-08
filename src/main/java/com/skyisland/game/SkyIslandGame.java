@@ -1194,14 +1194,27 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //   而这两种都是"模式只生效了一半"，排查时会被当成两个独立的 bug。
         boolean creative = saveManager.effectiveGameMode() == GameMode.CREATIVE;
         player.setCreativeMode(creative);
+        // ★ §4.3（2026-10-08 修订）：只有生存存档才允许"双击空格进创造会话"。
+        //   创造存档把它关掉 ⇒ 那个世界的双击空格行为与本功能引入之前完全一致，
+        //   也就是没有退出路径（§4.3 的核心裁定原样保留）。
+        //   判据用 effectiveGameMode()（存档定死）而不是 config.gameMode()，
+        //   否则"创造存档 + survival 开关"的世界会拿到退出路径 ——
+        //   那是用命令行绕过模式锁定。
+        player.setCreativeSessionAllowed(!creative);
+        // 中途开关会话时必须同步重建创造面板，见 setCreativeSessionHandler。
+        player.setCreativeSessionListener(this::onCreativeSessionChanged);
         if (creative) {
-            CreativePalette palette = CreativePalette.build();
-            creativeView = palette.view(InventoryLayout.CREATIVE_COLUMNS);
-            Log.info("[创造] 面板就绪：%d 格（口径 playerBlockCount=%d），标签页已开启；"
-                            + "创造五项能力已开（瞬时破坏 / 放置不消耗 / 免疫伤害 / 虚空不死 / 双击空格飞行）",
-                    creativeView.size(), BlockRegistry.playerBlockCount());
+            // 面板那一行由 buildCreativeView 自己打（它也是会话进入时的落点）——
+            // 两处各打一份会在创造存档启动时看到同一句话重复两次，
+            // 而重复的日志会让人以为面板被建了两遍。
+            buildCreativeView();
+            Log.info("[创造] 本世界为创造存档：标签页常驻，五项能力已开"
+                    + "（瞬时破坏 / 放置不消耗 / 免疫伤害 / 虚空不死 / 双击空格飞行）；"
+                    + "双击空格只切飞行，**没有**退出路径（PRD 4.3）。");
         } else {
             creativeView = null;
+            Log.info("[创造] 本世界为生存存档：双击空格可进入**本次运行内**的创造会话并直接起飞；"
+                    + "该会话不写入存档（§4.3 修订），退出游戏后自动回到生存。");
         }
 
         // ---------- 3.5) 进程重启级的持久化校验（可选） ----------
@@ -3035,6 +3048,45 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         }
         wasFlying = flying;
         showEvent(Localization.text(flying ? Localization.MSG_FLY_ON : Localization.MSG_FLY_OFF), 3.0);
+    }
+
+    /**
+     * 创造会话开关时的善后：<b>重建创造面板</b>并给出可见提示。
+     *
+     * <p>★ 面板为什么必须跟着会话走：它是 {@link #creativeView}，而那个字段
+     * 决定背包有几个标签（{@code tabs = creativeView == null ? 1 : 2}）。
+     * 只开能力不建面板的后果是"能飞、能瞬时破坏，但背包里没有创造标签" ——
+     * 五项能力少了一项，而那一项恰好是**唯一能让玩家看出自己在创造模式的界面证据**，
+     * 于是"我是不是开着创造"只能靠猜。症状看起来像"创造面板没做出来"。
+     *
+     * <p>退出时反向清掉，让标签数回到 1 —— 否则会出现"能力没了但标签还在"，
+     * 点了格子却什么都拿不到。
+     */
+    private void onCreativeSessionChanged() {
+        // 状态从 Player 读，不从参数拿 —— 参数与字段不一致是典型的半途状态。
+        final boolean active = player.isCreativeSession();
+        if (active) {
+            buildCreativeView();
+        } else {
+            creativeView = null;
+        }
+        showEvent(Localization.text(active
+                ? Localization.MSG_CREATIVE_SESSION_ON
+                : Localization.MSG_CREATIVE_SESSION_OFF), 4.0);
+    }
+
+    /**
+     * 建创造面板。会话开关与启动装配共用它，避免两处各写一份。
+     *
+     * <p>★ 日志打在这里而不是调用点：它是"面板已建"的<b>唯一</b>落点，
+     * 两个调用方各打一份会让创造存档启动时同一句话出现两次，
+     * 而重复的日志会让人误以为面板被建了两遍。
+     */
+    private void buildCreativeView() {
+        CreativePalette palette = CreativePalette.build();
+        creativeView = palette.view(InventoryLayout.CREATIVE_COLUMNS);
+        Log.info("[创造] 面板就绪：%d 格（口径 playerBlockCount=%d），标签页已开启",
+                creativeView.size(), BlockRegistry.playerBlockCount());
     }
 
     /** 取本逻辑步应当施加的意图。 */

@@ -350,6 +350,54 @@ public final class Player {
      */
     private boolean creativeMode;
 
+    /**
+     * ★ <b>本次运行内的创造会话</b>（PRD_BLOCK_CREATIVE §4.3 于 2026-10-08 由主理人修订）。
+     *
+     * <p>§4.3 原本裁定「模式在存档创建时确定，永不切换」。主理人要求
+     * 「双击空格即进创造并直接起飞」，而这与那条裁定直接冲突 ——
+     * 裁定的两条理由里，第②条（存档没有"这个方块是创造来的"标记，
+     * 要真支持就是存档格式的破坏性变更）**仍然成立且无法绕过**。
+     *
+     * <p>⇒ 采用的折中：**会话不写进存档**。
+     * <ul>
+     *   <li>{@code level.json} 的 {@code gameMode} 全程不动，仍是 survival
+     *       ⇒ §4.2「存档必须记录模式」与 §4.3「模式不可改」两条【必须】完整保留；</li>
+     *   <li>退出游戏再进来，自动回到生存；</li>
+     *   <li>仍会残留的：<b>用无限方块盖的建筑会留在世界里</b>。这是 §4.3
+     *       理由①的残留风险，在不改存档格式的前提下<b>无法消除</b> ——
+     *       主理人已知情并选择接受。</li>
+     * </ul>
+     *
+     * <p>★ <b>为什么它必须与 {@link #creativeMode} 分成两个字段：</b>
+     * 二者的<b>退出路径不同</b>。{@code creativeMode} 由存档定死，没有退出路径；
+     * 本会话可以退出。若只用 {@code creativeMode} 一个布尔来表示"能不能退"，
+     * 创造存档（也就是上一轮做的「SkyIsland 创造.exe」那个世界）会被双击空格
+     * **退出创造** —— 那就是单键绕过 §4.3，比不做这个功能严重得多。
+     */
+    private boolean creativeSession;
+
+    /**
+     * 是否允许开启创造会话。
+     *
+     * <p>只有**生存存档**才允许（由装配期按 {@code effectiveGameMode()} 设定）。
+     * 创造存档把它关掉，于是那个世界的双击空格行为与本功能引入之前<b>完全一致</b>
+     * （只切飞行，没有退出路径）—— 这条不能省，省了就是 §4.3 的静默破口。
+     */
+    private boolean creativeSessionAllowed;
+
+    /**
+     * 创造会话状态变化时回调。<b>不带参数</b>，由监听方读 {@link #isCreativeSession()}。
+     *
+     * <p>★ 为什么不是 {@code BooleanConsumer}：本机 JDK 25 安装的
+     * {@code java.util.function} 里<b>缺了 {@code BooleanConsumer} 与
+     * {@code BooleanFunction} 两类</b>（{@code jimage list} 实测：整个包只有
+     * {@code BooleanSupplier} 一个 Boolean*）。写那个类型会直接编译不过。
+     * <p>更重要的是<b>它本来就更差</b>：回调参数只是"现在的状态"，
+     * 而状态已经是 {@code Player} 的字段了 —— 让监听方自己读，
+     * 就不会出现"参数与字段不一致"这种半途状态。
+     */
+    private Runnable creativeSessionListener;
+
     /** 是否正在飞行（PRD §5.4）。只有创造模式下才可能为 {@code true}。 */
     private boolean flying;
 
@@ -800,6 +848,41 @@ public final class Player {
         return flying;
     }
 
+    // ---- 创造会话（§4.3 于 2026-10-08 修订）----
+
+    /** 本次运行内是否处在创造会话中。 */
+    public boolean isCreativeSession() {
+        return creativeSession;
+    }
+
+    /** 本世界是否允许开创造会话（生存存档为 {@code true}，创造存档为 {@code false}）。 */
+    public boolean isCreativeSessionAllowed() {
+        return creativeSessionAllowed;
+    }
+
+    /**
+     * 设定本世界是否允许开创造会话。
+     *
+     * <p><b>只在装配期调用一次</b>，判据是存档定死的模式而不是命令行 ——
+     * 用命令行会又造出"创造存档被当成生存存档、于是能退出去"那个破口，
+     * 那正是 §4.3 要防的（用 UI 绕过模式锁定）。
+     */
+    public void setCreativeSessionAllowed(boolean allowed) {
+        this.creativeSessionAllowed = allowed;
+    }
+
+    /**
+     * 创造会话变化时的回调（<b>不带参数</b>，状态由 {@link #isCreativeSession()} 读）。
+     *
+     * <p>★ 它存在的唯一理由是<b>创造面板</b>：面板在装配期按存档模式建好，
+     * 中途进会话时如果不重建，玩家会拿到"能飞、能瞬时破坏，但背包里没有
+     * 创造标签"的能力 —— 五项能力里少了一项，而缺的那项恰好是唯一能让
+     * 玩家看见自己身处创造模式的界面证据。
+     */
+    public void setCreativeSessionListener(Runnable listener) {
+        this.creativeSessionListener = listener;
+    }
+
     /** 创造模式免疫掉的伤害次数（含坠落与怪物攻击）。创造能力关闭后不复位。 */
     public long damageNegatedCount() {
         return damageNegated;
@@ -846,8 +929,11 @@ public final class Player {
         boolean held = intent.jump();
         boolean tapped = held && !jumpWasHeld;
         jumpWasHeld = held;
-        if (!creativeMode) {
-            // 生存模式：单击与双击都是跳跃，双击窗口不积累（否则切模式后第一次跳就起飞）
+        if (!creativeMode && !creativeSessionAllowed) {
+            // 连"开会话"都不允许的世界（创造存档）：单击与双击都是跳跃，
+            // 双击窗口不积累（否则切模式后第一次跳就起飞）。
+            // ★ 这个分支的判据是"能不能开会话"，不是"当前是不是生存"——
+            //   因为生存中的**会话**也可能落到这里之外，见下面的三态循环。
             lastJumpTapSeconds = Double.NEGATIVE_INFINITY;
             return;
         }
@@ -862,8 +948,65 @@ public final class Player {
         // ★ 记下这一次"双击"已被消费：不把 lastJumpTapSeconds 推远的话，
         //   第三次点击又会与第二次组成一次新的双击（连点 = 反复开关）。
         lastJumpTapSeconds = Double.NEGATIVE_INFINITY;
+        applyDoubleTapSpace();
+    }
+
+    /**
+     * ★ 双击空格的<b>三态循环</b>（PRD_BLOCK_CREATIVE §4.3 于 2026-10-08 修订）。
+     *
+     * <table border="1">
+     *   <tr><th>进入前</th><th>双击空格后</th></tr>
+     *   <tr><td>生存，没开会话</td><td><b>进创造会话 + 直接起飞</b></td></tr>
+     *   <tr><td>会话中，在飞</td><td>停飞（仍能无限方块、免伤害，站着搭）</td></tr>
+     *   <tr><td>会话中，没在飞</td><td><b>退出会话</b>，回生存能力</td></tr>
+     *   <tr><td>创造存档（无会话）</td><td>只切飞行，<b>没有退出路径</b>（§4.3）</td></tr>
+     * </table>
+     *
+     * <p><b>为什么用「同一个键走完三态」而不是"进创造"与"退创造"两个键：</b>
+     * 退出路径若放在另一个键上，玩家会不知道它存在，于是被永久留在创造会话里；
+     * 而被留在创造会话里的**后果不是"关不掉游戏"，而是"生存平衡被污染且无提示"**
+     * —— 正是 §4.3 理由①描述的那个坏结果，只是不再有提示。
+     * ⇒ 让同一个键既是入口也是出口：它天生可逆，且再按一次就回去了。
+     *
+     * <p><b>为什么"停飞"与"退出"要分成两态：</b>
+     * 一次双击就把创造整个关掉，会让"我想站着无限方块搭一会儿"这个动作
+     * 不得不顺带放弃免伤害与虚空保护 —— 而那两样在高空搭台时是刚需。
+     */
+    private void applyDoubleTapSpace() {
+        if (!creativeMode) {
+            // ---- 生存（未开会话）→ 开会话 + 起飞 ----
+            creativeSession = true;
+            creativeMode = true;
+            // 走 setFlying 而不是直接置位：它带"首次起飞清上升速度"的收尾，
+            // 直接写字段会绕过它，于是"贴着地面双击起飞"会先向上窜一截。
+            setFlying(true);
+            Log.info("[玩家] 双击空格：进入创造会话并起飞（本次运行有效，不写入存档）。");
+            notifyCreativeSession(true);
+            return;
+        }
+        if (creativeSession) {
+            if (flying) {
+                setFlying(false);
+                Log.info("[玩家] 双击空格：飞行已关闭（仍在创造会话内）。");
+                return;
+            }
+            // 会话中且没在飞 → 退出。setCreativeMode(false) 会一并停飞，
+            // 避免留下"能力被拿走但状态还在"的半途态。
+            creativeSession = false;
+            setCreativeMode(false);
+            Log.info("[玩家] 双击空格：已退出创造会话，回到生存能力（飞行已停）。");
+            notifyCreativeSession(false);
+            return;
+        }
+        // ---- 创造存档：行为与本功能引入之前完全一致（只切飞行）----
         setFlying(!flying);
         Log.info("[玩家] 双击空格：飞行已%s。", flying ? "开启" : "关闭");
+    }
+
+    private void notifyCreativeSession(boolean active) {
+        if (creativeSessionListener != null) {
+            creativeSessionListener.run();
+        }
     }
 
     /**

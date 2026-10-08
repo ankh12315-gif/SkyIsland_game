@@ -178,6 +178,16 @@ public final class Localization {
     public static final String MSG_FLY_ON = "msg.fly_on";
     /** 飞行关闭提示。 */
     public static final String MSG_FLY_OFF = "msg.fly_off";
+    /**
+     * 进入创造会话的提示（§4.3 于 2026-10-08 修订：双击空格即进创造并起飞）。
+     *
+     * <p>★ 文案里<b>必须</b>写清"不写入存档"与"再按一次会怎样"：
+     * 这是一条玩家必须自己知道、又没有任何界面常驻显示的规则。
+     * 只写"已进入创造模式"会让人以为存档被改了，于是不敢退出去。
+     */
+    public static final String MSG_CREATIVE_SESSION_ON = "msg.creative_session_on";
+    /** 退出创造会话的提示。必须点明"盖的建筑仍然留在世界里"。 */
+    public static final String MSG_CREATIVE_SESSION_OFF = "msg.creative_session_off";
 
     // ---------------------------------------------------------- 合成
     // 上一轮（范围裁定：数据层 + 合成逻辑）只登记了缺料那一条，因为那时没有界面、
@@ -300,6 +310,14 @@ public final class Localization {
         // M4-S8b 飞行（PRD §5.4）
         TEXT.put(MSG_FLY_ON, "飞行已开启：空格上升 / Shift 下降 / 双击空格关闭");
         TEXT.put(MSG_FLY_OFF, "飞行已关闭");
+        // 创造会话（PRD_BLOCK_CREATIVE §4.3，2026-10-08 主理人修订）
+        // ★ 两条都刻意写长：这条规则没有常驻界面，而"我到底改没改存档"
+        //   与"退出去以后盖的东西还在不在"都是玩家必须当场知道的。
+        TEXT.put(MSG_CREATIVE_SESSION_ON,
+                "创造会话：已开启并起飞（本次运行有效，不写入存档）——"
+                        + "E 看创造面板取方块；双击空格=停飞；再双击一次=退出会话");
+        TEXT.put(MSG_CREATIVE_SESSION_OFF,
+                "创造会话：已退出，回到生存能力 —— 注意：用无限方块盖的建筑仍然留在世界里");
         TEXT.put(MSG_CRAFT_MISSING, "缺少 %s ×%d");
         TEXT.put(CRAFT_SECTION_TITLE, "合成");
         TEXT.put(CRAFT_ACTION, "[合成]");

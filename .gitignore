@@ -111,6 +111,17 @@ tmp/s3work/*
 # Guard: NativeLauncherWiringTest#theCreativeEntryHasItsOwnWorldAndIsGuarded
 !tmp/check_creative_sync.js
 
+# --- 创造会话的反向验证脚本, MUST stay tracked ---
+# WHY: 创造会话（生存世界里双击空格进创造并起飞）的守卫守的是**安全性** ——
+#   会话不得写进存档、不得给创造存档退出路径。它的判据全是「源码里没有某串字」，
+#   那是最容易在失败场景下仍能通过的一类。本轮实测当场抓到 2 条无效断言：
+#     ① contains("creativeView = null") 被**启动装配**那一处满足，
+#        于是「退出会话不清面板」注入后守卫照样全绿；
+#     ② 「回调不得每步触发」那条写成了**从不匹配**的模式，同样恒绿。
+#   修法都是收紧判据，而**只有跑 RV 才会发现** ⇒ 它与守卫同级，必须入库。
+# Guard: CreativeSessionWiringTest + 本脚本
+!tmp/rv_creative_session.js
+
 # --- 单类测试执行器 + 资源核心反向验证脚本, MUST stay tracked ---
 # WHY: tmp/mvn_test_one.js 把「跑哪个测试类」与「怎么从输出里读出失败的断言名」
 #   两件事固化成一个入口。反向验证脚本要反复"注入断线 → 跑一条测试 → 看哪条红了"，
