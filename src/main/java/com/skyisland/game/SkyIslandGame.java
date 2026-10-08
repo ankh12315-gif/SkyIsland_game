@@ -412,6 +412,36 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             return selfTest || uiSelfTest || combatSelfTest || measureSeconds > 0;
         }
 
+        /**
+         * 本次运行用哪个世界生成器。
+         *
+         * <p>★ <b>夹具与产品必须分开</b>（PRD 4.2 的正式空岛世界 vs M1 的测试平台）：
+         * <ul>
+         *   <li><b>产品 / 试玩</b> → {@code IslandWorldGenerator}（主岛 32×32 + 4 资源岛 + 开局小屋）；</li>
+         *   <li><b>三个自测</b> → {@code TestWorldGenerator}，因为它们各自钉在一个
+         *       <b>专门为它搭的平台上</b>：M1 的虚空坑固定在 {@code (3..6, 3..6)}、
+         *       高台固定 3 格（跳不上去的对照组）、上行楼梯逐级 1 格、
+         *       玻璃板固定跨 {@code x=0} 区块边界、出生点固定
+         *       {@code (0.5, 64.0, 0.5)}。换地形会让这些断言以「玩法没生效」的
+         *       样子失败，而真因是地形不同 —— 与 M2.2 那次「槽位口径」事故同族。</li>
+         * </ul>
+         * <p>判定口径刻意<b>只看三个自测开关</b>，不看 {@code automated()}：
+         * 性能测量（{@code measureSeconds > 0}）<b>必须</b>跑产品世界 ——
+         * 否则测的是一块测试平台的数字，而 PRD 12.5 的性能门禁针对的是玩家实际会加载的世界。
+         * <p>可用 {@code -Dskyisland.generator=test|islands} 显式覆盖，
+         * 用于"用产品世界跑一遍自测"这类诊断（那时失败才是真信息）。
+         */
+        boolean useProductWorld() {
+            String override = System.getProperty("skyisland.generator", "");
+            if ("islands".equalsIgnoreCase(override)) {
+                return true;
+            }
+            if ("test".equalsIgnoreCase(override)) {
+                return false;
+            }
+            return !selfTest && !uiSelfTest && !combatSelfTest;
+        }
+
         double totalSeconds() {
             return warmupSeconds + measureSeconds;
         }
@@ -1007,6 +1037,34 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         return true;
     }
 
+    /**
+     * 本次运行的世界生成器（见 {@code M1Config#useProductWorld()} 的取舍说明）。
+     */
+    private com.skyisland.world.gen.WorldGenerator productGenerator() {
+        return config.useProductWorld()
+                ? new com.skyisland.world.gen.IslandWorldGenerator()
+                : new TestWorldGenerator();
+    }
+
+    /** 出生点 x —— 与所选生成器一致（两者的出生点都在地板顶面 y = 64）。 */
+    private double spawnX() {
+        return config.useProductWorld()
+                ? com.skyisland.world.gen.IslandWorldGenerator.SPAWN_X
+                : TestWorldGenerator.spawnX();
+    }
+
+    private double spawnY() {
+        return config.useProductWorld()
+                ? com.skyisland.world.gen.IslandWorldGenerator.SPAWN_Y
+                : TestWorldGenerator.spawnY();
+    }
+
+    private double spawnZ() {
+        return config.useProductWorld()
+                ? com.skyisland.world.gen.IslandWorldGenerator.SPAWN_Z
+                : TestWorldGenerator.spawnZ();
+    }
+
     private void start() {
         /*
          * 启动期互斥检查：M1 脚本化自测与 M2 战斗自测都靠"每个逻辑步返回一个意图"驱动。
@@ -1028,6 +1086,8 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         }
 
         logStartupBanner();
+        Log.info("[世界] 生成器 = %s（%s）", productGenerator().id(),
+                config.useProductWorld() ? "产品世界：空岛 + 资源岛" : "自测夹具：测试平台");
 
         // ---------- 0) 用户设置（必须在窗口之前：VSync 是窗口创建参数）----------
         redirectSettingsFileForAutomatedRun();
@@ -1072,11 +1132,10 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //   否则改动会被跳过并告警 —— 反过来做会得到"读档成功但改动全丢"这种
         //   最难查的静默失败。流式之后这条顺序反而更重要了：
         //   只有在半径内的区块才会在这一步被应用。
-        world = new World(config.seed(), new TestWorldGenerator());
-        player = new Player(TestWorldGenerator.spawnX(),
-                TestWorldGenerator.spawnY(), TestWorldGenerator.spawnZ());
+        world = new World(config.seed(), productGenerator());
+        player = new Player(spawnX(), spawnY(), spawnZ());
         long genStart = System.nanoTime();
-        attachStreaming(TestWorldGenerator.spawnX(), TestWorldGenerator.spawnZ());
+        attachStreaming(spawnX(), spawnZ());
         Log.info("[世界] 已生成 %d 个区块（流式半径 %d，保留半径 %d），耗时 %.1f ms —— %s",
                 world.loadedChunkCount(), chunkStreamer.radius(), chunkStreamer.keepRadius(),
                 (System.nanoTime() - genStart) / 1e6, world.statsLine());
@@ -2484,7 +2543,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         renderer.chunkRenderer().disposeAll();
 
         // ② 全新世界 + 以出生点为中心把流式半径内的区块补齐
-        world = new World(config.seed(), new TestWorldGenerator());
+        world = new World(config.seed(), productGenerator());
         // ★ M5a：新世界从"白天开头、第 1 天"开始 —— 与首次启动同一时刻。
         //   不重置的话，玩家在第 3 天夜里新建世界会直接站在几乎全黑的夜里，
         //   看上去像"世界坏了"。
@@ -2497,8 +2556,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //    yaw/pitch 取 0/0 不是随手写的 —— 那正是 Camera 的默认朝向，
         //    与 new Player(...) 的初始朝向逐位一致，因此"新建世界"看到的画面
         //    与进程首次启动时完全相同。
-        player.applyLoadedState(TestWorldGenerator.spawnX(), TestWorldGenerator.spawnY(),
-                TestWorldGenerator.spawnZ(), 0.0, 0.0, null, List.of(), 0, 0);
+        player.applyLoadedState(spawnX(), spawnY(), spawnZ(), 0.0, 0.0, null, List.of(), 0, 0);
         player.healFull();
         player.camera().clearRecoil();
 
