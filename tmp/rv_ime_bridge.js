@@ -22,6 +22,7 @@ const TEST = 'ImeBridgeWiringTest';
 
 const FILES = {
   window: path.join(PROJ, 'src', 'main', 'java', 'com', 'skyisland', 'render', 'Window.java'),
+  game: path.join(PROJ, 'src', 'main', 'java', 'com', 'skyisland', 'game', 'SkyIslandGame.java'),
   bridge: path.join(PROJ, 'src', 'main', 'java', 'com', 'skyisland', 'platform', 'ImeBridge.java'),
   c: path.join(PROJ, 'launcher', 'skyisland_ime.c'),
   build: path.join(PROJ, 'tmp', 'build_launcher.js'),
@@ -31,9 +32,19 @@ const INJECTIONS = [
   {
     name: 'A · 接线整个拆掉（类留着，没人调用 —— 最典型的假绿）',
     file: 'window',
-    find: '        detachIme(handle);',
+    find: '        detachIme(handle, "窗口创建后");',
     repl: '        /* RV-INJECT A: 不再摘 IME */',
     expect: /theBridgeIsActuallyCalledFromWindowCreation/,
+  },
+  {
+    // 第一版加了一个同名的空方法想模拟"在安装处读计数"，结果什么都没破坏 ——
+    //   真因是那条判据守的是"诊断被测量摘要用上"，与有没有第二个方法无关。
+    // ⇒ 直接拆掉"测量摘要用它"这一环，那才是这条断言守的东西。
+    name: 'A2 · 诊断不再进测量摘要（于是没人能在真实运行之后读到它）',
+    file: 'game',
+    find: 'final String imeDiag = com.skyisland.render.Window.imeDiagnostics();',
+    repl: 'final String imeDiag = null;   // RV-INJECT A2',
+    expect: /theCountersAreReadAfterRealFramesNotAtInstall/,
   },
   {
     name: 'B · 只查状态不摘除（查了但没改，日志会说谎）',
@@ -45,9 +56,34 @@ const INJECTIONS = [
   {
     name: 'C · 摘除挪到 glfwFocusWindow 之前（聚焦会重新激活 IME，等于没摘）',
     file: 'window',
-    find: '        GLFW.glfwFocusWindow(handle);\n\n        // ---- 摘掉 IME',
-    repl: '        detachIme(handle);\n        GLFW.glfwFocusWindow(handle);\n\n        // ---- 摘掉 IME',
+    find: '        GLFW.glfwFocusWindow(handle);\n\n        // ---- IME：给窗口装消息子类',
+    repl: '        detachIme(handle, "x");\n        GLFW.glfwFocusWindow(handle);\n\n        // ---- IME：给窗口装消息子类',
     expect: /theDetachHappensAfterFocus/,
+  },
+  {
+    // ★ 第一版只摘创建那一处，于是 claimForeground 的再次聚焦把它撤销了。
+    //   这条注入复现那个真实返工：删掉 claimForeground 里的第二次摘除。
+    name: 'C2 · claimForeground 里不再补摘（聚焦后 IME 复活）',
+    file: 'window',
+    find: '        detachIme(handle, "claimForeground 拿回前台后");',
+    repl: '        /* RV-INJECT C2: 不补摘 */',
+    expect: /theDetachHappensAfterFocus/,
+  },
+  {
+    // ★ 先装后读会让「摘除前」恒为「无」—— 一条自己骗自己的日志。
+    //   注入必须**仍能编译**：第一版直接删掉 `before` 那行，可后面还在用它，
+    //   于是编译错误让 exit≠0，失败行是"找不到符号 before"而不是那条断言。
+    //   （同一个家族，本轮第 N 次：注入自身的缺陷被报成守卫的问题。）
+    //   ⇒ 改成把两行**对调**，两个变量都还在，顺序却反了。
+    name: 'C3 · 先 install 再读 before（把"本来就没 IME"误判成结论）',
+    file: 'window',
+    find: '        final boolean before = com.skyisland.platform.ImeBridge.isEnabledForWindow(handle);\n'
+        + '        final boolean installed =\n'
+        + '                com.skyisland.platform.ImeBridge.installForWindow(handle);',
+    repl: '        final boolean installed =\n'
+        + '                com.skyisland.platform.ImeBridge.installForWindow(handle);\n'
+        + '        final boolean before = com.skyisland.platform.ImeBridge.isEnabledForWindow(handle);',
+    expect: /theBeforeAndAfterStateIsLogged/,
   },
   {
     name: 'D · 去掉可用性判据（dll 缺失时 UnsatisfiedLinkError 会冒泡到主循环）',

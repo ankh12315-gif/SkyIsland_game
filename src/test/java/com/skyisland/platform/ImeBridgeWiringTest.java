@@ -34,6 +34,8 @@ class ImeBridgeWiringTest {
 
     private static final Path WINDOW =
             Path.of("src", "main", "java", "com", "skyisland", "render", "Window.java");
+    private static final Path GAME =
+            Path.of("src", "main", "java", "com", "skyisland", "game", "SkyIslandGame.java");
     private static final Path BRIDGE =
             Path.of("src", "main", "java", "com", "skyisland", "platform", "ImeBridge.java");
     private static final Path C_SRC = Path.of("launcher", "skyisland_ime.c");
@@ -56,12 +58,19 @@ class ImeBridgeWiringTest {
         //   里就含 "ImeBridge"。症状是"守卫没守住接线"，真因是判据把
         //   "定义"当成了"调用" —— 而这正是本项目 M2.1 付过学费的那类假绿。
         //   带参数 + 带分号的形式只出现在调用点。
-        assertTrue(win.contains("detachIme(handle);"),
-                "★ Window 必须**调用** ImeBridge —— 只把方法写出来而不接线，"
+        // ★ 判据必须锚在**创建处那一次**调用上，不能只判"文件里有 detachIme(handle,"。
+        //   反向验证注入 A（删掉创建处的调用）时第一版全绿 —— 因为
+        //   `claimForeground` 里还有一次 `detachIme(handle, ...)` 满足它。
+        //   与注入 E 那条同源：**断言被另一个调用点顶替了**。
+        //   ⇒ 带上前缀里那段"何时"的字面量，只有创建处才有。
+        assertTrue(win.contains("detachIme(handle, \"窗口创建后\")"),
+                "★ Window 创建后必须**调用** ImeBridge —— 只把方法写出来而不接线，"
                         + "编译通过、单测全绿、门禁全绿，而 SHIFT 仍然失灵。"
                         + "本项目为「已定义、从未被调用」付过 M2.1 一次抓出 8 处的学费");
+        assertTrue(win.contains("ImeBridge.installForWindow(handle)"),
+                "★ 必须真的调用 installForWindow（装消息子类才是解决问题的那一步）");
         assertTrue(win.contains("ImeBridge.disableForWindow(handle)"),
-                "★ 必须真的调用 disableForWindow —— 只查状态不摘除等于什么都没做");
+                "★ 必须真的调用 disableForWindow —— 只装子类不摘 IMM 上下文等于少了一半");
     }
 
     @Test
@@ -70,12 +79,23 @@ class ImeBridgeWiringTest {
         String win = codeWithoutComments(WINDOW);
 
         int focus = win.indexOf("glfwFocusWindow(handle)");
-        int detach = win.indexOf("detachIme(handle)");
+        int detach = win.indexOf("detachIme(handle,");
         assertTrue(focus >= 0, "找不到 glfwFocusWindow(handle)");
-        assertTrue(detach >= 0, "找不到 detachIme(handle)");
+        assertTrue(detach >= 0, "找不到 detachIme(handle, ...) 调用");
         assertTrue(detach > focus,
                 "★ 摘 IME 必须在 glfwFocusWindow **之后** —— 聚焦会重新激活 IME，"
                         + "先摘后聚焦等于没摘。那正是「看起来做了、实测仍然失灵」的顺序错");
+
+        // ★ 而且 claimForeground 里**又**聚焦了一次，所以那里必须再摘一次。
+        //   第一版只摘创建那一处，于是 claimForeground 把它撤销了 ——
+        //   而实测 IMM 上下文确实回到了「有」。这条判据就是为那次返工立的。
+        int claim = win.indexOf("claimForeground(int timeoutMs)");
+        assertTrue(claim >= 0, "找不到 claimForeground");
+        String claimBody = win.substring(claim);
+        assertTrue(claimBody.contains("detachIme(handle,"),
+                "★ claimForeground 会再次 glfwFocusWindow，而聚焦会重新激活 IME —— "
+                        + "那里必须再摘一次。第一版只摘创建那一处，"
+                        + "实测「摘除前=有、摘除后=无」在几十毫秒后就被撤销了");
     }
 
     @Test
@@ -100,17 +120,46 @@ class ImeBridgeWiringTest {
     }
 
     @Test
-    @DisplayName("★ 必须留下 before/after 两条读数（日志要能自证）")
+    @DisplayName("★ 必须留下 before/after 两条读数，且先读 before 再 install")
     void theBeforeAndAfterStateIsLogged() throws IOException {
         String win = codeWithoutComments(WINDOW);
 
-        // 只报"成功"是不够的：项目里"我们调了那个 API"与"它生效了"是两件事。
         assertTrue(win.contains("isEnabledForWindow(handle)")
                         && win.contains("disableForWindow(handle)"),
                 "★ 必须既查摘除前的状态、又调摘除 —— 只调不查的话，"
                         + "一个失败的 API 调用会被记成成功，而那正是会骗人的日志");
-        assertTrue(win.contains("isEnabledForWindow"),
-                "查询接口必须真的被用上（它是这个修复唯一的证据来源）");
+
+        // ★ 顺序：先读 before，再 install。
+        //   nInstallForWindow 自己就摘一次上下文，所以先装后读的话
+        //   「摘除前」永远读到"无" —— 那是**自己骗自己**的日志。
+        //   上一版就是这个顺序，它输出了「IMM前=无」，看起来像"本来就没有 IME"，
+        //   实际上只是量错了地方，把一个真问题误判成"不用改"。
+        int before = win.indexOf("isEnabledForWindow(handle)");
+        int install = win.indexOf("installForWindow(handle)");
+        assertTrue(before >= 0 && install >= 0,
+                "找不到 isEnabledForWindow 或 installForWindow 调用");
+        assertTrue(before < install,
+                "★ 必须**先**读摘除前状态再 install —— install 内部就会摘一次，"
+                        + "先装后读会让「摘除前」恒为「无」，日志因此失去意义");
+    }
+
+    @Test
+    @DisplayName("★ 诊断计数必须在运行末尾读，而不是装完立刻读")
+    void theCountersAreReadAfterRealFramesNotAtInstall() throws IOException {
+        String win = codeWithoutComments(WINDOW);
+        String game = codeWithoutComments(GAME);
+
+        // 装子类的那一刻读计数必然是 0 —— 一条消息都还没 pump 过。
+        // 第一版就在安装后同一函数里读，于是输出了「子类被调=0 次」
+        // 并据此发出"方向选错了"的警告，而那个 0 不证明任何事。
+        int install = win.indexOf("installForWindow(handle)");
+        int diag = win.indexOf("imeDiagnostics()");
+        assertTrue(diag >= 0, "必须提供运行末尾的诊断读取口");
+        assertTrue(diag > install,
+                "★ 诊断计数必须在安装之后、真实运行之后再读 —— "
+                        + "装完立刻读必然是 0，而那个 0 会把人引向错误的结论");
+        assertTrue(game.contains("imeDiagnostics()"),
+                "★ 诊断必须进**测量摘要** —— 那是唯一在一段真实运行之后才会读的通道");
     }
 
     @Test

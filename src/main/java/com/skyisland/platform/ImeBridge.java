@@ -111,11 +111,62 @@ public final class ImeBridge {
 
     // ---- 原生方法（实现在 launcher/skyisland_ime.c）----
 
+    /**
+     * 给窗口装上消息子类，拦 {@code WM_IME_SETCONTEXT} 与 {@code WM_ACTIVATE}。
+     *
+     * @return 是否真的装上了（读回 wndproc 核对，不是信 API 返回值）
+     */
+    public static native boolean nInstallForWindow(long hwnd);
+
+    /** 当前 wndproc 是否正是我们装的那个（用来证明子类真的在生效）。 */
+    public static native boolean nIsInstalledForWindow(long hwnd);
+
+    /** 我们的消息过程被调用过多少次。{@code 0} = 一次都没被调用过。 */
+    public static native int nProcCallCount();
+
+    /** 拦下过多少次 {@code WM_IME_SETCONTEXT}。{@code 0} = 方向选错了。 */
+    public static native int nImeContextMsgCount();
+
+    /** 拦下过多少次 {@code WM_INPUTLANGCHANGEREQUEST}（IME 要求切换输入语言）。 */
+    public static native int nInputLangMsgCount();
+
     /** 摘掉窗口的 IME 上下文。返回**事后**是否已无 IME（不是 API 的返回值）。 */
     public static native boolean nDisableForWindow(long hwnd);
 
     /** 窗口当前是否挂着 IME 上下文。这是证据接口。 */
     public static native boolean nIsEnabledForWindow(long hwnd);
+
+    /**
+     * 对给定 GLFW 窗口装上 IME 子类（真正解决问题的那一步）。
+     *
+     * @return 是否装上；桥不可用或参数非法时返回 {@code false}
+     */
+    public static boolean installForWindow(long glfwHandle) {
+        if (!isAvailable()) {
+            return false;
+        }
+        long hwnd = hwndOf(glfwHandle);
+        if (hwnd == 0L) {
+            return false;
+        }
+        return nInstallForWindow(hwnd);
+    }
+
+    /** 子类是否已装。 */
+    public static boolean isInstalledForWindow(long glfwHandle) {
+        if (!isAvailable()) {
+            return false;
+        }
+        long hwnd = hwndOf(glfwHandle);
+        if (hwnd == 0L) {
+            return false;
+        }
+        return nIsInstalledForWindow(hwnd);
+    }
+
+    private static long hwndOf(long glfwHandle) {
+        return GLFWNativeWin32.glfwGetWin32Window(glfwHandle);
+    }
 
     /**
      * 对给定 GLFW 窗口摘掉 IME。
@@ -126,7 +177,7 @@ public final class ImeBridge {
         if (!isAvailable()) {
             return false;
         }
-        long hwnd = GLFWNativeWin32.glfwGetWin32Window(glfwHandle);
+        long hwnd = hwndOf(glfwHandle);
         if (hwnd == 0L) {
             return false;
         }
@@ -138,7 +189,7 @@ public final class ImeBridge {
         if (!isAvailable()) {
             return false;
         }
-        long hwnd = GLFWNativeWin32.glfwGetWin32Window(glfwHandle);
+        long hwnd = hwndOf(glfwHandle);
         if (hwnd == 0L) {
             return false;
         }

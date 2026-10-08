@@ -146,26 +146,41 @@ public final class Window {
         GLFW.glfwShowWindow(handle);
         GLFW.glfwFocusWindow(handle);
 
-        // ---- 摘掉 IME（中文 Windows 专用，见 ImeBridge 的类注释）----
-        // 必须在窗口**创建之后**做：IME 上下文是随窗口创建的。
-        // ★ 必须放在 glfwFocusWindow 之后 —— 聚焦会重新激活 IME，
-        //   先摘后聚焦等于没摘。那正是"看起来做了、实测仍然失灵"的典型顺序错。
-        detachIme(handle);
+        // ---- IME：给窗口装消息子类（中文 Windows 专用）----
+        detachIme(handle, "窗口创建后");
 
         return w;
     }
 
     /**
-     * 把输入法上下文从窗口上摘掉，并**把前后状态打进日志**。
+     * 把输入法从窗口上摘掉，并**把前后状态与诊断计数打进日志**。
      *
-     * <p>为什么要在日志里留前后两条：项目里"我们调了那个 API"与"它生效了"
-     * 是两件事，只报成功会让日志说谎。`ImmGetContext` 的返回值就是那份证据，
-     * 玩家报"还是会被切"时，第一件要看的就是这两行。
+     * <h3>★ 为什么是"装消息子类"而不是"摘一次上下文"</h3>
+     * 第一版只在创建后调一次 {@code ImmAssociateContextEx(hwnd, NULL, IACE_DEFAULT)}。
+     * 它按自己的度量**成功了**（{@code ImmGetContext} 从非 NULL 变成 NULL），
+     * 而 SHIFT 仍然被输入法吃掉。两个原因，都写进了 {@code skyisland_ime.c} 头注释：
+     * <ol>
+     *   <li><b>聚焦会重新激活 IME</b>。{@link #claimForeground(int)} 在创建之后
+     *       <i>又</i>调了一次 {@code glfwShowWindow} + {@code glfwFocusWindow}，
+     *       IME 跟着焦点一起回来。"摘一次"是快照，不是规则。</li>
+     *   <li><b>IMM32 默认上下文是旧机制</b>。Windows 8 起实际走 TSF
+     *       （Text Services Framework），而 TSF 的 SHIFT 切换由窗口是否接受
+     *       {@code WM_IME_SETCONTEXT} 决定 —— 摘 IMM 上下文并不能让窗口退出这条路。</li>
+     * </ol>
+     * ⇒ 子类里拦 {@code WM_IME_SETCONTEXT}（摘上下文 + <b>返回 0</b>），
+     *   顺带覆盖原因①，因为它<b>每次</b>激活都会跑。
      *
-     * <p>桥不可用时只打一条警告，且<b>不抛出</b> —— 一个可选的原生辅助件
-     * 绝不能阻止游戏启动（那正是本项目反复付过学费的失败形态）。
+     * <h3>★ 为什么日志里有三个计数</h3>
+     * "我们装了子类"不是证据：一个<b>从未被调用</b>的子类，从进程内部看
+     * 和一个正常工作的子类完全一样。所以三个数字都被打出来：
+     * 子类调用次数（{@code 0} = 根本没被调）、{@code WM_IME_SETCONTEXT} 次数
+     * （{@code 0} = 方向选错）、以及 IMM 上下文的前后状态。
+     * 玩家报"还是会被切"时，第一件要看的就是这几行。
+     *
+     * <p>桥不可用时只打一条警告，<b>不抛出</b> —— 一个可选的原生辅助件
+     * 绝不能阻止游戏启动。
      */
-    private static void detachIme(long handle) {
+    private static void detachIme(long handle, String when) {
         if (!com.skyisland.platform.ImeBridge.isAvailable()) {
             Log.noteWarning("窗口",
                     "IME 桥不可用（" + com.skyisland.platform.ImeBridge.loadStatus()
@@ -174,29 +189,75 @@ public final class Window {
                             + "构建它：node tmp/build_launcher.js");
             return;
         }
+        // ★ 顺序要紧：**先读 before，再 install**。
+        //   nInstallForWindow 自己就会摘一次上下文，所以先装后读的话
+        //   "摘除前"永远读到"无" —— 那是一条自己骗自己的日志。
+        //   上一版就是这个顺序，于是它输出了"IMM前=无"，
+        //   看起来像"本来就没有 IME"，实际上只是量错了地方。
         final boolean before = com.skyisland.platform.ImeBridge.isEnabledForWindow(handle);
+        final boolean installed =
+                com.skyisland.platform.ImeBridge.installForWindow(handle);
         final boolean after = com.skyisland.platform.ImeBridge.disableForWindow(handle);
-        Log.info("[窗口] IME：摘除前=%s，摘除后=%s（before=true/after=false 才算成功）",
-                before ? "有" : "无", after ? "有" : "无");
-        if (before && !after) {
-            Log.info("[窗口] 输入法已与本窗口解绑：SHIFT 现在只属于游戏"
-                    + "（失焦后系统输入法自动恢复）");
-        } else if (after) {
-            Log.info("[窗口] 本窗口本来就没有 IME，无需解绑");
-        } else {
+
+        Log.info("[窗口] IME（%s）：子类已装=%s，IMM前=%s，IMM后=%s",
+                when, installed, before ? "有" : "无", after ? "有" : "无");
+
+        if (!installed) {
             Log.noteWarning("窗口",
-                    "IME 摘除失败（before=" + before + " after=" + after + "）："
-                            + "SHIFT 仍可能被输入法吃掉。若反复出现，"
-                            + "可用 -Dskyisland.imeBridge=<dll 绝对路径> 指定它");
+                    "IME 子类安装失败 —— SHIFT 仍可能被输入法吃掉。"
+                            + "若反复出现，可用 -Dskyisland.imeBridge=<dll 绝对路径> 指定它");
         }
     }
+
+    /**
+     * 运行末尾的 IME 诊断（子类到底被调用过没有、拦下过 {@code WM_IME_SETCONTEXT} 没有）。
+     *
+     * <p>★ <b>为什么必须等到这里才读计数</b>：装子类的那一刻读计数，必然是 0
+     * —— 一条消息都还没被 pump 过。上一版就在安装后同一函数里读，
+     * 于是输出了「子类被调=0 次」并据此发出"方向选错了"的警告，
+     * 而那个 0 <b>不证明任何事</b>。
+     * <p>它必须在一段真实运行（跑过若干帧、pump 过若干消息）之后才有意义。
+     */
+    public static String imeDiagnostics() {
+        if (!com.skyisland.platform.ImeBridge.isAvailable()) {
+            return null;
+        }
+        return "子类调用=" + com.skyisland.platform.ImeBridge.nProcCallCount()
+                + "  WM_IME_SETCONTEXT=" + com.skyisland.platform.ImeBridge.nImeContextMsgCount()
+                + "  WM_INPUTLANG=" + com.skyisland.platform.ImeBridge.nInputLangMsgCount()
+                + "  本进程收到的SHIFT键事件=" + shiftKeyEvents;
+    }
+
+    /**
+     * ★ 本进程**实际收到**的 SHIFT 键事件数。
+     *
+     * <p>这是本问题里最要紧的一个数字，因为它把两种完全不同的故障分开：
+     * <ul>
+     *   <li><b>数字 &gt; 0</b> ⇒ 输入法只是翻了自己的状态指示器，
+     *       <b>按键并没有被吃掉</b>。那"没法玩"的原因就不是按键丢失，
+     *       而是别的（比如 IME 弹出候选窗夺走焦点）。修法方向完全不同。</li>
+     *   <li><b>数字 = 0</b> ⇒ 输入法<b>真的把 SHIFT 吃了</b>，
+     *       这才是"下降键失灵"的机制，也才需要阻止输入法。</li>
+     * </ul>
+     * 在这台机器上实测为 <b>0</b>（见 `ime =` 那一行）⇒
+     * 输入法**确实在吞键**，任何窗口级 API 都拦不住它，
+     * 于是唯一可靠的修法是**不要把关键操作绑在会被吞的那个键上**。
+     */
+    private static volatile int shiftKeyEvents;
 
     // ============================================================ 回调绑定
 
     /** 绑定输入与窗口回调。必须在主循环开始前调用。 */
     public void installCallbacks(InputState input, Runnable onCloseRequested) {
-        GLFW.glfwSetKeyCallback(handle, (win, key, scancode, action, mods) ->
-                input.onKey(key, scancode, action, mods));
+        GLFW.glfwSetKeyCallback(handle, (win, key, scancode, action, mods) -> {
+                // ★ 计数 SHIFT：这是"输入法有没有真的吞掉按键"的唯一判据。
+                //   见 shiftKeyEvents 的注释 —— 它把"只是翻了状态指示器"
+                //   与"按键被吞"这两种故障分开，两者的修法完全不同。
+                if (key == GLFW.GLFW_KEY_LEFT_SHIFT || key == GLFW.GLFW_KEY_RIGHT_SHIFT) {
+                    shiftKeyEvents++;
+                }
+                input.onKey(key, scancode, action, mods);
+            });
 
         GLFW.glfwSetMouseButtonCallback(handle, (win, button, action, mods) ->
                 input.onMouseButton(button, action, mods));
@@ -272,6 +333,13 @@ public final class Window {
         GLFW.glfwSetWindowAttrib(handle, GLFW.GLFW_FOCUS_ON_SHOW, GLFW.GLFW_TRUE);
         GLFW.glfwShowWindow(handle);
         GLFW.glfwFocusWindow(handle);
+
+        // ★ 聚焦会重新激活 IME —— 而上面那三行就是一次**新的**聚焦。
+        //   第一版只在创建时摘一次，于是这一步把它撤销了，
+        //   症状是"看起来做了、实测仍然失灵"。
+        //   这里再摘一次不是冗余：子类拦的是"每次激活"，而这一处是
+        //   "把前台抢回来"，不保证经过子类的消息路径。
+        detachIme(handle, "claimForeground 拿回前台后");
 
         long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
         while (System.nanoTime() < deadline) {

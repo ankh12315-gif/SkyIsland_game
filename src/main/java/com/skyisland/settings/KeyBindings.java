@@ -36,7 +36,24 @@ public final class KeyBindings {
         kb.map.put(Action.MOVE_LEFT, InputBinding.key(GLFW.GLFW_KEY_A));
         kb.map.put(Action.MOVE_RIGHT, InputBinding.key(GLFW.GLFW_KEY_D));
         kb.map.put(Action.JUMP, InputBinding.key(GLFW.GLFW_KEY_SPACE));
-        kb.map.put(Action.CROUCH, InputBinding.key(GLFW.GLFW_KEY_LEFT_SHIFT));
+        // ★ CROUCH（飞行下降）默认键从左 SHIFT 改成左 CTRL（2026-10-08）。
+        //
+        //   起因是主理人报「按 shift 会切换中英文，中文状态下没法玩」。本项目
+        //   做了能做的测量，结论是**在窗口这一层拦不住**：
+        //     - IMM 上下文确实被摘掉了（ImmGetContext 由有变无，机器实测）
+        //     - 窗口子类确实在工作（一段真实运行里收到 1066 条消息）
+        //     - 但 WM_IME_SETCONTEXT = 0 次、WM_INPUTLANGCHANGEREQUEST = 0 次
+        //       ⇒ 输入法**根本不与本窗口交互**，它在窗口消息派发之上吞键。
+        //   也就是说：这个故障不是本游戏能修的，那是输入法的系统级行为。
+        //
+        //   ⇒ 唯一**可靠**的修法是不把关键操作绑在会被吞的那个键上。
+        //     左 CTRL 是中文输入法基本不碰的键（Minecraft 等游戏的中文用户
+        //     也普遍把"下降"换到 Ctrl 就是同一个原因）。
+        //
+        //   想要 Shift 的话有两条路（README 有写）：
+        //     ① 关掉输入法的「用 Shift 键切换中/英文」，然后在设置里改回 Shift
+        //     ② 直接在设置里把 Fly Descend 改成任意别的键
+        kb.map.put(Action.CROUCH, InputBinding.key(GLFW.GLFW_KEY_LEFT_CONTROL));
         kb.map.put(Action.PRIMARY_ACTION, InputBinding.mouse(GLFW.GLFW_MOUSE_BUTTON_LEFT));
         kb.map.put(Action.SECONDARY_ACTION, InputBinding.mouse(GLFW.GLFW_MOUSE_BUTTON_RIGHT));
         kb.map.put(Action.RELOAD, InputBinding.key(GLFW.GLFW_KEY_R));

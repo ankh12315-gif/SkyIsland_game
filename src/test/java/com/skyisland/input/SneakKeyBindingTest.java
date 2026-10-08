@@ -68,12 +68,20 @@ class SneakKeyBindingTest {
     }
 
     @Test
-    @DisplayName("CROUCH 的默认键位仍是左 Shift（改动不改变手感）")
-    void theDefaultKeyIsUnchanged() throws IOException {
+    @DisplayName("★ 飞行下降默认键是左 Ctrl（不是 Shift）—— 中文输入法的实测结论")
+    void theDefaultKeyIsControlNotShift() throws IOException {
         String kb = codeWithoutComments(KB);
-        assertTrue(kb.contains("Action.CROUCH, InputBinding.key(GLFW.GLFW_KEY_LEFT_SHIFT)"),
-                "★ CROUCH 的默认键位必须仍是左 Shift —— 改成别的会让现有玩家的手感无故改变。"
-                        + "这次改动的全部意义是「终于可以改了」，不是「默认变了」");
+
+        assertTrue(kb.contains(
+                        "Action.CROUCH, InputBinding.key(GLFW.GLFW_KEY_LEFT_CONTROL)"),
+                "★ CROUCH（飞行下降）的默认键必须是左 Ctrl —— 主理人实测在中文输入法下"
+                        + "按 Shift 会被输入法吃掉，而本项目已用机器读数证明"
+                        + "「窗口这一层拦不住」（WM_IME_SETCONTEXT=0、WM_INPUTLANG=0），"
+                        + "所以唯一可靠的修法是不绑在会被吞的键上");
+
+        assertFalse(kb.contains("Action.CROUCH, InputBinding.key(GLFW.GLFW_KEY_LEFT_SHIFT)"),
+                "★ 不得把默认键改回左 Shift —— 那是已知失灵的那个键。"
+                        + "想要 Shift 的玩家可以自己改（它是可重绑的）");
     }
 
     @Test

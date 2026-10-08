@@ -4589,6 +4589,18 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         sb.append("--\n");
         sb.append("gl_error_seen      = ").append(glErrorSeen == null ? "(无)" : glErrorSeen).append('\n');
         sb.append("warn_count         = ").append(Log.warningCount()).append('\n');
+        // ★ IME 子类诊断放**测量摘要**里，而不是装类的那一刻。
+        //   理由与 Window#imeDiagnostics 的注释相同：装完立刻读计数必然是 0，
+        //   那条 0 不证明任何事；必须等跑过若干帧、pump 过若干消息之后才有意义。
+        //   四个数字合起来才回答得了"输入法在哪里动手、动的是什么"：
+        //     子类调用=0        ⇒ 我们的 wndproc 一次都没被调用（子类没生效）
+        //     WM_IME_SETCONTEXT=0 ⇒ 这条消息根本不来（该杠杆无效）
+        //     WM_INPUTLANG=0      ⇒ 输入法也没有要求本程序切语言
+        //     SHIFT键事件=0        ⇒ ★ 输入法**真的把按键吞了**（不是只翻指示器）
+        final String imeDiag = com.skyisland.render.Window.imeDiagnostics();
+        if (imeDiag != null) {
+            sb.append("ime                = ").append(imeDiag).append('\n');
+        }
 
         // ---------- 脚本化自测 ----------
         if (selfTest != null) {

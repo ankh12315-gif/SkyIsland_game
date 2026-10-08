@@ -39,7 +39,14 @@ class KeyBindingsTest {
         assertEquals(InputBinding.key(GLFW.GLFW_KEY_A), kb.get(Action.MOVE_LEFT));
         assertEquals(InputBinding.key(GLFW.GLFW_KEY_D), kb.get(Action.MOVE_RIGHT));
         assertEquals(InputBinding.key(GLFW.GLFW_KEY_SPACE), kb.get(Action.JUMP));
-        assertEquals(InputBinding.key(GLFW.GLFW_KEY_LEFT_SHIFT), kb.get(Action.CROUCH));
+        // ★ CROUCH（飞行下降）默认键 2026-10-08 从左 SHIFT 改为左 CTRL。
+        //   理由是机器实测（见 docs/testing/M4_IME_DETACH_REPORT.md §9）：
+        //   中文输入法的 Shift 中英切换发生在**窗口消息派发之上**，
+        //   IMM32 摘上下文、窗口子类拦 WM_IME_SETCONTEXT 一律无效 ——
+        //   而左 Ctrl 是输入法基本不碰的键。
+        //   想用 Shift 的玩家可在设置里改回（该动作本来就是可重绑的），
+        //   或关掉输入法的「用 Shift 键切换中/英文」。
+        assertEquals(InputBinding.key(GLFW.GLFW_KEY_LEFT_CONTROL), kb.get(Action.CROUCH));
         assertEquals(InputBinding.mouse(GLFW.GLFW_MOUSE_BUTTON_LEFT), kb.get(Action.PRIMARY_ACTION));
         assertEquals(InputBinding.mouse(GLFW.GLFW_MOUSE_BUTTON_RIGHT), kb.get(Action.SECONDARY_ACTION));
         assertEquals(InputBinding.key(GLFW.GLFW_KEY_R), kb.get(Action.RELOAD));
