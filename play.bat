@@ -111,6 +111,17 @@ REM    Both save properly. Do NOT kill it from Task Manager (that does not save)
 REM
 REM  Logs: the game writes its own file, see the newest one in logs\
 REM ===========================================================================
+REM
+REM  WANT CREATIVE MODE (all blocks, no crafting, flight)?
+REM    Use the OTHER launcher:  play-creative.bat   (or the Desktop
+REM    button "SkyIsland 创造.exe").  It is a separate world on purpose --
+REM    PRD_BLOCK_CREATIVE section 4.3 fixes the mode when the save is created,
+REM    so adding -Dskyisland.gameMode=creative HERE does nothing at all: this
+REM    world already exists, the game reads survival from level.json, and the
+REM    only symptom is a missing 创造 tab on an otherwise normal-looking game.
+REM    See the "创造模式" section of README.md for the block-picking steps.
+REM
+REM ===========================================================================
 
 set "JDK_HOME=D:\software\jdk-25"
 set "PROJ=%~dp0"

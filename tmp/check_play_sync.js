@@ -62,15 +62,35 @@ if (!batSave) {
   failures.push('play.bat: no set "SAVE=%PROJ%..." line');
 }
 
-// ---- .c：kWorldName / kSaveRelDir ----
+// ---- .c：生存分支的 #define ----
+// ★ 为什么不再读 `kWorldName = L"..."`：
+//   2026-10-08 下午加了创造入口（SKYISLAND_CREATIVE 分支）之后，源码把常量
+//   收敛成单一赋值点 —— `kWorldName = SKY_WORLD;`，值移进了 #ifdef 的 #define。
+//   于是本守卫读到的是 `world=...` / `save=(none)` 并报红。
+//   值得记的不是"改守卫"，而是：**它变红的形态与世界名真的漂移了完全一样**。
+//   如果当时把 islands-play 填回断言里，它会重新变绿，而真相是判据已经不再读
+//   它声称读的东西 —— 一个正在失效的守卫比没有守卫更危险，因为它给人虚假的确信。
+//   ⇒ 改成读 #else 侧（生存分支）的 #define，与 check_creative_sync.js 同一口径。
 const c = read(C, 'skyisland_launcher.c');
-const cWorld = /kWorldName\s*=\s*L"([^"]*)"/.exec(c);
-const cSave = /kSaveRelDir\s*=\s*L"([^"]*)"/.exec(c);
+const branch = /#ifdef SKYISLAND_CREATIVE[\s\S]*?#else([\s\S]*?)#endif/.exec(c);
+if (!branch) {
+  console.error('[check_play_sync] skyisland_launcher.c: no '
+    + '`#ifdef SKYISLAND_CREATIVE / #else / #endif` block — the survival '
+    + 'constants cannot be located.');
+  process.exit(1);
+}
+const survivalBranch = branch[1];
+const cDefine = (name) => {
+  const m = new RegExp('#\\s*define\\s+' + name + '\\s+L"([^"]*)"').exec(survivalBranch);
+  return m ? m[1] : null;
+};
+const cWorld = cDefine('SKY_WORLD') ? [null, cDefine('SKY_WORLD')] : null;
+const cSave = cDefine('SKY_SAVE') ? [null, cDefine('SKY_SAVE')] : null;
 if (!cWorld) {
-  failures.push('skyisland_launcher.c: no kWorldName definition');
+  failures.push('skyisland_launcher.c: survival branch has no #define SKY_WORLD');
 }
 if (!cSave) {
-  failures.push('skyisland_launcher.c: no kSaveRelDir definition');
+  failures.push('skyisland_launcher.c: survival branch has no #define SKY_SAVE');
 }
 
 const batSaveLabel = batSave ? norm(batSave[1]) : '(none)';
@@ -89,10 +109,12 @@ if (batSave && cSave && norm(batSave[1]) !== norm(cSave[1])) {
 
 // ---- 附带检查：settings 文件名也不能分叉（它决定灵敏度等设置落在哪）----
 const batSettings = /-Dskyisland\.settingsFile=(\S+)/.exec(bat);
-const cSettings = /kSettingsRel\s*=\s*L"([^"]*)"/.exec(c);
+// 设置文件同样读 #define（kSettingsRel 也已变成单一赋值点）
+const cSettingsName = cDefine('SKY_SET');
+const cSettings = cSettingsName ? [null, cSettingsName] : null;
 if (batSettings && cSettings) {
   const batName = norm(batSettings[1]);
-  // kSettingsRel 已经是相对项目根的完整路径（含 tmp\ 前缀），不要再拼 tmp/
+  // SKY_SET 已经是相对项目根的完整路径（含 tmp\ 前缀），不要再拼 tmp/
   const cName = norm(cSettings[1]);
   if (batName !== cName) {
     failures.push(`settingsFile differs: bat="${batName}" vs c="${cName}"`);

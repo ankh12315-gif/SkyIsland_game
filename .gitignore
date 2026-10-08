@@ -98,6 +98,19 @@ tmp/s3work/*
 !tmp/extract_play_exec.js
 !tmp/rv_play_sync.js
 
+# --- 创造模式入口 + 它自己的同步守卫, MUST stay tracked ---
+# WHY: PRD_BLOCK_CREATIVE 4.3「模式在存档创建时定死」让创造模式**无法**靠给
+#   生存入口加参数开启 —— 生存世界已经存在，游戏照 level.json 读生存，
+#   于是参数"传到了 JVM 但什么也没做"。症状是这个入口最恶劣的形态：
+#   画面完全正常、只是背包少了「创造」标签，没有任何报错。
+#   创造模式因此必须是**独立入口 + 独立世界**，而"独立"这件事一旦漂移，
+#   同样没有任何检查会红 —— 它就是本文件存在的理由。
+#   check_creative_sync.js 同时守 .bat 与启动器的 SKYISLAND_CREATIVE 分支，
+#   且带 5 条反向验证（含"注入是否真的改了文件"的自检：本轮三次返工都是
+#   注入自身有缺陷却报成守卫漏判）。
+# Guard: NativeLauncherWiringTest#theCreativeEntryHasItsOwnWorldAndIsGuarded
+!tmp/check_creative_sync.js
+
 # --- 单类测试执行器 + 资源核心反向验证脚本, MUST stay tracked ---
 # WHY: tmp/mvn_test_one.js 把「跑哪个测试类」与「怎么从输出里读出失败的断言名」
 #   两件事固化成一个入口。反向验证脚本要反复"注入断线 → 跑一条测试 → 看哪条红了"，

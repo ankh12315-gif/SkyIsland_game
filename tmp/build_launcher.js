@@ -147,13 +147,23 @@ function build(outName, extraDefines) {
 
 if (!consoleOnly) {
   build('SkyIsland.exe', []);
+  // ★ The creative Desktop button. It is a SEPARATE binary rather than an
+  //   argument because PRD_BLOCK_CREATIVE 4.3 fixes the game mode when the
+  //   save is created: `SkyIsland.exe -Dskyisland.gameMode=creative` reaches
+  //   the JVM and then does nothing, because the survival world this same file
+  //   points at already exists. The symptom is a normal-looking game with no
+  //   创造 tab. See the SKYISLAND_CREATIVE branch in skyisland_launcher.c.
+  build('SkyIsland-creative.exe', ['-DSKYISLAND_CREATIVE=1']);
 }
 build('SkyIsland-console.exe', ['-DSKYISLAND_KEEP_CONSOLE=1']);
 
 console.log('[build_launcher] done.');
-console.log('[build_launcher] To publish the Desktop entry point, copy SkyIsland.exe');
-console.log('[build_launcher] to the Desktop AS "SkyIsland 启动.exe". The .exe is NOT');
-console.log('[build_launcher] tracked by git; whoever clones must run this script.');
-console.log('[build_launcher] The Desktop copy is a COPY, not a link -- remember to');
+console.log('[build_launcher] To publish the Desktop entry points, copy:');
+console.log('[build_launcher]   SkyIsland.exe          -> Desktop AS "SkyIsland 启动.exe"');
+console.log('[build_launcher]   SkyIsland-creative.exe -> Desktop AS "SkyIsland 创造.exe"');
+console.log('[build_launcher] The .exe is NOT tracked by git; whoever clones must run');
+console.log('[build_launcher] this script. The Desktop copies are COPIES, not links --');
 console.log('[build_launcher] re-copy after any rebuild, or you will be testing the');
 console.log('[build_launcher] previous binary (that exact trap cost two milestones).');
+console.log('[build_launcher] `node tmp/deploy_desktop.js` does both copies and checks');
+console.log('[build_launcher] sha256, which is the point of having a deployer.');
