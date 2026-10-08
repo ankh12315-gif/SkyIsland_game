@@ -659,6 +659,17 @@ public final class IslandWorldGenerator implements WorldGenerator {
         final int surfaceY = Coords.WORLD_SURFACE_BLOCK_Y;
 
         // 地板：9×9 铺在表面层，顶面正好是 y = 64（PRD「地板顶面 y = 64」）
+        //
+        // ★ <b>这里有一处与自测前提的冲突，必须写清楚，否则下一个人会去"修"错方向</b>：
+        //   {@code M1ScriptedSelfTest} 断言「脚下方块 (0,63,0) 确实变成空气」，
+        //   那条断言成立的前提是<b>玩家站在裸地上、脚下是草方块</b>。
+        //   而 PRD §5.7 要求出生在小屋内部、脚下是<b>木板地板</b>。
+        //   ⇒ 两者不可兼得，且<b>规格优先</b>：地板就是木板，玩家就是站在屋里。
+        //   实测（-Dskyisland.generator=islands 跑 M1 自测）该条会红，
+        //   同轮另有 5 条一起红，全部是同一类原因。
+        //   ⇒ 不要为了让这 6 条变绿而去挖地板或挪出生点 ——
+        //   那是拿自测的便利去破坏 PRD 的开局体验。
+        //   详见 docs/testing/WORLD_ISLAND_GENERATOR_REPORT.md §4。
         for (int z = -HUT_HALF; z <= HUT_HALF; z++) {
             for (int x = -HUT_HALF; x <= HUT_HALF; x++) {
                 write(out, x, surfaceY, z, planks);
