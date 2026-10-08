@@ -335,10 +335,21 @@ public final class BlockTextureLayers {
         if (block.isAir()) {
             return true;
         }
-        // 非方块物品形态：它不是方块，不参与面渲染，自然没有 per-face 层。
-        // 判据是"注册表里由它 drop 出来的物品 ID 与它同名且它自身无方块身份"，
-        // 这里用最直接可靠的形态：blockId 出现在物品注册表里。
-        String blockId = block.id();
-        return com.skyisland.item.ItemRegistry.byName(blockId) != null;
+        // ★★ 判据必须是「物品注册表里的这一项**不是方块物品**」，不是「能不能查到」。
+        //
+        // 【踩过的坑 / 脆绿灯】本方法原先写的是：
+        //     return ItemRegistry.byName(blockId) != null;
+        // 而 ItemRegistry.addBlockItem 用 block.id() 本身作 stable ID 登记方块物品，
+        // 于是 byName 对**每一个方块**都非 null —— 豁免率 100%，
+        // 「每个方块都显式登记了贴图层」这条守卫内层循环一次都不执行，
+        // 恒真、恒绿，且它注释里点名的那个故障（S5 漏改 layerForId → 矿石变石头）
+        // 它自己一个都抓不到。实测证据见 tmp/s5work/findings.md 发现 F1。
+        //
+        // 【正确判据】方块物品的 Item.block != null ⇒ isBlock() == true；
+        // 真正的非方块物品形态（coal / crystal / 小麦种 …）block == null ⇒ isBlock() == false。
+        // 只有后者才合法地不需要 per-face 贴图层 —— 因为它根本不参与面渲染。
+        com.skyisland.item.Item asItem =
+                com.skyisland.item.ItemRegistry.byName(block.id());
+        return asItem != null && !asItem.isBlock();
     }
 }

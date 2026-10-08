@@ -42,7 +42,7 @@ import com.skyisland.render.mesh.BlockTextureLayers;
  */
 public final class Boxes {
 
-    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerAo(vec2)。 */
+    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerLight(vec2)。 */
     public static final int FLOATS_PER_VERTEX = VertexFormat.FLOATS_PER_VERTEX;
 
     /** 每盒 6 面 × 2 三角形 × 3 顶点。 */
@@ -123,7 +123,11 @@ public final class Boxes {
                 // 于是片元算出的 texel.rgb * vColor.rgb 恰好等于 vColor.rgb
                 // —— 这两类几何的画面因此逐像素不变。
                 out[p + 7] = BlockTextureLayers.NEUTRAL_WHITE;
-                out[p + 8] = VertexFormat.DEFAULT_AO;
+                // ★ M5a：第二分量改派为打包光照。实体与手持物在世界里，
+                //   因此用 LIGHT_SKY_EXPOSED（见天、无火把）—— 白天与改动前逐位一致，
+                //   夜里随天光一起变暗。若这里写 0（= 不见天、无火把），
+                //   实体在夜里会暗到只剩环境地板，而那不报任何错。
+                out[p + 8] = VertexFormat.LIGHT_SKY_EXPOSED;
                 // S3 新增：UV。采样纯白层时 UV 取何值都不影响结果，
                 // 但必须写满 —— 少写两个 float 会让后续顶点整体前移。
                 out[p + 9] = VertexFormat.DEFAULT_UV;

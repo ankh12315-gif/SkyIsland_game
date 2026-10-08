@@ -67,7 +67,7 @@ public final class SubMesh {
             GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, newEbo);
             GL15.glBufferData(GL15.GL_ELEMENT_ARRAY_BUFFER, indexBuf, GL15.GL_STATIC_DRAW);
 
-            // 三个属性槽位统一由 VertexFormat 绑定（含S2 新增的 location 2 = aLayerAo）。
+            // 三个属性槽位统一由 VertexFormat 绑定（含S2 新增的 location 2 = aLayerLight）。
             // 刻意不写死stride/偏移：SubMesh 与实体/粒子/裂纹/手持物共用同一个
             // voxelShader，格式必须逐字节一致，少改一处不会编译报错、只会静默花屏。
             VertexFormat.bindVoxelAttribs();

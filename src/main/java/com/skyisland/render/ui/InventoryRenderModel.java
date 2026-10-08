@@ -61,6 +61,68 @@ public final class InventoryRenderModel {
     /** 鼠标悬停的配方行号；{@code -1} 表示未悬停在任何行上。 */
     public int hoverCraftRow = -1;
 
+    // ============================================================ M4-S7：标签页与创造面板
+
+    /**
+     * ★ M4-S7 背包窗口的标签页（PRD §5.1「背包界面（E）内的独立标签页『创造』」）。
+     *
+     * <p>★ <b>它只有两个值，而"没有标签条"用 {@link #tabs == 0} 表达而不是加第三个枚举值</b>：
+     * 生存模式<b>不该</b>有一条只写着「背包」的标签条 —— 玩家会去找那个不存在的第二页，
+     * 而点不到任何东西的标签是纯噪声。枚举第三个值 {@code NONE} 会让"切到 NONE"
+     * 成为一个可达状态 —— 那个状态没有任何绘制点，只能表现为"标签条上的文字全没了"。
+     */
+    public enum Tab {
+        /** 标签页 0：36 格背包 + 合成栏。 */
+        BACKPACK,
+        /** 标签页 1：创造方块面板。 */
+        CREATIVE;
+
+        /** 按序号取标签页；越界返回 {@code null}（调用点据此忽略这次点击）。 */
+        public static Tab of(int index) {
+            Tab[] all = values();
+            return index >= 0 && index < all.length ? all[index] : null;
+        }
+    }
+
+    /**
+     * 本帧的标签页个数。
+     *
+     * <p>生存模式 = {@code 1}（不画标签条），创造模式 = {@code 2}。
+     *
+     * <p>★ <b>为什么"标签数在一局内不变"是可以依赖的性质</b>：
+     * {@code gameMode} 由存档定死（PRD §4.3 模式锁定是双向的），
+     * 因此标签条不会在游玩中途出现或消失 ⇒ 标签条把内容区下推 22px 这件事
+     * 只在"打开背包的第一帧"就已经确定，不会造成"切标签时内容整体跳一下"。
+     *
+     * <p>★ <b>而"两个标签页之间切换会不会让面板变高"是另一件事</b>，
+     * 由 {@code InventoryLayout} 取两个内容区的高者解决（见其 {@code mainAreaHeight}）。
+     */
+    public int tabs = 1;
+
+    /** 当前激活的标签页。 */
+    public Tab activeTab = Tab.BACKPACK;
+
+    /** 鼠标悬停的标签页序号；{@code -1} 表示未悬停（本帧无标签条时恒为 {@code -1}）。 */
+    public int hoverTab = -1;
+
+    /**
+     * 创造面板的分组视图；{@code null} = 本帧没有创造面板（生存模式）。
+     *
+     * <p>持有视图而不是持有 {@code CreativePalette}：面板<b>排版</b>（条目顺序、每个条目第几行）
+     * 每帧要用一次，而排序与切段要遍历 20 个条目 ——
+     * 让渲染层每帧重算是一份白给的开销，且"内容顺序"与"行结构"两处各算一次
+     * 就等于没有单一事实来源（症状：第 12 格画在第 13 格的位置，不报错不崩溃）。
+     */
+    public com.skyisland.world.block.CreativePalette.CreativeView creativeView;
+
+    /** 鼠标悬停的创造面板条目；{@code -1} 表示未悬停。 */
+    public int hoverCreativeEntry = -1;
+
+    /** 本帧是否显示创造面板（{@link #activeTab} 为创造 <b>且</b> 视图非空）。 */
+    public boolean creativePanelActive() {
+        return activeTab == Tab.CREATIVE && creativeView != null;
+    }
+
     /** 光标位置（帧缓冲像素）。未获得指针时为 {@code Double.NaN}，渲染器据此不画跟随光标的那一堆。 */
     public double mouseX = Double.NaN;
 

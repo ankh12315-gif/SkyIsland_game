@@ -18,6 +18,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -155,6 +156,169 @@ class SaveManagerTest {
         assertEquals(2, reloadedPlayer.inventory().selectedSlot());
         assertEquals(7, reloadedPlayer.inventory().countOf(TestWorlds.stone()));
         assertEquals(1, reloadedPlayer.inventory().usedSlotCount(), "其余槽位保持为空");
+    }
+
+    // ============================================================ 生命值往返
+
+    /**
+     * ★<b>生命值必须能往返存档。</b>
+     *
+     * <p><b>这条测试在修什么</b>：{@code PlayerState} 曾经<b>没有 {@code health} 字段</b>，
+     * 而 {@code Player.health} 早在 M2 就实现了（{@code MAX_HEALTH=20}）。
+     * 后果不是"少存一个字段"，而是
+     * <b>玩家被打到 3 血 → 存档 → 读档 → 满血 20</b>：一条可利用的无代价回血路径。
+     * PRD 12.3 明文要求存档至少保存"生命"。
+     *
+     * <p>★<b>为什么必须用"部分生命值"而不是满血做往返</b>：
+     * 满血往返是<b>恰好相等</b>型断言 —— 它在"根本没存、读档时顺手重置成满血"时
+     * <b>也会绿</b>。这条断言的价值恰恰在于 20 ≠ 3。
+     */
+    @Test
+    void healthSurvivesSaveLoadRoundTripAtPartialValue(@TempDir Path root) throws IOException {
+        SaveManager manager = manager(root);
+        World world = freshWorld();
+        Player player = freshPlayer();
+
+        // 先确认前提：玩家确实是满血
+        assertEquals(Player.MAX_HEALTH, player.health(), "前提：新玩家满血");
+
+        // 打到只剩 3 血。走真实的 hurt() 通道，不直接设字段 ——
+        // 直接设字段会绕过 die() 与 lastDamageCause，测的就不是产品路径了。
+        player.hurt(world, Player.MAX_HEALTH - 3);
+        assertEquals(3, player.health(), "前提：受伤后应当是 3 血");
+        assertFalse(player.isDead(), "3 血不该判死");
+
+        SaveResult saved = manager.save(world, player);
+        assertTrue(saved.success(), saved.summary());
+
+        World reloaded = freshWorld();
+        Player reloadedPlayer = freshPlayer();
+        SaveResult loaded = manager.loadInto(reloaded, reloadedPlayer);
+        assertTrue(loaded.success(), loaded.summary());
+
+        assertEquals(3, reloadedPlayer.health(),
+                "★ 读档后必须仍是 3 血。得到满血说明存档没写或读档没读"
+                        + "（症状是「受伤存档等于免费回血」）。expected: <3> but was: <"
+                        + reloadedPlayer.health() + ">");
+    }
+
+    /**
+     * 旧存档（<b>没有 {@code health} 键</b>）必须读成<b>满血</b>，不是 0 血。
+     *
+     * <p>★这是 Gson "缺失字段走 POJO 初始化器" 那条机制的<b>直接证据</b>。
+     * 判据是<b>手写一份真的缺字段的 json</b>，而不是靠"不写 health 看默认" ——
+     * 后者测的是"字段初始值是多少"，前者测的是"旧存档读出来会怎样"，
+     * 而后者才是玩家真正会遇到的情况。
+     *
+     * <p>若 {@code health} 默认值被写成 0，这条会红，且症状是
+     * <b>"玩家一进世界就死、重生、再进又死"</b> —— 极难归因。
+     */
+    @Test
+    void legacySaveWithoutHealthFieldLoadsAtFullHealth(@TempDir Path root) throws IOException {
+        SaveManager manager = manager(root);
+        World world = freshWorld();
+        Player player = freshPlayer();
+        assertTrue(manager.save(world, player).success());
+
+        // ★ 手写一份**没有 health 键**的 player.json（模拟 M2 之前的存档）
+        Path playerJson = manager.worldDirectory().resolve(SaveFormat.PLAYER_FILE);
+        String original = Files.readString(playerJson, StandardCharsets.UTF_8);
+        String stripped = original.replaceAll(",\\s*\"health\"\\s*:\\s*\\d+", "");
+        assertNotEquals(original, stripped,
+                "前提：存档里本该有 health 字段，且本测试要把它删掉制造旧档");
+        assertFalse(stripped.contains("\"health\""),
+                "前提：删干净了，不该再有 health 键");
+        Files.writeString(playerJson, stripped, StandardCharsets.UTF_8);
+
+        World reloaded = freshWorld();
+        Player reloadedPlayer = freshPlayer();
+        SaveResult loaded = manager.loadInto(reloaded, reloadedPlayer);
+
+        assertTrue(loaded.success(), loaded.summary());
+        assertEquals(Player.MAX_HEALTH, reloadedPlayer.health(),
+                "旧存档缺 health 字段 ⇒ 必须是满血。得到 "
+                        + reloadedPlayer.health() + " 说明默认值落在了非安全侧"
+                        + "（0 会导致读档即死）");
+    }
+
+    /**
+     * 坏存档里的越界生命值必须被<b>夹住</b>，而不是被信任。
+     *
+     * <p>两个方向分别测，因为它们来自不同来源：
+     * <ul>
+     *   <li><b>9999</b>（手改/ 版本更高的旧档） ⇒ 夹到 {@code MAX_HEALTH}；</li>
+     *   <li><b>-5</b>（坏数据） ⇒ 夹到 <b>1</b>，<b>不是 0</b> ——
+     *       0 会被 {@code isDead()} 判成已死，玩家一进世界就进死亡流程。</li>
+     * </ul>
+     */
+    @Test
+    void healthOutOfRangeInJsonIsClampedNotTrusted(@TempDir Path root) throws IOException {
+        // ---- 方向一：过大 ----
+        SaveManager manager = manager(root);
+        World world = freshWorld();
+        Player player = freshPlayer();
+        assertTrue(manager.save(world, player).success());
+
+        Path playerJson = manager.worldDirectory().resolve(SaveFormat.PLAYER_FILE);
+        Files.writeString(playerJson,
+                Files.readString(playerJson, StandardCharsets.UTF_8)
+                        .replaceAll("\"health\"\\s*:\\s*\\d+", "\"health\": 9999"),
+                StandardCharsets.UTF_8);
+
+        Player loaded1 = freshPlayer();
+        assertTrue(manager.loadInto(freshWorld(), loaded1).success());
+        assertEquals(Player.MAX_HEALTH, loaded1.health(),
+                "9999 必须被夹到 MAX_HEALTH，而不是被当成真实血量"
+                        + "（不夹的话玩家会有 9999 血，打不死也饿不死）");
+
+        // ---- 方向二：负数 ----
+        SaveManager manager2 = manager(root.resolve("b"));
+        World world2 = freshWorld();
+        Player player2 = freshPlayer();
+        assertTrue(manager2.save(world2, player2).success());
+
+        Path playerJson2 = manager2.worldDirectory().resolve(SaveFormat.PLAYER_FILE);
+        Files.writeString(playerJson2,
+                Files.readString(playerJson2, StandardCharsets.UTF_8)
+                        .replaceAll("\"health\"\\s*:\\s*\\d+", "\"health\": -5"),
+                StandardCharsets.UTF_8);
+
+        Player loaded2 = freshPlayer();
+        assertTrue(manager2.loadInto(freshWorld(), loaded2).success());
+        assertEquals(1, loaded2.health(),
+                "负数血量必须夹到 **1 而不是 0** —— 0 会让 isDead() 判死，"
+                        + "症状是「一进世界就重生」");
+        assertFalse(loaded2.isDead(), "夹到 1 血时绝不能是死亡状态");
+    }
+
+    /**
+     * {@code validate()} 对生命值的态度：<b>只报非正，不报越界上限</b>。
+     *
+     * <p>为什么这两件事要分开：
+     * <ul>
+     *   <li><b>非正必须报</b> —— 那是真实的坏档（读档即死），值得让玩家看见；</li>
+     *   <li><b>上限不报</b> —— 装载侧已夹到 {@code MAX_HEALTH}，它不可能造成伤害；
+     *       在这里报只会让日志多一条玩家看不懂的告警，而真正的防线在装载侧。</li>
+     * </ul>
+     * 顺带守住"旧存档语义"：默认 {@code health=20} 的 {@code PlayerState}
+     * 必须<b>零告警</b>通过校验。
+     */
+    @Test
+    void playerStateValidateFlagsOnlyNonPositiveHealth() {
+        assertTrue(new PlayerState().validate().isEmpty(),
+                "默认 PlayerState（含 health=20）必须零告警通过 —— "
+                        + "否则每个旧存档都会刷一堆假告警");
+
+        PlayerState negative = new PlayerState();
+        negative.health = -1;
+        assertTrue(negative.validate().stream().anyMatch(p -> p.contains("生命值")),
+                "负血量必须被 validate 抓出来（症状是读档即死）");
+
+        PlayerState huge = new PlayerState();
+        huge.health = 9999;
+        assertFalse(huge.validate().stream().anyMatch(p -> p.contains("生命值")),
+                "9999 血不该在这里报 —— 装载侧已夹住，在这里报只是噪音。"
+                        + "★若你认为该报，请改Player#applyLoadedHealth 而不是改这条断言");
     }
 
     /**

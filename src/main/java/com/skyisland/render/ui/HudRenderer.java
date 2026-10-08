@@ -89,6 +89,9 @@ public final class HudRenderer {
             drawDeathOverlay(model, fbWidth, fbHeight);
         }
         drawEventMessage(model, fbWidth, fbHeight);
+        // M5a：时刻条画在**右上角**、且在调试 overlay 之外 ——
+        //   调试信息是可关的，而"现在几点、还有多久天黑"是玩法信息（PRD §4.4）。
+        drawDayStatus(model, fbWidth, fbHeight);
 
         if (model.showDebugOverlay) {
             drawDebugOverlay(model, fbWidth, fbHeight);
@@ -447,6 +450,38 @@ public final class HudRenderer {
                 "AIM %s [%s] %.2f m   Broke %d  Placed %d  Deaths %d",
                 model.targetBlockId, model.targetFace, model.targetDistance,
                 model.blocksBroken, model.blocksPlaced, model.deaths));
+    }
+
+    /**
+     * ★ M5a：右上角昼夜时刻条。
+     *
+     * <p><b>为什么放在右上角而不是跟着右下角的枪械面板</b>：
+     * 枪械面板只在手持枪时出现（{@code drawWeaponPanel} 的第一条就是
+     * {@code if (!model.holdingGun) return; }），而昼夜与手上拿什么无关 ——
+     * 挂在枪械面板上会导致"空手时看不到天要黑了"。
+     *
+     * <p><b>为什么下面那条进度条不是装饰</b>：它画的是<b>本阶段</b>进度。
+     * 只有倒计时文字时，玩家无法判断"黄昏还剩 1 分钟"与"夜晚还剩 1 分钟"是天差地别；
+     * 一条几乎走满的进度条明确地告诉玩家"马上要天黑了，该回去了"。
+     */
+    private void drawDayStatus(HudModel model, int fbWidth, int fbHeight) {
+        if (model.dayStatusLabel == null || model.dayStatusLabel.isEmpty()) {
+            return;
+        }
+        int scale = uiScale;
+        int right = fbWidth - 8 * scale;
+        int lineHeight = BitmapFont.lineHeight(scale) + 2 * scale;
+        int y = 6 * scale;
+        float[] color = model.dayIsNight ? UiTheme.TEXT_WARN : UiTheme.TEXT_PRIMARY;
+        float width = BitmapFont.textWidth(model.dayStatusLabel, scale);
+        batch.textWithBackground(right - width, y, model.dayStatusLabel, scale, 2 * scale,
+                UiTheme.PANEL_BG, color);
+        int barW = (int) Math.max(24 * scale, width);
+        int barH = 2 * scale;
+        int barY = y + lineHeight;
+        batch.rect(right - barW, barY, barW, barH, 0.16f, 0.16f, 0.18f, 1f);
+        float p = Math.max(0f, Math.min(1f, model.dayPhaseProgress));
+        batch.rect(right - barW, barY, barW * p, barH, color[0], color[1], color[2], 1f);
     }
 
     private int textLine(int x, int y, int scale, int lineHeight, float[] color, String text) {

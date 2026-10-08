@@ -52,6 +52,11 @@ package com.skyisland.player;
  * @param screenshotPressed 本帧是否按下截图（F2）
  * @param hotbarScroll  滚轮切槽增量（格数）
  * @param hotbarSlot    数字键直接选槽：-1 = 不选，0..8 = 目标槽
+ * @param sneak         是否按住潜行键（左/右 Shift，电平）。
+ *                      <b>M4-S8b 新增</b>：它是创造模式飞行的<b>下降</b>键。
+ *                      PRD §5.4 只写了"垂直速度可控"，没指定下降键；
+ *                      不补一个下降键的话，飞上去就下不来（连落地都做不到），
+ *                      飞行因此是不完整的 —— 这条填补的是 PRD 的留白而不是加需求。
  */
 public record PlayerIntent(
         float moveForward,
@@ -69,12 +74,33 @@ public record PlayerIntent(
         boolean savePressed,
         boolean screenshotPressed,
         int hotbarScroll,
-        int hotbarSlot
+        int hotbarSlot,
+        boolean sneak
 ) {
 
+    /**
+     * 兼容构造（旧 16 参签名）：{@code sneak} 缺省为 {@code false}。
+     *
+     * <p>存在的理由：{@code sneak} 是 M4-S8b 才加的组件，而自测脚本与夹具里
+     * 已有十几处 17 参构造点。为"多一个组件"去改十几个调用点，收益是签名更整齐，
+     * 代价是<b>每一处都要复核一次参数顺序</b> —— 而顺序错位在 record 上是<b>静默</b>的
+     * （两个 boolean 换位置照样编译得过）。留一个默认值明确的兼容构造更划算。
+     */
+    public PlayerIntent(float moveForward, float moveStrafe, boolean jump,
+                         double lookDeltaX, double lookDeltaY,
+                         boolean attackHeld, boolean attackPressed,
+                         boolean usePressed, boolean useHeld,
+                         boolean reloadPressed, boolean respawnPressed,
+                         boolean toggleDebugPressed, boolean savePressed,
+                         boolean screenshotPressed, int hotbarScroll, int hotbarSlot) {
+        this(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
+                attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
+                toggleDebugPressed, savePressed, screenshotPressed,
+                hotbarScroll, hotbarSlot, false);
+    }
     /** 空意图：不产生任何动作。用于"本帧没有输入"与自测脚本的静止帧。 */
     public static final PlayerIntent NONE = new PlayerIntent(
-            0f, 0f, false, 0, 0, false, false, false, false, false, false, false, false, false, 0, -1);
+            0f, 0f, false, 0, 0, false, false, false, false, false, false, false, false, false, 0, -1, false);
 
     public boolean hasMovement() {
         return moveForward != 0f || moveStrafe != 0f;
@@ -94,14 +120,14 @@ public record PlayerIntent(
     public PlayerIntent withLook(double deltaX, double deltaY) {
         return new PlayerIntent(moveForward, moveStrafe, jump, deltaX, deltaY,
                 attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
-                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot);
+                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot, sneak);
     }
 
     /** 复制本意图并替换滚轮切槽增量（同为帧级量，理由见 {@link #withLook}）。 */
     public PlayerIntent withScroll(int scrollSteps) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
                 attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
-                toggleDebugPressed, savePressed, screenshotPressed, scrollSteps, hotbarSlot);
+                toggleDebugPressed, savePressed, screenshotPressed, scrollSteps, hotbarSlot, sneak);
     }
 
     /**
@@ -115,7 +141,7 @@ public record PlayerIntent(
     public PlayerIntent withAttackPressed(boolean pressed) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
                 attackHeld, pressed, usePressed, useHeld, reloadPressed, respawnPressed,
-                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot);
+                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot, sneak);
     }
 
     /**
@@ -129,27 +155,27 @@ public record PlayerIntent(
     public PlayerIntent withUsePressed(boolean pressed) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
                 attackHeld, attackPressed, pressed, useHeld, reloadPressed, respawnPressed,
-                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot);
+                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot, sneak);
     }
 
     /** 复制本意图并替换"换弹按下沿"（R）。理由见 {@link #withUsePressed}。 */
     public PlayerIntent withReloadPressed(boolean pressed) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
                 attackHeld, attackPressed, usePressed, useHeld, pressed, respawnPressed,
-                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot);
+                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, hotbarSlot, sneak);
     }
 
     /** 复制本意图并替换数字键选槽（{@code -1} = 不选）。理由见 {@link #withUsePressed}。 */
     public PlayerIntent withHotbarSlot(int slot) {
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
                 attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
-                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, slot);
+                toggleDebugPressed, savePressed, screenshotPressed, hotbarScroll, slot, sneak);
     }
 
     /** 便于自测脚本构造：只关心移动与跳跃。 */
     public static PlayerIntent moving(float forward, float strafe, boolean jump) {
         return new PlayerIntent(forward, strafe, jump, 0, 0, false, false, false, false, false,
-                false, false, false, false, 0, -1);
+                false, false, false, false, 0, -1, false);
     }
 
     /**
@@ -159,13 +185,13 @@ public record PlayerIntent(
                                  double lookX, double lookY,
                                  boolean attackHeld, boolean usePressed) {
         return new PlayerIntent(forward, strafe, jump, lookX, lookY,
-                attackHeld, false, usePressed, false, false, false, false, false, false, 0, -1);
+                attackHeld, false, usePressed, false, false, false, false, false, false, 0, -1, false);
     }
 
     /** 便于自测脚本构造：只切换快捷栏槽位（十六个组件的 record 手写构造点越少越安全）。 */
     public static PlayerIntent selectSlot(int slot) {
         return new PlayerIntent(0f, 0f, false, 0, 0, false, false, false, false,
-                false, false, false, false, false, 0, slot);
+                false, false, false, false, false, 0, slot, false);
     }
 
     /**
@@ -180,7 +206,7 @@ public record PlayerIntent(
                                       boolean reloadPressed) {
         return new PlayerIntent(forward, strafe, jump, lookX, lookY,
                 attackHeld, false, false, useHeld, reloadPressed,
-                false, false, false, false, 0, -1);
+                false, false, false, false, 0, -1, false);
     }
 
     /** 复制本意图并把"强制重生"置为真（帧级边沿动作，由游戏层注入）。 */
@@ -188,6 +214,6 @@ public record PlayerIntent(
         return new PlayerIntent(moveForward, moveStrafe, jump, lookDeltaX, lookDeltaY,
                 attackHeld, attackPressed, usePressed, useHeld, reloadPressed,
                 true, toggleDebugPressed, savePressed, screenshotPressed,
-                hotbarScroll, hotbarSlot);
+                hotbarScroll, hotbarSlot, sneak);
     }
 }

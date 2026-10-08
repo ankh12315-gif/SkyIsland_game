@@ -31,6 +31,7 @@ import com.skyisland.render.fx.CombatFxModel;
 import com.skyisland.render.ui.HudModel;
 import com.skyisland.render.ui.MenuLayout;
 import com.skyisland.render.viewmodel.ViewmodelModel;
+import com.skyisland.save.LevelMeta;
 import com.skyisland.save.SaveFormat;
 import com.skyisland.save.SaveManager;
 import com.skyisland.save.SaveResult;
@@ -50,9 +51,14 @@ import com.skyisland.render.ui.InventoryRenderModel;
 import com.skyisland.settings.Action;
 import com.skyisland.util.Coords;
 import com.skyisland.util.Log;
+import com.skyisland.world.Chunk;
+import com.skyisland.world.ChunkStreamer;
+import com.skyisland.world.DayClock;
+import com.skyisland.world.DayPhase;
 import com.skyisland.world.World;
 import com.skyisland.world.block.Block;
 import com.skyisland.world.block.BlockRegistry;
+import com.skyisland.world.block.CreativePalette;
 import com.skyisland.world.gen.TestWorldGenerator;
 import org.joml.Vector3d;
 import org.lwjgl.glfw.GLFW;
@@ -290,6 +296,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             boolean combatSelfTest,
             boolean infiniteReserve,
             Loadout loadout,
+            GameMode gameMode,
             String startState
     ) {
         /**
@@ -324,6 +331,25 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             return Loadout.parse(raw);
         }
 
+        /**
+         * 游戏模式的解析（GL-free 静态纯函数，便于单测）。
+         *
+         * <p><b>与 {@link #parseLoadout} 同一条安全侧原则</b>：只有显式写
+         * {@code creative} 才切创造，属性缺失 / 错字 / 空串一律落
+         * {@link GameMode#SURVIVAL}（PRD §4.1「缺省即生存，防止手滑进创造毁档」）。
+         *
+         * <p><b>但这一格还多一条"存档优先"</b>：本方法返回的只是"配置怎么说"，
+         * 最终生效的模式由 {@code SaveManager#effectiveGameMode()} 按
+         * {@link GameMode#resolve} 决定 —— 存档里已有值时，命令行开关一律不生效
+         * （PRD §4.3「模式一旦创建，永不切换」）。
+         *
+         * <p>★ <b>不要</b>把"存档优先"实现在这里：那是本项目 P0b 修过一次的同类缺陷
+         * （把"该由谁决定"写在了错误的层，导致某一类存档的行为与另一类不同）。
+         */
+        static GameMode parseGameMode(String raw) {
+            return GameMode.parse(raw);
+        }
+
         static M1Config fromSystemProperties() {
             Path saveRoot = SaveFormat.resolveSaveRoot();
             return new M1Config(
@@ -355,6 +381,10 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                     //   步枪与过渡材料包只属于 DEV / TEST 口径：门禁与 play-m3.bat 显式传 dev。
                     //   详见 Loadout 的类注释（"为什么必须拆开"）。
                     parseLoadout(System.getProperty(Loadout.SYSTEM_PROPERTY)),
+                    // ★ M4-S6：游戏模式。默认 SURVIVAL（PRD §4.1 缺省即生存）。
+                    //   存档优先由 SaveManager.effectiveGameMode() 负责，
+                    //   这里的值只在"该存档还没有 gameMode 字段"时被写盘。
+                    parseGameMode(System.getProperty(GameMode.SYSTEM_PROPERTY)),
                     System.getProperty("skyisland.startState", "")
             );
         }
@@ -435,6 +465,22 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
      */
     private final CraftingPanel craftingPanel = new CraftingPanel();
 
+    // ============================================================ M4-S7：创造面板
+    /**
+     * ★ 创造面板的分组视图；{@code null} = 生存模式（本字段保持 null）。
+     *
+     * <p>★ <b>它在读档之后才建，且只在创造模式下建</b>：
+     * 门控判据是 {@link SaveManager#effectiveGameMode()}（存档定死，PRD §4.3），
+     * 而<b>不是</b> {@code -Dskyisland.gameMode} —— 后者只对"还没定死"的世界有效，
+     * 用它门控会让"用创造存档启动却带了 survival 开关"的世界凭空多出创造面板。
+     *
+     * <p>★ <b>它是一个字段而不是每帧 {@code CreativePalette.build()}</b>：
+     * {@code build()} 会遍历整个 {@code BlockRegistry} 并排序，每帧调一次是纯浪费；
+     * 更要紧的是"每帧一个新对象"会让 {@code InventoryRenderer} 的布局缓存
+     * 每帧失效 —— 而缓存失效的失败模式是<b>看不出</b>的（只是变慢，不是变错）。
+     */
+    private CreativePalette.CreativeView creativeView;
+
     // ---- M1.5：设置与界面 ----
     private GameSettings settings;
     private SettingsStore.LoadResult settingsLoad;
@@ -454,6 +500,13 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     private Player player;
     private SaveManager saveManager;
     private Renderer renderer;
+    /**
+     * ★ M4-S8a：以玩家为中心的区块流式加载 / 卸载。
+     *
+     * <p>它是 {@code world} 的<b>附属品</b>而不是独立的系统：换世界（新建世界）
+     * 必须换它，因为流式的中心与"这个世界加载了哪些区块"是一件事。
+     */
+    private ChunkStreamer chunkStreamer;
 
     // ---- M2：战斗 ----
     /** 世界上会动的东西（M2 起只有近战怪）。 */
@@ -470,6 +523,19 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     private boolean aimHintShown;
     /** 是否已经给过"首次进入世界"的操作提示（PRD 6.7：仅首次）。 */
     private boolean firstJoinHintShown;
+    /** 飞行状态的上一次观测值（M4-S8b：只在切换时提示一次）。 */
+    private boolean wasFlying;
+
+    /**
+     * ★ M5a：昼夜时钟（PRD §4.4，20 分钟一个昼夜）。
+     *
+     * <p><b>它归本类所有而不是 {@code World}</b>：
+     * 昼夜是<b>整局游戏</b>的属性而不是世界数据 —— 世界可以被换（新开一局、
+     * 读档重建），而"现在是第几天"必须跟着玩家延续。
+     * 放进 {@code World} 会让它在 {@code startNewWorld()} 里被悄悄重置，
+     * 而那次重置的现场是"玩家新建了一个世界"，看起来完全无害。
+     */
+    private DayClock dayClock;
     /** 表现层种子的递增源：让"同一次运行"里的粒子分布可复现。 */
     private long fxSeedCounter;
 
@@ -752,6 +818,13 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
     private final long startedAtNanos = System.nanoTime();
     private String glErrorSeen;
 
+    // ---- P3：堆内存采样 ----
+    // ★ 采样间隔用「秒」而不是「帧」：不限帧率时每帧不足 1 ms，
+    //   按帧采样会每秒几千个样本（无信息量）且让采样本身成为负载。
+    private static final double HEAP_SAMPLE_INTERVAL_SECONDS = 1.0;
+    private final HeapSampler heap = new HeapSampler();
+    private double lastHeapSampleSeconds;
+
     // ---- M1.5：模拟推进计数（暂停证明用）----
     private int simulationSteps;
     private long pausedStepSkips;
@@ -990,25 +1063,40 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         input.seedCursor(cursor[0], cursor[1]);
 
         // ---------- 2) 世界与玩家 ----------
-        // 顺序不可调换：先 ensureAreaLoaded 生成全部区块，再读档应用增量。
-        // 存档的 applySavedBlock 要求目标区块<u>已加载</u>，否则改动会被跳过并告警 ——
-        // 反过来做会得到"读档成功但改动全丢"这种最难查的静默失败。
+        // ★ M4-S8a：世界不再是"一次性生成固定 4×4 并全部常驻"，而是以玩家为中心的
+        //   **按需加载 + 走出半径卸载**。因此这里的 ensureAreaLoaded 换成了流式装配：
+        //   attachStreaming 会以出生点为中心，把半径内的区块一次性补齐（无预算），
+        //   之后的渐变由 stepLogic 每步按预算驱动。
+        //
+        // ★ 读档仍然排在生成之后：存档的 applySavedBlock 要求目标区块**已加载**，
+        //   否则改动会被跳过并告警 —— 反过来做会得到"读档成功但改动全丢"这种
+        //   最难查的静默失败。流式之后这条顺序反而更重要了：
+        //   只有在半径内的区块才会在这一步被应用。
         world = new World(config.seed(), new TestWorldGenerator());
         player = new Player(TestWorldGenerator.spawnX(),
                 TestWorldGenerator.spawnY(), TestWorldGenerator.spawnZ());
         long genStart = System.nanoTime();
-        world.ensureAreaLoaded(TestWorldGenerator.MIN_CHUNK, TestWorldGenerator.MIN_CHUNK,
-                TestWorldGenerator.MAX_CHUNK, TestWorldGenerator.MAX_CHUNK);
-        Log.info("[世界] 已生成 %d 个区块（%d×%d），耗时 %.1f ms —— %s",
-                world.loadedChunkCount(),
-                TestWorldGenerator.MAX_CHUNK - TestWorldGenerator.MIN_CHUNK + 1,
-                TestWorldGenerator.MAX_CHUNK - TestWorldGenerator.MIN_CHUNK + 1,
+        attachStreaming(TestWorldGenerator.spawnX(), TestWorldGenerator.spawnZ());
+        Log.info("[世界] 已生成 %d 个区块（流式半径 %d，保留半径 %d），耗时 %.1f ms —— %s",
+                world.loadedChunkCount(), chunkStreamer.radius(), chunkStreamer.keepRadius(),
                 (System.nanoTime() - genStart) / 1e6, world.statsLine());
 
         // ---------- 3) 存档：有则读，无则新世界 ----------
-        saveManager = new SaveManager(config.saveRoot(), config.worldName());
+        // ★ M4-S6：把配置的游戏模式交给 SaveManager，由它按"存档优先"决定真正生效的模式。
+        saveManager = new SaveManager(config.saveRoot(), config.worldName(), config.gameMode());
+        // ★ M5a：时钟必须在读档**之前**建好，读档之后立刻回填时刻与天数。
+        //   总时长可由 -Dskyisland.dayLengthSeconds 缩放（自测与试玩要能快进）。
+        dayClock = new DayClock(DayClock.totalSecondsFromProperty());
         if (saveManager.worldExists()) {
             initialLoadResult = saveManager.loadInto(world, player);
+            // ★ M5a：把存档里的时刻与天数回填给时钟。
+            //   旧存档没有这两个字段（LevelMeta 里是包装类型，判据是 != null），
+            //   此时 applyWorldTime 返回 false，时钟保持"白天开头、第 1 天"。
+            if (saveManager.applyWorldTime(dayClock)) {
+                Log.info("[昼夜] 已从存档恢复：%s", dayClock.statusLine());
+            } else {
+                Log.info("[昼夜] 存档没有时间字段（旧存档），本局从 %s 开始", dayClock.statusLine());
+            }
             if (initialLoadResult.success()) {
                 showEvent(Localization.text(Localization.MSG_WORLD_LOADED,
                         config.worldName(), initialLoadResult.chunksLoaded(),
@@ -1021,6 +1109,31 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             showEvent(Localization.text(Localization.MSG_WORLD_STARTED,
                     config.worldName(), config.seed()), 4.0);
             Log.info("[存档] 未找到 %s，按新世界启动", saveManager.worldDirectory());
+        }
+
+        // ★ M4-S6：saveManager 就绪后补打生效模式（banner 阶段它还是 null，见 logStartupBanner 注释）。
+        //   放在读档之后而不是紧跟 new：effectiveGameMode() 只读磁盘、不依赖读档结果，
+        //   但这样排日志读起来是「先看到世界加载结果 → 再看到模式判定」，符合排查顺序。
+        logEffectiveGameMode();
+
+        // ---------- 3.1) M4-S7：创造面板（仅创造模式）----------
+        // ★ 门控用 effectiveGameMode()（存档定死）而不是 config.gameMode()：
+        //   后者只对"尚未定死"的世界有效，用它门控会让"创造存档 + survival 开关"
+        //   的世界凭空多出一个创造面板 —— 而那是**用 UI 绕过了模式锁定**（PRD §4.3）。
+        // ★ M4-S8b：创造能力总开关（PRD §5.2–§5.5 五项）。
+        //   门控与下面的创造面板用<b>同一个</b>取值，而不是各自再判一次 ——
+        //   分开判会出现"有面板但挖不动"或"能飞却没有面板"，
+        //   而这两种都是"模式只生效了一半"，排查时会被当成两个独立的 bug。
+        boolean creative = saveManager.effectiveGameMode() == GameMode.CREATIVE;
+        player.setCreativeMode(creative);
+        if (creative) {
+            CreativePalette palette = CreativePalette.build();
+            creativeView = palette.view(InventoryLayout.CREATIVE_COLUMNS);
+            Log.info("[创造] 面板就绪：%d 格（口径 playerBlockCount=%d），标签页已开启；"
+                            + "创造五项能力已开（瞬时破坏 / 放置不消耗 / 免疫伤害 / 虚空不死 / 双击空格飞行）",
+                    creativeView.size(), BlockRegistry.playerBlockCount());
+        } else {
+            creativeView = null;
         }
 
         // ---------- 3.5) 进程重启级的持久化校验（可选） ----------
@@ -1122,6 +1235,13 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             //   "正式玩法到底消耗不消耗弹药"重新变成一件看不出来的事。
             //   显式设定 → 这条选择在代码里可见、可被测试断言，正式玩法一个字都不受影响。
             combat.setReserveMode(GunState.ReserveMode.PROTOTYPE);
+        }
+
+        // ★ M4-S8a：自测一旦装配起来，就关掉区块卸载。
+        //   装配顺序决定了这里必须补一次：attachStreaming 在第 2 节（世界创建时）跑，
+        //   而自测对象要到第 7 节才 new 出来 —— 那时它看到的是"没有自测"。
+        if (chunkStreamer != null && isAutoVerification()) {
+            chunkStreamer.setUnloadEnabled(false);
         }
 
         loop = new GameLoop(/* frameRateCapFps = */ 0);   // 0 = 不限速，测量真实吞吐
@@ -1415,10 +1535,72 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //   "开局怎么没有步枪 / 怎么有一堆材料"这个问题的答案必须在日志里，而不是在代码里。
         Log.info("开局装备口径        : %s（-D%s=dev 才切 DEV）",
                 config.loadout().describe(), Loadout.SYSTEM_PROPERTY);
+        // ★ M4-S6：游戏模式（PRD §4.2【必须】"启动日志打印一行 游戏模式 : 生存 / 创造"）。
+        //
+        // ★★ 这里是本项目最贵的一次教训：banner 在 start() 的第 982 行被调用，
+        //   而 saveManager 要到第 1009 行才 new 出来 —— **早 27 行**。
+        //   我最初在这里打 saveManager.effectiveGameMode()，结果
+        //   **三档门禁（m1/ui/m2）全部 NPE 崩溃，而 1267 条单测全绿**。
+        //   原因：单测全部直接 new SaveManager，**没有任何一条走 SkyIslandGame.start()
+        //   这条真实启动路径** ⇒ 启动顺序没人管。
+        //   ⇒ 这不是"加个 null 判空"能解决的：判空会让这一行**静默不打印**，
+        //   而"静默不打印"恰好是 §4.2【必须】要防的事。
+        // ⇒ 现在的做法：banner 阶段先打**配置值**（此时确实只知道配置），
+        //   并明确标注"以存档为准"；saveManager 就绪后再打一次**生效值**（见
+        //   logEffectiveGameMode）。两行都在，玩家与排查者都能定性。
+        Log.info("游戏模式(配置)      : %s（-D%s=creative 才切创造；实际生效值以存档为准，见下一行）",
+                config.gameMode().displayName(), GameMode.SYSTEM_PROPERTY);
         Log.info("输入来源            : %s", config.selfTest() || config.combatSelfTest()
                 ? "进程内脚本化意图（TR7：本机无法注入合成键盘输入）"
                 : "GLFW 真实键鼠");
         Log.info("方块注册表          : %d 种", BlockRegistry.size());
+    }
+
+    /**
+     * ★ M4-S6：<b>在 {@code saveManager} 就绪之后</b>打印真正生效的游戏模式。
+     *
+     * <p>★ <b>为什么必须分两次打印</b>：banner 阶段（{@code start()} 第 982 行）
+     * 还没有 {@code saveManager}，而模式按 §4.3 又是<b>存档优先</b>的 ——
+     * 那时能确定的只有"配置说了什么"。两次打印合起来才把话说完整：
+     * <ul>
+     *   <li>第一次（banner）：配置值 + 明确标注"以存档为准"；</li>
+     *   <li>第二次（本方法）：生效值 + <b>是谁定的</b>。</li>
+     * </ul>
+     *
+     * <p>★ <b>不要为了省一行而合并，也不要在 banner 里 null 判空</b>：
+     * 判空会让这一行在旧存档上"恰好不打印"，而那正是 §4.3 争议最难查的情形。
+     */
+    private void logEffectiveGameMode() {
+        Log.info("游戏模式(生效)      : %s（%s）",
+                saveManager.effectiveGameMode().displayName(),
+                describeGameModeSource());
+    }
+
+    /**
+     * ★ 说明"当前生效的游戏模式是<b>谁</b>定的"（PRD §4.3 的排查入口）。
+     *
+     * <p><b>为什么这行不能省</b>：§4.3 裁定模式不可切换，于是
+     * {@code -Dskyisland.gameMode=creative} 在新存档上生效、在旧存档上<b>静默不生效</b>。
+     * 只打最终模式时，玩家看到"生存"却想不通"我明明加了参数" ——
+     * 而答案（这个存档早就定死了）只存在于某个人脑子里。
+     * 打印来源之后，那一行日志本身就把话说完了。
+     *
+     * <p>三种来源，与 {@link GameMode#resolve} 的分支一一对应：
+     * <ul>
+     *   <li><b>存档已定</b>：{@code level.json} 里有 {@code gameMode} → 不可改（§4.3）；</li>
+     *   <li><b>命令行</b>：存档没有该字段（本轮首次创建）→ 由 {@code -Dskyisland.gameMode} 决定；</li>
+     *   <li><b>缺省</b>：两者都没有 → 生存（§4.1「缺省即生存」）。</li>
+     * </ul>
+     */
+    private String describeGameModeSource() {
+        LevelMeta existing = saveManager == null ? null : saveManager.readLevelMeta();
+        if (existing != null && existing.recordedGameMode() != null) {
+            return "由存档定死（存档值 " + existing.recordedGameMode() + "，不可中途切换）";
+        }
+        if (config.gameMode() != GameMode.DEFAULT) {
+            return "由命令行 -D" + GameMode.SYSTEM_PROPERTY + " 指定（本存档首次创建，将写盘）";
+        }
+        return "缺省即生存";
     }
 
     /** 打印操作说明与验收闭环清单。 */
@@ -2043,6 +2225,13 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             audio.play(AudioEvent.UI_CLOSE);
             inventoryModel.visible = false;
             inventoryModel.hoverSlot = -1;
+            // ★ M4-S7：关背包时把标签页拉回背包。
+            //   否则玩家在创造页按 E 关闭、再按 E 打开时，面板直接出现在创造页 ——
+            //   而多数玩家 reopen 的目的是"看一眼背包还剩多少材料"。
+            //   症状对照：不重置的话，第一次关背包就再也回不到 36 格那页（除非先点标签）。
+            inventoryModel.activeTab = InventoryRenderModel.Tab.BACKPACK;
+            inventoryModel.hoverCreativeEntry = -1;
+            inventoryModel.hoverTab = -1;
             Log.info("[界面] 关闭背包");
         }
     }
@@ -2082,14 +2271,64 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         inventoryModel.mouseX = fb[0];
         inventoryModel.mouseY = fb[1];
 
+        // ★ M4-S7：门控在这里再判一次，而不是只靠启动时建不建 creativeView。
+        //   单点门控的失败模式是"启动时是生存、中途被改成创造"（本项目当前不允许，
+        //   但 §4.3 的锁定语义正是在防这件事）—— 那时 tabs 仍是 1，
+        //   于是点"创造"什么也不会发生，而画面上确实只有「背包」一个标签。
+        //   反过来（tabs==2 但 view 为 null）则会让标签条点得动、点进去是空白。
+        inventoryModel.tabs = creativeView == null ? 1 : 2;
+        if (inventoryModel.tabs == 1 && inventoryModel.activeTab != InventoryRenderModel.Tab.BACKPACK) {
+            // 无面板可显示时把标签页**拉回**背包，而不是保持一个画不出来的页。
+            // 症状对照：保持 CREATIVE 会让内容区整片空掉，且底部提示写着"单击取满一组"——
+            // 一个没有任何格子可点的界面，却明确告诉你这里可以取东西。
+            inventoryModel.activeTab = InventoryRenderModel.Tab.BACKPACK;
+        }
+
         InventoryLayout layout = renderer.inventoryRenderer()
-                .ensureLayout(fbWidth, fbHeight, craftingPanel.size());
+                .ensureLayout(fbWidth, fbHeight, craftingPanel.size(),
+                        inventoryModel.tabs,
+                        creativeView == null ? null : creativeView.rows());
+
+        // ---- 标签页（先判标签，后判内容）----
+        // ★ 顺序不是随意的：标签条与内容区不重叠，因此两条通道可以独立判定；
+        //   但"点了标签就切页"必须**不穿透**到内容区 —— 标签条紧贴内容区上沿，
+        //   若不 return，一次点标签会同时"切页 + 点中切页后那一页的第一格"。
+        int hoveredTab = layout.hitTestTabAny(inventoryModel.mouseX, inventoryModel.mouseY);
+        inventoryModel.hoverTab = hoveredTab;
+        boolean pressed = input.wasMouseButtonPressed(GLFW.GLFW_MOUSE_BUTTON_1);
+        if (hoveredTab >= 0) {
+            if (pressed) {
+                InventoryRenderModel.Tab target = InventoryRenderModel.Tab.of(hoveredTab);
+                if (target != null && target != inventoryModel.activeTab) {
+                    inventoryModel.activeTab = target;
+                    // ★ 换页后必须清掉另一页的悬停态：hoverSlot 描述的是"背包第几格"，
+                    //   拿到创造页上毫无意义，而它会顺带触发背包 tooltip 画在创造面板上。
+                    inventoryModel.hoverSlot = -1;
+                    inventoryModel.hoverCraftRow = -1;
+                    inventoryModel.hoverCreativeEntry = -1;
+                    audio.play(AudioEvent.UI_MOVE);
+                }
+            }
+            return;
+        }
+
+        // ---- 创造面板（仅创造页）----
+        if (inventoryModel.creativePanelActive()) {
+            int hoveredEntry = layout.hitTestCreativeAny(inventoryModel.mouseX, inventoryModel.mouseY);
+            inventoryModel.hoverCreativeEntry = hoveredEntry;
+            if (hoveredEntry >= 0 && pressed) {
+                takeFromCreativePalette(hoveredEntry);
+            }
+            return;
+        }
+        // 非创造页：创造面板的悬停态必须清零，否则切回背包时它还留着
+        // （症状：背包页左上角凭空高亮一个不存在的格子）。
+        inventoryModel.hoverCreativeEntry = -1;
+
         int hovered = layout.hitTestAny(inventoryModel.mouseX, inventoryModel.mouseY);
         inventoryModel.hoverSlot = hovered;
         int hoveredRow = layout.hitTestCraftAny(inventoryModel.mouseX, inventoryModel.mouseY);
         inventoryModel.hoverCraftRow = hoveredRow;
-
-        boolean pressed = input.wasMouseButtonPressed(GLFW.GLFW_MOUSE_BUTTON_1);
 
         // ---- 合成区优先 ----
         // 两个区域在几何上不重叠，因此"优先"不是为了解决冲突，而是为了让
@@ -2128,6 +2367,44 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         // 一次搬运之后背包内容变了（取走 / 放下 / 合并 / 交换都会改变"我有什么"），
         // 因此合成栏必须重新评估 —— 否则会出现"刚把铁矿放进背包，合成栏还显示缺料"。
         craftingPanel.refresh(player.inventory());
+    }
+
+    /**
+     * ★ M4-S7：从创造面板取一组方块到手上（PRD §5.1「取出」行）。
+     *
+     * <p>规格原文：「单击取满一组（64）；<b>不占用背包格</b>，直接从面板进手持」。
+     * 因此落点是 {@link Inventory#setCursorStack}（光标堆），
+     * <b>不是</b> {@code add()} —— 用 {@code add()} 会让 64 个方块占掉 1~2 格背包，
+     * 而规格明确说不占格；更糟的是玩家会以为"背包满了就不能拿了"，
+     * 于是创造模式被误当成生存模式。
+     *
+     * <p>★ <b>手上已有东西时必须拒绝并说出来，不能静默覆盖</b>：
+     * 静默覆盖等于凭空销毁玩家手上的物品，而 M2 已经定过一条铁律 ——
+     * 物品不得凭空消失或复制（无掉落物实体时尤其致命）。
+     * 提示走 {@code showEventDeduped}（与背包搬运失败同一条通道）。
+     */
+    private void takeFromCreativePalette(int entryIndex) {
+        if (creativeView == null) {
+            return;
+        }
+        CreativePalette.Entry entry = creativeView.at(entryIndex);
+        if (entry == null) {
+            return;
+        }
+        Inventory inv = player.inventory();
+        ItemStack held = inv.cursorStack();
+        if (!held.isEmpty() && held.itemRuntimeId() != entry.itemRuntimeId()) {
+            // 同种可以叠满后继续取满（"取满一组"= 目标 64，不是"再加 64"）。
+            // 不同种则拒绝：手上那一堆是玩家刚搬出来的东西，覆盖它就是销毁。
+            showEventDeduped("creative_hands_busy",
+                    Localization.text(Localization.MSG_CREATIVE_HANDS_BUSY), 2.0);
+            audio.play(AudioEvent.UI_DENIED);
+            return;
+        }
+        int already = held.isEmpty() ? 0 : held.count();
+        int want = Math.max(already, entry.stackSize());
+        inv.setCursorStack(ItemStack.of(entry.itemRuntimeId(), want));
+        audio.play(AudioEvent.UI_MOVE);
     }
 
     /** 当前界面下的菜单屏；游玩中没有菜单。 */
@@ -2206,10 +2483,13 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         // ① 先释放旧网格。理由见上：IdentityHashMap 按对象身份索引，换 World 等于换键。
         renderer.chunkRenderer().disposeAll();
 
-        // ② 全新世界 + 把全部开局区块的网格建回来
+        // ② 全新世界 + 以出生点为中心把流式半径内的区块补齐
         world = new World(config.seed(), new TestWorldGenerator());
-        world.ensureAreaLoaded(TestWorldGenerator.MIN_CHUNK, TestWorldGenerator.MIN_CHUNK,
-                TestWorldGenerator.MAX_CHUNK, TestWorldGenerator.MAX_CHUNK);
+        // ★ M5a：新世界从"白天开头、第 1 天"开始 —— 与首次启动同一时刻。
+        //   不重置的话，玩家在第 3 天夜里新建世界会直接站在几乎全黑的夜里，
+        //   看上去像"世界坏了"。
+        dayClock = new DayClock(dayClock.totalSeconds());
+        attachStreaming(TestWorldGenerator.spawnX(), TestWorldGenerator.spawnZ());
         warmUpMeshes();
 
         // ③ 玩家复位。刻意不 new 一个 Player：别处（音频轮询、反馈链、自测宿主）
@@ -2235,6 +2515,72 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                     + "（世界仍在内存中，退出时还会再存一次）");
         }
         showEvent(Localization.text(Localization.MSG_WORLD_RESET), 5.0);
+    }
+
+    // ============================================================ M4-S8a 区块流式
+
+    /**
+     * 给（可能是刚新建的）世界接上流式加载与卸载，并以给定坐标为中心把半径内补齐。
+     *
+     * <p><b>三件必须同时接上的事</b>，少一件都会得到"能跑但慢慢坏"的失效：
+     * <ol>
+     *   <li>{@link World.ChunkUnloadListener} —— 卸载时释放 GPU 网格并把脏区块落盘；</li>
+     *   <li>{@link World.ChunkDeltaSource} —— 区块生成时立刻回放它自己的存档差异；</li>
+     *   <li>{@code ChunkStreamer} 本身 —— 按玩家位置维护"该加载哪些"。</li>
+     * </ol>
+     * 三者都挂在 {@code World} 上而不是散在本类的各个调用点，是因为
+     * "加载一个区块"这件事只有 {@link World#getOrLoadChunk} 一个入口 ——
+     * 钩子挂在那里，任何绕过清理的路径都不存在。
+     */
+    private void attachStreaming(double centerX, double centerZ) {
+        world.setChunkUnloadListener(this::onChunkUnloaded);
+        world.setChunkDeltaSource(this::applySavedChunkDelta);
+        chunkStreamer = new ChunkStreamer(world, streamRadius());
+        // ★ 自测期间不卸载：脚本的断言读的是 World 的当前状态，
+        //   让区块在它脚下消失会把"断言红"变成"偶发红"，而偶发红没有诊断价值。
+        chunkStreamer.setUnloadEnabled(!isAutoVerification());
+        chunkStreamer.reset(centerX, centerZ);
+    }
+
+    /** 加载半径；{@code -Dskyisland.chunkRadius=N} 可覆盖（调参与压测用）。 */
+    private static int streamRadius() {
+        int radius = Integer.getInteger("skyisland.chunkRadius", ChunkStreamer.DEFAULT_RADIUS);
+        if (radius < 1) {
+            Log.noteWarning("世界", "skyisland.chunkRadius=" + radius + " 非法，回落到 "
+                    + ChunkStreamer.DEFAULT_RADIUS);
+            return ChunkStreamer.DEFAULT_RADIUS;
+        }
+        return radius;
+    }
+
+    /**
+     * 区块被卸载：释放它的 GPU 网格，并把玩家在里面的改动落盘。
+     *
+     * <p><b>两件事的顺序不能反、也不能只做一件：</b>
+     * 只释放网格 → 走回来时挖掉的坑又长回来了（增量没写）；
+     * 只落盘 → 显存一路涨，跑十分钟才看得出来。
+     */
+    private void onChunkUnloaded(Chunk chunk) {
+        if (renderer != null) {
+            renderer.chunkRenderer().releaseMesh(chunk);
+        }
+        if (saveManager != null && chunk.isSaveDirty()) {
+            SaveResult r = saveManager.saveChunk(world, chunk);
+            if (!r.success()) {
+                Log.noteWarning("存档", "区块 (" + chunk.cx() + "," + chunk.cz()
+                        + ") 卸载前落盘失败：" + r.summary());
+            }
+        }
+    }
+
+    /** 是否正在跑任何一种自动化验证（脚本化自测 / 界面自测 / 战斗自测）。 */
+    private boolean isAutoVerification() {
+        return selfTest != null || uiSelfTest != null || combatSelfTest != null;
+    }
+
+    /** 区块生成时回放它自己的存档差异（saveManager 尚未创建时恒为 0，见 attachStreaming）。 */
+    private int applySavedChunkDelta(World target, int cx, int cz) {
+        return saveManager == null ? 0 : saveManager.applyChunkDelta(target, cx, cz);
     }
 
     private void activateEntry(String entryId) {
@@ -2410,6 +2756,13 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         simulationSteps++;
 
         elapsedSeconds += fixedDt;
+
+        // ★ M5a：昼夜时钟。
+        //   与 elapsedSeconds 用**同一个** fixedDt —— 两者的"时间"必须是同一个时间，
+        //   否则暂停/掉帧之后，画面里的时刻会与性能读数对不上（极难归因）。
+        //   跨过黎明的结算点由 DayClock 内部计数，这里不需要知道，也不需要通知谁。
+        dayClock.advance(fixedDt);
+
         tickEventMessage(fixedDt);
 
         // ---- 预热结束：重置统计，开始正式测量 ----
@@ -2417,7 +2770,21 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             warmupDone = true;
             loop.stats().reset();
             input.resetStats();
+            // ★ 内存统计与帧统计**必须同一次重置**。
+            //   分开放会让两个窗口错开（内存从启动算、帧从预热后算），
+            //   于是"每帧堆增长"这种最关键的读数会算在错误的分母上，
+            //   而那个读数恰恰是判断泄漏的依据。
+            heap.reset();
             Log.info("[测量] 预热结束（%.1f 秒），统计已重置，正式测量开始。", elapsedSeconds);
+        }
+
+        // ---- 周期采样：内存（P3：给「不占过多内存」一个可举证的数字）----
+        // ★ 采样必须<b>按真实时间</b>而不是按帧数：不限帧率时每帧不到 1 ms，
+        //   按帧数采样会得到「每秒几千个样本」而没有额外信息，
+        //   且 1 秒一次正好与 GC 的量级对齐。
+        if (elapsedSeconds - lastHeapSampleSeconds >= HEAP_SAMPLE_INTERVAL_SECONDS) {
+            heap.sample((long) ((elapsedSeconds - lastHeapSampleSeconds) * 1000.0), false);
+            lastHeapSampleSeconds = elapsedSeconds;
         }
 
         // ---- 周期进度 ----
@@ -2431,6 +2798,11 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         if (config.autoExit() && !measurementDone && elapsedSeconds >= config.totalSeconds()) {
             measurementDone = true;
             Log.info("[测量] 达到计划时长 %.0f 秒，准备收尾。", elapsedSeconds);
+            // ★ P3：退出前做一次**强制 GC** 采样。
+            //   usedHeap 会被"GC 还没来得及跑"放大，而 usedAfterGc 才是活对象的硬证据。
+            //   这是全程唯一允许 forceGc 的地方 —— 它是 STW，放进每帧路径就是自己制造卡顿。
+            heap.sample((long) ((elapsedSeconds - lastHeapSampleSeconds) * 1000.0), true);
+            lastHeapSampleSeconds = elapsedSeconds;
             window.requestClose();
         }
 
@@ -2454,6 +2826,15 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         }
         if (intent.hotbarScroll() != 0) {
             player.inventory().cycleSlot(intent.hotbarScroll());
+        }
+
+        // ---- M4-S8a：区块流式加载 / 卸载 ----
+        // ★ 必须排在物理<u>之前</u>：物理会读脚下与周围的方块，而"未加载"一律读作空气。
+        //   若先物理再加载，玩家跨过区块边界的那一步会站在空气上开始自由落体。
+        //   半径（默认 4 块 = 64 格）远大于单步位移（不足 0.1 格），
+        //   因此"即将进入的区块"总是提前很久就生成好了。
+        if (chunkStreamer != null) {
+            chunkStreamer.update(player.position().x, player.position().z);
         }
 
         // ---- 物理 / 交互 ----
@@ -2480,6 +2861,7 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         // 2026-10-03：回落速度也来自当前枪的后坐档案（手枪 5.0 / SMG 2.4 / 步枪 4.0 度每秒）。
         player.camera().decayRecoil(fixedDt, heldRecoilProfile());
         updateAimHint();
+        updateFlightNotice();
 
         if (selfTest != null) {
             selfTest.observeAfterStep(player);
@@ -2509,6 +2891,23 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             showEvent(Localization.text(Localization.MSG_AIM_HINT), 3.0);
         }
         wasAiming = aiming;
+    }
+
+    /**
+     * 飞行开关的可见反馈（PRD §5.4）。
+     *
+     * <p><b>只在状态变化时提示一次</b>，与 {@link #updateAimHint} 同一条纪律：
+     * 每步都弹一行字会让玩家立刻开始讨厌它。
+     * 而"完全不提示"更糟 —— 双击空格是本项目自己选的键位（PRD 未指定），
+     * 不告诉玩家就没有人知道它存在。
+     */
+    private void updateFlightNotice() {
+        boolean flying = player.isFlying();
+        if (flying == wasFlying) {
+            return;
+        }
+        wasFlying = flying;
+        showEvent(Localization.text(flying ? Localization.MSG_FLY_ON : Localization.MSG_FLY_OFF), 3.0);
     }
 
     /** 取本逻辑步应当施加的意图。 */
@@ -2600,6 +2999,10 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         //   设计文档早就把这条失败模式写在失败模式表里了："挖了方块但视觉不变"。
         renderer.processMeshRebuilds(world);
 
+        // ★ M5a：先把昼夜交给渲染器，再清屏 —— clear() 也要用它插值天空色。
+        //   顺序反了的话，本帧天空用旧值、地形用新值，
+        //   症状是"天空与地面的明暗对不上"，而那不会让任何单测变红。
+        renderer.setDaylight(dayClock);
         renderer.clear();
         // 玩家一起传进去：裂纹叠加层需要"当前挖掘目标 + 进度"。
         // 菜单期间 player 非 null 但玩家没有挖掘动作，叠加层自然不画。
@@ -2742,6 +3145,16 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         hud.localX = Coords.localFast(hud.blockX);
         hud.localZ = Coords.localFast(hud.blockZ);
 
+        // ★ M5a：时刻条。文案由 Localization 格式化（PRD 6.7 禁止 UI 拼句子）；
+        //   阶段名来自 DayPhase（领域名），本类不持有任何中文字面量。
+        long dayLeft = (long) Math.ceil(dayClock.phaseSecondsLeft());
+        DayPhase dayPhase = dayClock.phase();
+        hud.dayStatusLabel = Localization.text(Localization.HUD_DAY_STATUS,
+                dayClock.dayCount(), dayPhase.displayName(), dayLeft / 60, dayLeft % 60);
+        hud.dayPhaseProgress = (float) dayClock.phaseProgress();
+        // ★ 黄昏算夜晚：PRD §4.4 把"开始刷怪"记在黄昏，
+        //   时刻条若在黄昏仍是白的，玩家会以为"还没开始"。
+        hud.dayIsNight = dayPhase == DayPhase.DUSK || dayPhase == DayPhase.NIGHT;
         hud.loadedChunks = world.loadedChunkCount();
         hud.meshCount = renderer.chunkRenderer().meshCount();
         hud.pendingMeshRebuilds = world.pendingMeshRebuilds();
@@ -2861,6 +3274,11 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         inventoryModel.inventory = player.inventory();
         inventoryModel.selectedHotbarSlot = player.inventory().selectedSlot();
         inventoryModel.craftingPanel = craftingPanel;
+        // ★ 视图是同一个引用（启动时建一次），这里只是把它交给渲染层。
+        //   绝不能在这里现 build：每帧新建对象会让渲染层的布局缓存每帧失效，
+        //   而缓存失效的失败模式是**看不出来**的（只是变慢，不是变错）——
+        //   那种"悄悄劣化"比崩溃更难在事后追认。
+        inventoryModel.creativeView = creativeView;
 
         hud.extraDebugLines.clear();
         String mode = selfTest != null ? "M1 脚本化自测"
@@ -2869,6 +3287,18 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         hud.extraDebugLines.add("模式 " + mode + "  UI " + ui.state().label()
                 + "  世界 " + config.worldName() + "  seed=" + config.seed());
         hud.extraDebugLines.add("存档 " + saveManager.worldDirectory());
+        if (player.isCreativeMode()) {
+            hud.extraDebugLines.add(String.format("创造模式  飞行=%s  免疫伤害 %d 次",
+                    player.isFlying() ? "开" : "关", player.damageNegatedCount()));
+        }
+        if (chunkStreamer != null) {
+            hud.extraDebugLines.add("流式 " + chunkStreamer.statsLine());
+        }
+        // ★ M5a：光照读数。sky_level / ambient_floor 是**实际送进着色器**的三个
+        //   uniform 里的两个，贴在这里是为了让"画面太暗/太亮"能被一眼归因到具体参数。
+        hud.extraDebugLines.add(String.format("昼夜  %s  sky=%.3f floor=%.3f blend=%.2f",
+                dayClock.statusLine(), renderer.skyLevel(), renderer.ambientFloor(),
+                renderer.skyBlend()));
         hud.extraDebugLines.add("设置 " + settingsLoad.path() + "  (" + settingsLoad.status() + ")");
         hud.extraDebugLines.add(String.format("灵敏度 %.2f (%.4f 度/px)  FOV %.0f  音效 %d/%d",
                 settings.mouseSensitivity(), player.lookDegPerPixel(), settings.fovDeg(),
@@ -3177,7 +3607,9 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
             return SaveResult.failed("存档已禁用");
         }
         long started = System.nanoTime();
-        SaveResult result = saveManager.save(world, player);
+        // ★ M5a：带上时钟，level.json 里的时刻与天数才会跟着更新。
+        //   漏传的表现是"每次读档都被重置到白天开头"，且不报任何错。
+        SaveResult result = saveManager.save(world, player, dayClock);
         double millis = (System.nanoTime() - started) / 1e6;
         lastSaveResult = result;
         Log.info("[存档] %s（触发=%s，耗时 %.1f ms）", result.oneLine(), reason, millis);
@@ -3832,6 +4264,27 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         sb.append("generator_id       = ").append(world.generator().id()).append('\n');
         sb.append("generator_version  = ").append(world.generator().generationVersion()).append('\n');
         sb.append("loaded_chunks      = ").append(world.loadedChunkCount()).append('\n');
+        // ★ M4-S8a：流式证据。三行一起才有意义 ——
+        //   只打 loaded_chunks 看不出"是常驻全世界还是按需加载"，
+        //   只打累计加载/卸载看不出"当前到底占了多少"。
+        if (chunkStreamer != null) {
+            sb.append("stream_radius      = ").append(chunkStreamer.radius())
+                    .append(" (keep ").append(chunkStreamer.keepRadius()).append(")\n");
+            sb.append("stream_chunks_load = ").append(chunkStreamer.loadCount()).append('\n');
+            sb.append("stream_chunks_drop = ").append(chunkStreamer.unloadCount()).append('\n');
+        }
+        sb.append("delta_applied      = ").append(world.deltaAppliedCount()).append('\n');
+        // ★ M5a：昼夜读数。与内存/帧读数同一次输出，避免"要看两处"。
+        sb.append("day_seconds        = ")
+                .append(String.format("%.1f", dayClock.timeSeconds())).append('\n');
+        sb.append("day_total_seconds  = ")
+                .append(String.format("%.1f", dayClock.totalSeconds())).append('\n');
+        sb.append("day_count          = ").append(dayClock.dayCount()).append('\n');
+        sb.append("day_phase          = ").append(dayClock.phase().name()).append('\n');
+        sb.append("day_sky_level      = ")
+                .append(String.format("%.4f", dayClock.skyLevel())).append('\n');
+        sb.append("day_ambient_floor  = ")
+                .append(String.format("%.4f", dayClock.ambientFloor())).append('\n');
         sb.append("save_root          = ").append(config.saveRoot()).append('\n');
         sb.append("save_enabled       = ").append(config.saveEnabled()).append('\n');
         sb.append("load_on_start      = ").append(initialLoadResult == null
@@ -3871,6 +4324,11 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
           .append('/').append(player.maxHealth()).append('\n');
         sb.append("fx_break_particles = ").append(combatFx.totalBreakParticles()).append('\n');
         sb.append("fx_spawn_calls     = ").append(combatFx.totalSpawnCalls()).append('\n');
+
+        // ---------- P3：堆内存（此前项目里没有任何内存数字）----------
+        // ★ 必须打 used / peak / **after_gc** 三个数，只打 used 会把
+        //   "GC 还没跑" 误读成 "泄漏"（见 HeapSampler 类注释）。
+        sb.append(heap.summary());
 
         // ---------- 性能（与 M0 完全同口径，便于跨里程碑对比）----------
         sb.append("--\n");

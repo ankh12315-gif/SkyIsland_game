@@ -199,6 +199,15 @@ public final class HudModel {
     public final List<String> extraDebugLines = new ArrayList<>();
 
     /** 轻量标量：本帧 HUD 是否处于"挖掘中"（供渲染器决定是否画进度条）。 */
+    /** M5a：右上角时刻条文案（由 {@code Localization#HUD_DAY_STATUS} 格式化）。 */
+    public String dayStatusLabel = "";
+
+    /** M5a：当前阶段已走过的比例 0..1（画进度条用；1 表示即将换阶段）。 */
+    public float dayPhaseProgress;
+
+    /** M5a：是否处于夜晚（含黄昏）。用来给时刻条上色。 */
+    public boolean dayIsNight;
+
     public boolean showMiningBar() {
         return mining && miningProgress > 0;
     }

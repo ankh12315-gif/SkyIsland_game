@@ -4,10 +4,10 @@
 // 体素顶点着色器（M1 建立，M4-S2 扩展顶点格式，M4-S3 加 UV）。
 //
 // 顶点格式（stride = 44 字节，与 TECH_DESIGN §G.3 的"减字节"取向一致）：
-//   location 0 : aPos     vec3   12 B   区块局部坐标（恒在 [0,16] 内）
-//   location 1 : aColor   vec4   16 B   rgb = 顶点色调，a = 预乘明暗
-//   location 2 : aLayerAo vec2    8 B   x = 纹理数组层号，y = 环境光遮蔽
-//   location 3 : aUv      vec2    8 B   ★ S3：该面在层内的 UV（0..1）
+//   location 0 : aPos        vec3   12 B   区块局部坐标（恒在 [0,16] 内）
+//   location 1 : aColor      vec4   16 B   rgb = 顶点色调，a = 明暗（白天口径的烘焙值）
+//   location 2 : aLayerLight vec2    8 B   x = 纹理数组层号，y = 打包光照（M5a 改派）
+//   location 3 : aUv         vec2    8 B   ★ S3：该面在层内的 UV（0..1）
 //
 // ★★ 规格缺口（已登记）：PRD §6.1 要求"每面 UV = 该面在层内的满幅区域"，
 //   但 §6.2 的顶点表只有 pos + color + layerAo，**没有 UV 槽**。
@@ -37,7 +37,7 @@
 
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec4 aColor;
-layout (location = 2) in vec2 aLayerAo;
+layout (location = 2) in vec2 aLayerLight;
 layout (location = 3) in vec2 aUv;
 
 uniform mat4 uProjection;
@@ -46,14 +46,15 @@ uniform vec2 uChunkOffset;   // 区块原点的世界 (x, z)
 
 out vec4 vColor;
 
-// layer/ao 与 UV 在 S3 起被片元**真正消费**（纹理数组已接入）。
-out vec2 vLayerAo;
+// layer/light 与 UV 在 S3 起被片元**真正消费**（纹理数组已接入）。
+// ★ M5a：aLayerAo 更名为 aLayerLight，y 分量由"恒为 0 的 AO 占位"改派为打包光照。
+out vec2 vLayerLight;
 out vec2 vUv;
 
 void main() {
     vec3 worldPos = vec3(aPos.x + uChunkOffset.x, aPos.y, aPos.z + uChunkOffset.y);
     gl_Position = uProjection * uView * vec4(worldPos, 1.0);
     vColor = aColor;
-    vLayerAo = aLayerAo;
+    vLayerLight = aLayerLight;
     vUv = aUv;
 }

@@ -60,6 +60,31 @@ public final class InventoryLayout {
     /** 合成栏标题的占位（基准像素；与面板标题同为 LABEL_SCALE 的中文行盒）。 */
     private static final int CRAFT_TITLE_HEIGHT = 24;
 
+    /**
+     * ★ M4-S7：标签页条的高度（基准像素）。
+     *
+     * <p>PRD §5.1「打开 = 背包界面（E）内的独立标签页『创造』」。
+     * 它是<b>标签</b>而不是又一个右侧栏，原因有两条：
+     * <ol>
+     *   <li>右侧已被合成栏占了（{@link #CRAFT_COLUMN_GAP} 明确说"两侧是两个不同性质的区域"）；</li>
+     *   <li>创造模式<b>不给枪</b>（PRD §5.6）⇒ 创造模式没有合成需求，
+     *       两个右栏会同时出现但其中一个必然永远是空的。</li>
+     * </ol>
+     * 而"两个内容区在同一个包里切换"正是标签页的定义。
+     */
+    private static final int TAB_STRIP_HEIGHT = 22;
+
+    /** ★ M4-S7：创造面板的列数（与背包格子同宽，保持肌肉记忆一致）。 */
+    public static final int CREATIVE_COLUMNS = COLUMNS;
+
+    /**
+     * ★ M4-S7：一个分类标题行的高度（基准像素）。
+     *
+     * <p>它比槽位高：分类标题是<b>分组名</b>（自然 / 建材 / 矿物 / 作物），
+     * 与具体方块不是同一级的东西，压到同高会让"这一格属于哪组"读不出来。
+     */
+    private static final int CREATIVE_GROUP_HEIGHT = 20;
+
     private final int fbWidth;
     private final int fbHeight;
     private final int uiScale;
@@ -84,11 +109,149 @@ public final class InventoryLayout {
     private final int craftRowHeight;
     private final int craftRowCount;
 
+    // ---- M4-S7：标签页与创造面板 ----
+    // ★ 为什么收成 record 而不是继续加 int：构造器已经 20 个参数了，
+    //   再加 3 个 int 会让"第 7 个参数到底是 tabY 还是 groupH"这种问题
+    //   只能靠数位置回答 —— 那正是本项目反复付过学费的"读代码才知道它存在"。
+    private final TabGeometry tab;
+    private final CreativeGridGeometry creative;
+
+    /**
+     * ★ M4-S7 标签页条的几何。
+     *
+     * @param y       标签页条顶边
+     * @param height  标签页条高度
+     * @param width   每个标签的宽度（两个标签等宽平分面板宽度）
+     * @param count   标签个数（背包 / 创造 = 2）
+     */
+    public record TabGeometry(int y, int height, int width, int count) {
+
+        /** 第 {@code index} 个标签的左边界。 */
+        public int tabX(int index, int panelX) {
+            return panelX + index * width;
+        }
+
+        /** 第 {@code index} 个标签的中心 x（文本居中用）。 */
+        public float tabCenterX(int index, int panelX) {
+            return tabX(index, panelX) + width / 2f;
+        }
+
+        /** 标签条下沿（内容区顶边）。 */
+        public int contentY() {
+            return y + height;
+        }
+
+        /** 命中第 {@code index} 个标签；越界返回 {@code false}。 */
+        public boolean hitTest(int index, int panelX, double mouseX, double mouseY) {
+            if (index < 0 || index >= count) {
+                return false;
+            }
+            int x = tabX(index, panelX);
+            return mouseX >= x && mouseX < x + width
+                    && mouseY >= y && mouseY < y + height;
+        }
+    }
+
+    /**
+     * ★ M4-S7 创造面板网格的几何（{@link TabGeometry} 的同级）。
+     *
+     * <p>★ <b>它只描述"格子在哪"，不描述"每一格放什么"</b> ——
+     * 那是 {@link com.skyisland.world.block.CreativePalette} 的职责。
+     * 布局与内容分离的同一条理由见 {@code MenuRendererTextGeometryWiringTest}：
+     * 让渲染器"只读不算"，否则同一套算术会在两处各写一遍，然后一起错。
+     *
+     * <p>★ <b>槽位尺寸被显式放进本 record，而不是用静态字段"回填"</b>：
+     * 静态可变的 {@code slotSizeRef} 会让两个不同分辨率的布局互相污染
+     * （先算 1080p 再算 720p 就会读到后者），而那种 bug 只在"玩家恰好改过分辨率"
+     * 时出现，且症状是格子整体偏移 —— 与真因毫无关系。
+     * 代价只是多两个分量，换来的是 record 真的不可变。
+     *
+     * @param slotSize   单格边长（含 uiScale）
+     * @param gap        格间间隙
+     * @param groupHeight 每个分类标题行的高度
+     * @param rowY       每一行方块格的顶边（含分类标题占位）
+     * @param rowOfEntry 每个面板条目落在第几行
+     * @param groupTitleOfRow 每一行<b>是否是分类标题行</b>（{@code null} = 本帧不画创造面板）
+     * @param entryCount 面板条目数
+     */
+    public record CreativeGridGeometry(int slotSize,
+                                       int gap,
+                                       int groupHeight,
+                                       int[] rowY,
+                                       int[] rowOfEntry,
+                                       boolean[] groupTitleOfRow,
+                                       int entryCount) {
+
+        /** 本帧是否需要画创造面板（生存模式 / 无面板时为 {@code false}）。 */
+        public boolean present() {
+            return rowOfEntry != null && entryCount > 0;
+        }
+
+        /** 面板条目数（渲染层循环边界）。 */
+        public int entryCount() {
+            return entryCount;
+        }
+
+        /** 第 {@code index} 个条目的列号。 */
+        public int columnOf(int index) {
+            return index % CREATIVE_COLUMNS;
+        }
+
+        /** 第 {@code index} 个条目的行号。 */
+        public int rowOf(int index) {
+            return rowOfEntry[index];
+        }
+
+        /** 第 {@code index} 格方块的顶边 y。 */
+        public int entryY(int index) {
+            return rowY[rowOfEntry[index]];
+        }
+
+        /** 第 {@code index} 格方块的左边界 x。 */
+        public int entryX(int index, int gridX) {
+            return gridX + columnOf(index) * (slotSize + gap);
+        }
+
+        /** 第 {@code row} 行是否是一条分类标题。 */
+        public boolean rowIsGroupTitle(int row) {
+            return groupTitleOfRow != null && groupTitleOfRow[row];
+        }
+
+        /** 命中面板第 {@code index} 格；越界或本帧无面板返回 {@code false}。 */
+        public boolean hitTestEntry(int index, int gridX, double mouseX, double mouseY) {
+            if (!present() || index < 0 || index >= entryCount) {
+                return false;
+            }
+            int x = entryX(index, gridX);
+            int y = entryY(index);
+            return mouseX >= x && mouseX < x + slotSize
+                    && mouseY >= y && mouseY < y + slotSize;
+        }
+
+        /** 总行数（含分类标题行）；本帧无面板时为 {@code 0}。 */
+        public int rowCount() {
+            return rowY == null ? 0 : rowY.length;
+        }
+
+        /** 第 {@code row} 行的顶边 y（绝对坐标）。 */
+        public int rowTop(int row) {
+            return rowY[row];
+        }
+
+        /** 分类标题行的高度；方块行的高度是 {@link #slotSize}。 */
+        public int rowHeight(int row) {
+            return rowIsGroupTitle(row) ? groupHeight : slotSize;
+        }
+    }
+
     private InventoryLayout(int fbWidth, int fbHeight, int uiScale, int slotSize, int gap, int pad,
                             int panelX, int panelY, int panelWidth, int panelHeight,
                             int titleY, int firstRowY, int hotbarRowY, int separatorY,
                             int craftX, int craftWidth, int craftTitleY, int craftFirstRowY,
-                            int craftRowHeight, int craftRowCount) {
+                            int craftRowHeight, int craftRowCount,
+                            TabGeometry tab, CreativeGridGeometry creative) {
+        this.tab = tab;
+        this.creative = creative;
         this.fbWidth = fbWidth;
         this.fbHeight = fbHeight;
         this.uiScale = uiScale;
@@ -116,11 +279,26 @@ public final class InventoryLayout {
     }
 
     /**
-     * 计算布局。
+     * 计算布局（既有签名，不含标签页）。
      *
      * @param craftRowCount 合成栏要显示的行数（0 = 本帧不画合成栏）
      */
     public static InventoryLayout compute(int fbWidth, int fbHeight, int craftRowCount) {
+        return compute(fbWidth, fbHeight, craftRowCount, 0, null);
+    }
+
+    /**
+     * ★ M4-S7：带标签页与创造面板的完整布局计算。
+     *
+     * <p><b>它必须走 {@link #compute(int, int, int)} 的同一套算术</b>，
+     * 不另起一份 —— 两份"算面板高度"的代码必然在某次改动后分叉，
+     * 而症状是"标题与格子错开几像素"，极难查。
+     *
+     * @param tabCount       标签页个数（0 = 本帧不画标签条；生存模式且未实现切页时传 0）
+     * @param creativeRows   创造面板的行结构（含分类标题行）；{@code null} = 本帧不画创造面板
+     */
+    public static InventoryLayout compute(int fbWidth, int fbHeight, int craftRowCount,
+                                          int tabCount, CreativeRows creativeRows) {
         int scale = UiMetrics.uiScale(fbHeight);
         int slot = UiMetrics.px(UiMetrics.SLOT_SIZE, scale);
         int gap = UiMetrics.px(UiMetrics.SLOT_GAP, scale);
@@ -135,9 +313,6 @@ public final class InventoryLayout {
         int contentHeight = mainHeight + separator + slot;
 
         // ---- 右侧合成栏（2026-10-03：背包内合成）----
-        // 它把面板从"只有 36 格"变成"左背包 + 右配方列表"。
-        // 栏宽先按常量算，再夹到"面板不得越出帧缓冲"这条硬约束之内 ——
-        // 极窄的帧缓冲下降级是"栏变窄"，而不是"整块面板被挤出屏幕"。
         int craftWidth = craftRowCount > 0
                 ? Math.min(UiMetrics.px(CRAFT_COLUMN_WIDTH, scale),
                         Math.max(0, fbWidth - (gridWidth + 2 * pad
@@ -148,17 +323,66 @@ public final class InventoryLayout {
         int craftColumnHeight = craftRowCount > 0
                 ? craftTitleH + UiMetrics.px(4, scale) + craftRowCount * craftRowH : 0;
 
+        // ★ M4-S7：标签条在标题之下、内容之上。
+        //   它<b>不</b>替换标题 —— 标题是"这是背包"这一层的说明，
+        //   标签条是"在背包与创造之间选哪一层"，两者回答的不是同一个问题。
+        //
+        // ★ <b>判据是 {@code > 1} 而不是 {@code > 0}</b>：生存模式只挂一个标签（背包），
+        //   而<b>只有一个标签时不画标签条</b> —— 画出来是一条写着「背包」、
+        //   点不动的窄条，玩家会去找那个不存在的第二页。
+        //   这不是审美问题而是几何问题：画了就得留 22px 高度，
+        //   于是生存模式的背包面板凭空多出一条空白，且整体上移 uiScale×11px（居中偏移）。
+        //   ★ 这条是被一条"生存模式几何必须与 M2.2 逐像素相同"的守卫逼出来的。
+        int tabH = tabCount > 1 ? UiMetrics.px(TAB_STRIP_HEIGHT, scale) : 0;
+
+        // ★ M4-S7：创造面板区的高度（分类标题 + 方块格），以及降级预算。
+        //   ★ 降级顺序与 MenuLayout 的三档退让一致（见其类注释）：
+        //   ① 砍空行 → ② 砍每行富余 → ③ **绝不动文字/格子本身**。
+        //   这里的"文字"是分类标题与方块格，因此它们是<b>最后才动</b>的，
+        //   而实际上它们根本不该被压缩 —— 方块格压小就看不出是什么方块了。
+        int creativeAreaHeight = 0;
+        int[] creativeRowY = null;
+        int[] creativeRowOfEntry = null;
+        boolean[] creativeRowIsGroup = null;
+        if (creativeRows != null && creativeRows.entryCount() > 0) {
+            // ★ 先自检再算几何：行结构不自洽时，越界只会在渲染阶段炸，
+            //   而那时候栈里全是渲染代码，与真因（内容侧的计数错了）毫无关系。
+            creativeRows.verifySelfConsistent();
+            int groupH = UiMetrics.px(CREATIVE_GROUP_HEIGHT, scale);
+            int rows = creativeRows.rowCount();
+            creativeRowY = new int[rows];
+            creativeRowIsGroup = new boolean[rows];
+            int y = 0;
+            for (int r = 0; r < rows; r++) {
+                creativeRowY[r] = y;
+                creativeRowIsGroup[r] = creativeRows.rowIsGroupTitle(r);
+                y += creativeRowIsGroup[r] ? groupH : slot;
+            }
+            creativeRowOfEntry = new int[creativeRows.entryCount()];
+            System.arraycopy(creativeRows.rowOfEntry(), 0, creativeRowOfEntry, 0,
+                    creativeRows.entryCount());
+            creativeAreaHeight = y + UiMetrics.px(4, scale);
+        }
+
         int leftWidth = gridWidth + 2 * pad;
         int panelWidth = craftWidth > 0
                 ? gridWidth + 2 * pad + UiMetrics.px(CRAFT_COLUMN_GAP, scale) + craftWidth
                 : leftWidth;
-        int panelHeight = pad + titleH + pad + Math.max(contentHeight, craftColumnHeight) + pad;
+        // ★ 创造面板激活时，面板取"创造区与背包区取大"——
+        //   两个内容区是<b>切换</b>关系而不是并列，面板高度必须容得下较大的那个，
+        //   否则切到创造页时底板会在动画中途变高（或者更糟：格子被裁掉）。
+        int mainAreaHeight = Math.max(contentHeight, creativeAreaHeight);
+        int panelHeight = pad + titleH + (tabH > 0 ? tabH + pad : pad) + mainAreaHeight + pad;
 
         int panelX = Math.max(0, (fbWidth - panelWidth) / 2);
         int panelY = Math.max(0, (fbHeight - panelHeight) / 2);
 
         int titleY = panelY + pad;
-        int firstRowY = titleY + titleH + pad;
+        // ★ 三处都用 tabH（而不是 tabCount > 0）判断"有没有标签条"：
+        //   判据散在三处而其中一处用了另一个条件，就是"标签条留了高度但没画"
+        //   这类半接线的温床 —— 症状是面板底部一条空白，内容整体上移几像素。
+        int tabY = titleY + titleH + (tabH > 0 ? pad : 0);
+        int firstRowY = (tabH > 0 ? tabY + tabH : titleY + titleH) + pad;
         int separatorY = firstRowY + mainHeight;
         int hotbarRowY = separatorY + separator;
 
@@ -168,16 +392,152 @@ public final class InventoryLayout {
         int craftFirstRowY = craftRowCount > 0
                 ? craftTitleY + craftTitleH + UiMetrics.px(4, scale) : 0;
 
+        // ★ 创造网格的绝对坐标 = 内容区左上角（与背包格子同一起点，保持左对齐）。
+        //   标签页是"同一个位置换内容"，所以起点必须与背包一致 ——
+        //   若另起一个 x，玩家会看到内容在切换时横跳。
+        int creativeGridX = panelX + pad;
+        if (creativeRowY != null) {
+            int base = firstRowY;
+            int[] absolute = new int[creativeRowY.length];
+            for (int r = 0; r < creativeRowY.length; r++) {
+                absolute[r] = base + creativeRowY[r];
+            }
+            creativeRowY = absolute;
+        }
+
+        TabGeometry tabGeometry = new TabGeometry(tabY, tabH,
+                tabCount > 0 ? panelWidth / tabCount : 0, tabCount);
+        CreativeGridGeometry creativeGeometry = new CreativeGridGeometry(
+                slot, gap, UiMetrics.px(CREATIVE_GROUP_HEIGHT, scale),
+                creativeRowY, creativeRowOfEntry, creativeRowIsGroup,
+                creativeRows == null ? 0 : creativeRows.entryCount());
+
         return new InventoryLayout(fbWidth, fbHeight, scale, slot, gap, pad,
                 panelX, panelY, panelWidth, panelHeight,
                 titleY, firstRowY, hotbarRowY, separatorY,
-                craftX, craftWidth, craftTitleY, craftFirstRowY, craftRowH, craftRowCount);
+                craftX, craftWidth, craftTitleY, craftFirstRowY, craftRowH, craftRowCount,
+                tabGeometry, creativeGeometry);
     }
+
+    /**
+     * ★ M4-S7：创造面板的行结构（布局的输入，纯数据）。
+     *
+     * <p>★ <b>为什么不让布局自己去遍历 {@code CreativePalette}</b>：
+     * 那样布局就把"面板里有什么"也管上了，于是
+     * 「内容变了但没重新 compute」会表现为<b>格子错位</b>而不是"内容不对"，
+     * 而错位比缺一个方块难查得多。
+     * 现在的分工是：<b>内容 → 行结构（{@code CreativeRows}）→ 几何（布局）</b>，
+     * 每一步都可独立单测。
+     *
+     * @param entryCount   面板条目数
+     * @param rowCount     总行数（含分类标题行）
+     * @param rowOfEntry   每个条目落在第几行
+     * @param rowIsGroup   每一行是否是一条分类标题
+     */
+    public record CreativeRows(int entryCount, int rowCount,
+                               int[] rowOfEntry, boolean[] rowIsGroup) {
+
+        /** 第 {@code row} 行是否是一条分类标题。 */
+        public boolean rowIsGroupTitle(int row) {
+            return row >= 0 && row < rowIsGroup.length && rowIsGroup[row];
+        }
+
+        /** 第 {@code index} 个条目落在第几行。 */
+        public int rowOf(int index) {
+            return rowOfEntry[index];
+        }
+
+        /**
+         * ★ 自检：条目数、行数、两个数组长度必须自洽。
+         *
+         * <p>它们是<b>平行的数组</b>，长度不一致时症状是"某格画到了别人的位置上"，
+         * 而 {@code ArrayIndexOutOfBoundsException} 只会来得更晚（渲染时），
+         * 甚至在边界上不抛而静默取到相邻元素。
+         */
+        public void verifySelfConsistent() {
+            if (rowOfEntry.length != entryCount) {
+                throw new IllegalStateException(
+                        "CreativeRows 自相矛盾：entryCount=" + entryCount
+                                + " 但 rowOfEntry.length=" + rowOfEntry.length);
+            }
+            if (rowIsGroup.length != rowCount) {
+                throw new IllegalStateException(
+                        "CreativeRows 自相矛盾：rowCount=" + rowCount
+                                + " 但 rowIsGroup.length=" + rowIsGroup.length);
+            }
+            for (int i = 0; i < rowOfEntry.length; i++) {
+                if (rowOfEntry[i] < 0 || rowOfEntry[i] >= rowCount) {
+                    throw new IllegalStateException(
+                            "CreativeRows 第 " + i + " 项落在越界行 " + rowOfEntry[i]
+                                    + "（合法 0.." + (rowCount - 1) + "）");
+                }
+            }
+        }
+    }
+
 
     // ============================================================ 查询
 
     public int fbWidth() {
         return fbWidth;
+    }
+
+    // ============================================================ M4-S7：标签页与创造面板
+
+    /** 标签页条几何；本帧无标签页时 {@code count() == 0}。 */
+    public TabGeometry tab() {
+        return tab;
+    }
+
+    /** 创造面板网格几何；本帧不画创造面板时 {@code present()} 为 {@code false}。 */
+    public CreativeGridGeometry creative() {
+        return creative;
+    }
+
+    /** 创造网格的绝对左边界 x（与背包格子同一起点）。 */
+    public int creativeGridX() {
+        return panelX + pad;
+    }
+
+    /** 本帧是否要画创造面板（视图非空且标签页为创造时由渲染层决定，这里只看几何是否存在）。 */
+    public boolean hasCreativeGrid() {
+        return creative.present();
+    }
+
+    /**
+     * 命中第几个标签页；没命中返回 {@code -1}。
+     *
+     * <p>★ <b>它是"先判标签、后判内容"这条顺序的落点</b>：
+     * 标签条与内容区在几何上不重叠，因此两条通道可以各自独立判定；
+     * 输入层按"标签先、内容后"的顺序问，标签那一问命中就直接返回，
+     * 不再往下问内容 —— 于是"点标签条边缘"不会被当成"点内容区第一行"。
+     */
+    public int hitTestTabAny(double mouseX, double mouseY) {
+        for (int i = 0; i < tab.count; i++) {
+            if (tab.hitTest(i, panelX, mouseX, mouseY)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 命中创造面板第几格；没命中或本帧无面板返回 {@code -1}。
+     *
+     * <p>与 {@link #hitTestCreativeRow} 一样是"遍历求下标"，不用算术反推：
+     * 反推需要"格号 → 行 → 列"的整除，而分类标题行让行与列不再有固定步长 ——
+     * 那种算术一旦写错，症状是<b>点第 3 格取出第 7 格</b>，且不报错。
+     */
+    public int hitTestCreativeAny(double mouseX, double mouseY) {
+        if (!hasCreativeGrid()) {
+            return -1;
+        }
+        for (int i = 0; i < creative.entryCount(); i++) {
+            if (creative.hitTestEntry(i, creativeGridX(), mouseX, mouseY)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     public int fbHeight() {

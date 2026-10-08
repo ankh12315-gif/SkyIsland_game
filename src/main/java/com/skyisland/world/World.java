@@ -68,6 +68,56 @@ public final class World {
     private final long seed;
     private final WorldGenerator generator;
 
+    /**
+     * ★ M4-S8a：区块卸载监听。
+     *
+     * <p><b>为什么卸载必须有一个对外回调，而不是谁卸载谁自己记得清理：</b>
+     * 卸载要连带做<b>两件</b>不在本类职责内的事 —— 释放 GPU 网格、把脏数据落盘。
+     * 两件事都"漏了也能跑"：漏释放表现为显存缓慢上涨（跑十分钟才看得出来），
+     * 漏落盘表现为"走回来时挖掉的坑又长回来了"（要走到才发现）。
+     * 这类"能跑但慢慢坏"的失效正是回调存在的理由：让"卸载"只有一个漏斗，
+     * 清理动作无法被绕过。
+     */
+    public interface ChunkUnloadListener {
+
+        /** 区块已从 {@code chunks} 中移除后调用；此刻它仍然是一个内容完整的对象。 */
+        void onChunkUnloaded(Chunk chunk);
+    }
+
+    /**
+     * ★ M4-S8a：区块增量来源 —— 区块生成的那一刻回放它自己的存档差异。
+     *
+     * <p>放在这里而不是"启动时统一回放"的理由：流式加载之后，
+     * 玩家改动过的区块可能远在加载半径之外，启动时根本还没被生成，
+     * 统一回放会全部落到"区块未加载，已跳过"这条分支上 ——
+     * 存档文件仍在磁盘上，世界却不认它。
+     *
+     * @return 实际应用的方块数
+     */
+    public interface ChunkDeltaSource {
+
+        int applyDelta(World world, int cx, int cz);
+    }
+
+    private ChunkUnloadListener unloadListener;
+    private ChunkDeltaSource deltaSource;
+
+    public void setChunkUnloadListener(ChunkUnloadListener listener) {
+        this.unloadListener = listener;
+    }
+
+    public ChunkUnloadListener chunkUnloadListener() {
+        return unloadListener;
+    }
+
+    public void setChunkDeltaSource(ChunkDeltaSource source) {
+        this.deltaSource = source;
+    }
+
+    public ChunkDeltaSource chunkDeltaSource() {
+        return deltaSource;
+    }
+
     /** 已加载区块。用 LinkedHashMap 保持插入顺序，使遍历顺序可复现（便于对比两次运行的网格指标）。 */
     private final Map<Long, Chunk> chunks = new LinkedHashMap<>();
 
@@ -81,6 +131,8 @@ public final class World {
     private long neighborMarkCount;
     private long meshBuildCount;
     private long meshBuildTotalNanos;
+    /** M4-S8a：流式加载期间由存档增量回放的方块数（"世界记得玩家的改动"的直接证据）。 */
+    private long deltaAppliedCount;
 
     /**
      * 自发光方块（光源）。
@@ -185,6 +237,16 @@ public final class World {
         chunks.put(key, chunk);
         registerEmissiveFrom(chunk);
 
+        // ★ M4-S8a：先入表、再回放差异。
+        //   顺序不可调换：回放走的是 applySavedBlock → writeVoxel，
+        //   它要求区块已经在 chunks 里（否则会被判成"区块未加载"而整条跳过）。
+        if (deltaSource != null) {
+            int applied = deltaSource.applyDelta(this, cx, cz);
+            if (applied > 0) {
+                deltaAppliedCount += applied;
+            }
+        }
+
         enqueueMesh(chunk);
         markNeighborMeshDirty(cx, cz);
         return chunk;
@@ -213,6 +275,11 @@ public final class World {
         if (removed != null) {
             meshQueue.remove(removed);
             markNeighborMeshDirty(cx, cz);
+            // ★ 最后一步才回调：此刻该区块已不在 chunks 里，
+            //   于是渲染器的 isStillLoaded 判据与这里的语义是一致的。
+            if (unloadListener != null) {
+                unloadListener.onChunkUnloaded(removed);
+            }
         }
         return removed;
     }
@@ -531,6 +598,11 @@ public final class World {
 
     public long neighborMarkCount() {
         return neighborMarkCount;
+    }
+
+    /** M4-S8a：区块被生成时从存档增量回放的方块总数。 */
+    public long deltaAppliedCount() {
+        return deltaAppliedCount;
     }
 
     public String statsLine() {

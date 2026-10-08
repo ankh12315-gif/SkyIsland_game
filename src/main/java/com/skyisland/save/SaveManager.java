@@ -2,6 +2,7 @@ package com.skyisland.save;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.skyisland.game.GameMode;
 import com.skyisland.game.Version;
 import com.skyisland.item.ItemRegistry;
 import com.skyisland.player.Inventory;
@@ -46,11 +47,72 @@ public final class SaveManager {
     private final String worldName;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
+    /**
+     * 命令行/配置给出的模式（{@code -Dskyisland.gameMode=creative}）。
+     *
+     * <p>★ <b>它只在"存档还没有该字段"时才被写进 {@code level.json}</b>；
+     * 一旦存档里有值，就永远以存档为准（PRD §4.3）。
+     * 见 {@link #effectiveGameMode()}。
+     */
+    private final GameMode configuredGameMode;
+
+    /** 本次加载实际生效的模式；<b>在 {@link #loadInto} 之前为 {@code null}</b>。 */
+    private GameMode activeGameMode;
+
     public SaveManager(Path saveRoot, String worldName) {
+        this(saveRoot, worldName, null);
+    }
+
+    /**
+     * @param configuredGameMode 配置给出的模式；{@code null} = 属性没给（按生存处理）
+     */
+    public SaveManager(Path saveRoot, String worldName, GameMode configuredGameMode) {
         this.saveRoot = saveRoot;
         this.worldName = worldName;
+        this.configuredGameMode = configuredGameMode;
         this.worldDir = SaveFormat.worldDirectory(saveRoot, worldName);
         this.chunkDir = worldDir.resolve(SaveFormat.CHUNK_DIR);
+    }
+
+    /**
+     * ★ <b>本次运行真正生效的游戏模式（PRD §4.2「可读性」与 §4.3「模式锁定」的共同落点）。</b>
+     *
+     * <p><b>读取时机有讲究</b>：它读的是"存档里已记录的 + 配置给的"经
+     * {@link GameMode#resolve} 合成的结果，<b>不依赖是否已经读档</b>。
+     * 于是启动日志可以在读档前后都拿到同一个答案，
+     * 而不需要把"读档"变成"打印游戏模式"的前置条件。
+     *
+     * <p>★★ <b>这里必须传 {@link LevelMeta#recordedGameMode()} 经 parse，
+     * 而不是 {@link LevelMeta#gameModeOrSurvival()}。</b>
+     * 两者的区别就是本项目 P0b 那条"脆绿灯"的同族：它们在
+     * <b>"存档有值"</b>时答案完全相同，只有在<b>"旧存档没有该字段"</b>时才分岔 ——
+     * 前者给 {@code null}（尚未定死，配置可决定），
+     * 后者给 {@code SURVIVAL}（看起来像已定死，配置<b>永久失效</b>）。
+     * <p>而<b>只测新存档的测试永远测不到这个分岔</b>：
+     * 新存档总是走"字段存在"那条分支，两条路给出同一个答案。
+     * 守卫见 {@code SaveManagerGameModeWiringTest
+     * #aLegacySaveStillHonorsTheCommandLineBecauseItHasNoModeYet}。
+     *
+     * @return 永不为 {@code null}：无存档、无配置、无字段，全部落
+     *         {@link GameMode#SURVIVAL}
+     */
+    public GameMode effectiveGameMode() {
+        LevelMeta existing = readLevelMeta();
+        // ★★ 注意这里<b>不能</b>直接写 GameMode.parse(existing.recordedGameMode())：
+        //   parse 的契约是"null → SURVIVAL"（安全侧：没有就给一个能用的值），
+        //   而 resolve 的第一参数要的是 null（"<b>这个存档还没定过</b>"）。
+        //   把 parse 的结果塞进去，等于把"没有"提前翻译成"生存"，
+        //   于是 -Dskyisland.gameMode=creative 对旧存档永久失效。
+        //   parse(null) 恰好等于 SURVIVAL 这件事让它<b>看起来</b>能用 ——
+        //   只有旧存档一条路径能看出差别，新建存档的测试全都测不到。
+        GameMode recorded = null;
+        if (existing != null) {
+            String raw = existing.recordedGameMode();
+            if (raw != null) {
+                recorded = GameMode.parse(raw);
+            }
+        }
+        return GameMode.resolve(recorded, configuredGameMode);
     }
 
     public Path saveRoot() {
@@ -80,6 +142,20 @@ public final class SaveManager {
      * 那份过期的增量会被删除 —— 否则下次读档会用一个错误的差异覆盖正确的地形。
      */
     public SaveResult save(World world, Player player) {
+        return save(world, player, null);
+    }
+
+    /**
+     * ★ M5a：带昼夜时钟的保存重载。
+     *
+     * <p><b>为什么是重载而不是给 {@code SaveManager} 加一个时钟字段</b>：
+     * 字段式写法（{@code setClock}）会让"忘了设置"变成一条**不报错的路径** —
+     * 那一刻就会以默认值落盘，而症状是"玩家的时刻每次读档都被重置"，极难归因。
+     * 重载把时钟变成<b>必填参数</b>，只有显式传 {@code null} 才会跳过。
+     *
+     * @param clock 本局的昼夜时钟；{@code null} = 本次不更新时刻（沿用存档里的值）
+     */
+    public SaveResult save(World world, Player player, com.skyisland.world.DayClock clock) {
         SaveResult result = SaveResult.ok("保存完成");
         try {
             Files.createDirectories(chunkDir);
@@ -87,24 +163,12 @@ public final class SaveManager {
 
             List<Chunk> dirty = world.saveDirtyChunks();
             for (Chunk chunk : dirty) {
-                Path target = chunkDir.resolve(SaveFormat.chunkFileName(chunk.cx(), chunk.cz()));
-                byte[] data = ChunkSerializer.serialize(chunk, world.generator(), world.seed());
-                if (data == null) {
-                    // 与生成结果完全一致：存档里不应该留下这份差异
-                    if (Files.exists(target)) {
-                        Files.delete(target);
-                        Log.info("[Save] 区块 (%d,%d) 已恢复为生成态，删除过期增量",
-                                chunk.cx(), chunk.cz());
-                    }
-                    world.markChunkSaved(chunk);
-                    continue;
+                if (writeChunk(world, chunk)) {
+                    result.addChunkWritten();
                 }
-                AtomicFileWriter.write(target, data);
-                world.markChunkSaved(chunk);
-                result.addChunkWritten();
             }
 
-            LevelMeta meta = buildLevelMeta(world, countChunkFiles());
+            LevelMeta meta = buildLevelMeta(world, countChunkFiles(), clock);
             writeJson(worldDir.resolve(SaveFormat.LEVEL_FILE), meta);
             writeJson(worldDir.resolve(SaveFormat.PLAYER_FILE), buildPlayerState(player));
 
@@ -123,7 +187,115 @@ public final class SaveManager {
         }
     }
 
-    private LevelMeta buildLevelMeta(World world, int modifiedChunkCount) {
+    /**
+     * 写一个区块的增量（{@link #save} 与"卸载前落盘"共用这一段）。
+     *
+     * @return 是否真的写出了文件（{@code false} = 干净、或已恢复为生成态而删掉了旧增量）
+     */
+    private boolean writeChunk(World world, Chunk chunk) throws IOException {
+        Path target = chunkDir.resolve(SaveFormat.chunkFileName(chunk.cx(), chunk.cz()));
+        byte[] data = ChunkSerializer.serialize(chunk, world.generator(), world.seed());
+        if (data == null) {
+            // 与生成结果完全一致：存档里不应该留下这份差异
+            if (Files.exists(target)) {
+                Files.delete(target);
+                Log.info("[Save] 区块 (%d,%d) 已恢复为生成态，删除过期增量",
+                        chunk.cx(), chunk.cz());
+            }
+            world.markChunkSaved(chunk);
+            return false;
+        }
+        AtomicFileWriter.write(target, data);
+        world.markChunkSaved(chunk);
+        return true;
+    }
+
+    /**
+     * ★ M4-S8a：把<b>单个</b>区块落盘（供"卸载前必须落盘"使用）。
+     *
+     * <p>为什么必须有它：{@link #save} 遍历的是 {@link World#saveDirtyChunks()}，
+     * 而它只看<b>当前已加载</b>的区块。区块一旦被流式卸载，玩家在里面的改动
+     * 就从这份列表里消失了 —— 卸载路径上不落盘的话，那些方块的命运是
+     * "挖掉的坑会在走回来时重新出现"。这是流式加载引入的<b>新</b>失败模式，
+     * 在"全世界常驻"的年代根本不存在。
+     *
+     * <p>只有 {@code saveDirty} 的区块会真的写文件；干净区块直接返回，
+     * 于是"走到哪都触发一次磁盘写"不会发生。
+     */
+    public SaveResult saveChunk(World world, Chunk chunk) {
+        SaveResult result = SaveResult.ok("区块保存完成");
+        try {
+            Files.createDirectories(chunkDir);
+            if (chunk.isSaveDirty() && writeChunk(world, chunk)) {
+                result.addChunkWritten();
+            }
+            return result;
+        } catch (IOException e) {
+            Log.error("[Save] 区块 (" + chunk.cx() + "," + chunk.cz() + ") 落盘失败", e);
+            return SaveResult.failed("区块落盘失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * ★ M4-S8a：按坐标回放<b>单个</b>区块的存档差异。
+     *
+     * <p>这是"存档优先于生成"这条规则在流式世界里的唯一正确落点：
+     * 区块是<b>在生成的那一刻</b>就把自己的差异回放上去，而不是等启动时统一回放一遍。
+     * 否则玩家在离家很远的地方建的东西，下次启动会因为"不在出生点半径内"
+     * 而永远读不回来 —— 存档文件还在，但世界不认。
+     *
+     * @return 应用的方块数；{@code 0} = 该坐标没有增量（正常且最常见）
+     */
+    public int applyChunkDelta(World world, int cx, int cz) {
+        Path target = chunkDir.resolve(SaveFormat.chunkFileName(cx, cz));
+        if (!Files.exists(target)) {
+            return 0;
+        }
+        byte[] data = AtomicFileWriter.readWithBackup(target);
+        if (data == null) {
+            Log.noteWarning("Save", "区块增量不可读，已按生成态处理: " + target.getFileName());
+            return 0;
+        }
+        try {
+            ChunkSerializer.Decoded decoded = ChunkSerializer.decode(data);
+            // ★ 不能传 null：applyTo 在"地形版本不符 / 含未登记 ID"两种情况下会往 result 里写告警。
+            //   这些告警在这里不是噪声 —— 它们正是"为什么我建的东西少了几格"的唯一线索。
+            SaveResult result = SaveResult.ok("区块增量回放");
+            int applied = ChunkSerializer.applyTo(decoded, world, result);
+            for (String warning : result.warnings()) {
+                Log.noteWarning("Save", warning);
+            }
+            return applied;
+        } catch (IOException e) {
+            // ★ 与读档主路径同一条降级口径（§N.6）：跳过这份差异，该区块回到生成态
+            Log.noteWarning("Save", "区块增量损坏，已按生成态处理: " + target.getFileName()
+                    + " —— " + e.getMessage());
+            return 0;
+        }
+    }
+
+    /** 存档里已记录的区块坐标（用于启动时判断"玩家的改动分布在哪"）。 */
+    public List<SaveFormat.ChunkCoordinate> savedChunkCoords() {
+        List<SaveFormat.ChunkCoordinate> out = new ArrayList<>();
+        if (!Files.isDirectory(chunkDir)) {
+            return out;
+        }
+        try (Stream<Path> stream = Files.list(chunkDir)) {
+            stream.forEach(p -> {
+                SaveFormat.ChunkCoordinate c =
+                        SaveFormat.parseChunkFileName(p.getFileName().toString());
+                if (c != null) {
+                    out.add(c);
+                }
+            });
+        } catch (IOException e) {
+            Log.noteWarning("Save", "区块目录读取失败: " + e.getMessage());
+        }
+        return out;
+    }
+
+    private LevelMeta buildLevelMeta(World world, int modifiedChunkCount,
+                                     com.skyisland.world.DayClock clock) {
         LevelMeta meta = new LevelMeta();
         meta.saveVersion = SaveFormat.SAVE_VERSION;
         meta.worldName = worldName;
@@ -134,6 +306,27 @@ public final class SaveManager {
         meta.savedAtMillis = System.currentTimeMillis();
         meta.productVersion = Version.version();
         meta.modifiedChunkCount = modifiedChunkCount;
+        meta.gameMode = effectiveGameMode().persisted();
+        // ★ M5a：时刻与天数。
+        //   给了时钟就以时钟为准；没给则**从现有存档里原样搬过来**。
+        //
+        //   ★ 这里踩过一次真实的坑：最初写成"没给时钟就不写这两个字段"，
+        //   看起来是"保持不变"，而实际上 buildLevelMeta 每次都 new 一个空 LevelMeta ——
+        //   不写就等于 null，Gson 序列化时<b>整个键消失</b>，
+        //   于是"用旧签名保存一次"会把玩家的时刻与天数<b>彻底抹掉</b>。
+        //   症状是"读档后时间被重置"，且只在"先带时钟存过一次、之后又存了一次"的
+        //   存档上出现 —— 任何只测新存档的测试都测不到。
+        //   修法与 existingCreatedAtMillis() 同源：读一次现有 meta 补齐。
+        if (clock != null) {
+            meta.worldTimeSeconds = clock.timeSeconds();
+            meta.dayCount = clock.dayCount();
+        } else {
+            LevelMeta previous = readLevelMeta();
+            if (previous != null) {
+                meta.worldTimeSeconds = previous.worldTimeSeconds;
+                meta.dayCount = previous.dayCount;
+            }
+        }
         return meta;
     }
 
@@ -154,6 +347,10 @@ public final class SaveManager {
         state.pitch = player.camera().pitchDeg();
         state.onGround = player.onGround();
         state.deaths = player.deaths();
+        // ★ M2 起持久化生命值。之前漏存的后果不是"少存一个字段"，
+        //   而是**玩家被打到残血后存档、读档即满血** —— 一条可利用的回血路径。
+        //   守卫见 SaveManagerTest#healthSurvivesSaveLoadRoundTripAtPartialValue。
+        state.health = player.health();
         var safe = player.lastSafePosition();
         state.lastSafeX = safe.x;
         state.lastSafeY = safe.y;
@@ -213,6 +410,34 @@ public final class SaveManager {
      *
      * @return 元数据；不存在或无法解析返回 {@code null}
      */
+
+    /**
+     * ★ M5a：把存档里的时刻与天数回填给时钟（读档之后调用一次）。
+     *
+     * <p><b>为什么「缺字段」与「字段是 0」必须能区分</b>：
+     * 老存档（{@code worldTimeSeconds} / {@code dayCount} 都不存在）必须落到
+     * 「白天开头、第 1 天」，也就是升级后的默认开局；
+     * 若把缺失读成 {@code 0}，玩家每次开老存档都会被丢到<b>黎明的第一秒</b>（几乎全黑），
+     * 而症状只是「开局黑了一下」，没有任何断言会红。
+     *
+     * <p>因此两个字段在 {@code LevelMeta} 里都是<b>包装类型</b>，判据是 {@code != null}。
+     *
+     * @return {@code true} = 存档里确实带了时刻；{@code false} = 缺字段，时钟保持默认值
+     */
+    public boolean applyWorldTime(com.skyisland.world.DayClock clock) {
+        if (clock == null) {
+            return false;
+        }
+        LevelMeta meta = readLevelMeta();
+        if (meta == null || meta.worldTimeSeconds == null) {
+            return false;
+        }
+        clock.setTimeSeconds(meta.worldTimeSeconds);
+        if (meta.dayCount != null) {
+            clock.setDayCount(meta.dayCount);
+        }
+        return true;
+    }
     public LevelMeta readLevelMeta() {
         Path target = worldDir.resolve(SaveFormat.LEVEL_FILE);
         byte[] data = AtomicFileWriter.readWithBackup(target);
@@ -250,6 +475,17 @@ public final class SaveManager {
         }
         for (String problem : meta.validate()) {
             result.warn("level.json 字段异常: " + problem);
+        }
+
+        // ★ M4-S6：读档时确定本局生效模式（PRD §4.2 / §4.3）。
+        //   effectiveGameMode() 读的是**存档里已记录的值**，配置只在该字段缺失时起作用。
+        activeGameMode = effectiveGameMode();
+        if (meta.recordedGameMode() == null) {
+            // 该存档还没有该字段（§4.2【必须】按 survival 处理，除非配置显式给了 creative）。
+            // 此处明确记一条日志："这是旧存档"若不打出来，后来人看到 level.json 里
+            // 没有 gameMode 会以为是"某个版本忘了写"，而不是"这是预期路径"。
+            Log.info("[存档] 该存档没有 gameMode 字段（旧存档），本局按 %s 处理",
+                    activeGameMode.displayName());
         }
 
         if (meta.saveVersion > SaveFormat.SAVE_VERSION) {
@@ -384,6 +620,9 @@ public final class SaveManager {
         player.applyLoadedState(state.x, state.y, state.z, state.yaw, state.pitch,
                 safeOrSelf(state.lastSafeX, state.lastSafeY, state.lastSafeZ, state.x, state.y, state.z),
                 slots, state.selectedSlot, state.deaths);
+        // 生命值在位置装载之后恢复：位置可能被 sanitizePositionAfterLoad 改过，
+        // 但生命值与之无关，顺序只影响"出错时哪个问题先暴露"。
+        player.applyLoadedHealth(state.health);
 
         // §N.7：位置合法性校验必须在"方块已经就位"之后做，因此放在读档的最后一步。
         if (player.sanitizePositionAfterLoad(world)) {

@@ -42,12 +42,36 @@ import java.util.List;
 public final class Renderer {
 
     /**
-     * 天空清屏色。偏亮的蓝 —— M1 的测试世界是一个悬浮在空中的平台，
+     * 白天的天空清屏色。偏亮的蓝 —— M1 的测试世界是一个悬浮在空中的平台，
      * 清屏色就是"天空"，因此它同时承担"能看出自己没有站到地形外面"的作用。
      */
     public static final float SKY_R = 0.46f;
     public static final float SKY_G = 0.63f;
     public static final float SKY_B = 0.86f;
+
+    /**
+     * ★ M5a：夜晚的天空清屏色。
+     *
+     * <p><b>为什么必须真的把天空调暗，而不能只压地形</b>：
+     * 清屏色就是玩家能看到的"天"。若夜里天空仍是白天那种亮蓝、
+     * 只有地面变暗，玩家会读到"世界被压暗了一层滤镜"，而不是"天黑了"；
+     * 更糟的是<b>看不出地平线</b>—— 而空岛玩法的全部空间感都来自"脚下没有地"。
+     */
+    public static final float NIGHT_SKY_R = 0.03f;
+    public static final float NIGHT_SKY_G = 0.04f;
+    public static final float NIGHT_SKY_B = 0.10f;
+
+    /**
+     * M5a：当前昼夜状态（整帧一个值）。
+     *
+     * <p><b>为什么是"每帧写一次 uniform"而不是"改光照后重建网格"</b>：
+     * 见 {@code DayClock} 的类注释 —— 半径 4 的稳态是 121 块、
+     * 单块网格化约 0.8 ms，整轮重建接近 100 ms，而黎明/黄昏各只有 60 秒。
+     * 走 uniform 之后，昼夜切换的 CPU 成本是<b>三次 glUniform1f</b>。
+     */
+    private float skyBlend = 1f;
+    private float skyLevel = 1f;
+    private float ambientFloor = com.skyisland.world.LightEngine.AMBIENT_FLOOR;
 
     private final ChunkRenderer chunkRenderer = new ChunkRenderer();
     private final CrackOverlay crackOverlay = new CrackOverlay();
@@ -127,11 +151,71 @@ public final class Renderer {
         return framebufferHeight;
     }
 
-    /** 清屏。必须在本帧任何绘制之前调用。 */
+    /**
+     * 清屏。必须在本帧任何绘制之前调用。
+     *
+     * <p>M5a：颜色按当前昼夜在 {@link #NIGHT_SKY_*} 与 {@link #SKY_*} 之间线性插值。
+     */
     public void clear() {
         GL11.glViewport(0, 0, framebufferWidth, framebufferHeight);
-        GL11.glClearColor(SKY_R, SKY_G, SKY_B, 1.0f);
+        float t = Math.max(0f, Math.min(1f, skyBlend));
+        GL11.glClearColor(
+                NIGHT_SKY_R + (SKY_R - NIGHT_SKY_R) * t,
+                NIGHT_SKY_G + (SKY_G - NIGHT_SKY_G) * t,
+                NIGHT_SKY_B + (SKY_B - NIGHT_SKY_B) * t,
+                1.0f);
         GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
+    }
+
+    /**
+     * ★ M5a：把当前昼夜状态交给渲染器。
+     *
+     * <p><b>参数只有时钟一个，而不是三个 float</b>：三个 float 全同类型，
+     * 调用点写错顺序<b>不会编译报错</b>，而结果是"夜里天光是 0.45 的地板"这种
+     * 只会表现为"画面有点怪"的问题。由时钟取值的写法把映射收敛到一处。
+     *
+     * <p>必须在每帧绘制之前调用（{@code clear()} 与 {@code renderWorld()} 都用到它）。
+     * 缺一次的后果：画面停留在上一次的时刻，且<b>不报任何错</b>。
+     */
+    public void setDaylight(com.skyisland.world.DayClock clock) {
+        if (clock == null) {
+            skyBlend = 1f;
+            skyLevel = 1f;
+            ambientFloor = com.skyisland.world.LightEngine.AMBIENT_FLOOR;
+            return;
+        }
+        skyBlend = clock.skyBlend();
+        skyLevel = clock.skyLevel();
+        ambientFloor = clock.ambientFloor();
+    }
+
+    /** 当前天光档位（自测 / HUD 断言用；0 = 夜，1 = 昼）。 */
+    public float skyLevel() {
+        return skyLevel;
+    }
+
+    /** 当前明暗地板（自测断言用）。 */
+    public float ambientFloor() {
+        return ambientFloor;
+    }
+
+    /** 当前天空插值系数（自测断言用；0 = 夜空，1 = 白天空）。 */
+    public float skyBlend() {
+        return skyBlend;
+    }
+
+    /**
+     * 把昼夜三个 uniform 写进当前程序。
+     *
+     * <p><b>必须紧跟 {@code voxelShader.bind()} 之后调用</b> ——
+     * 与 {@code uBlockAtlas} 同一条纪律（见 {@code renderWorld} 里那段注释）：
+     * {@code glUniform} 写的是「当前程序」，顺序反了会写到上一个 program 上，
+     * 症状是"昼夜 uniform 全是驱动默认值"，而那种失效<b>不报任何错</b>。
+     */
+    private void applyDaylightUniforms() {
+        voxelShader.setFloat("uSkyLevel", skyLevel);
+        voxelShader.setFloat("uAmbientFloor", ambientFloor);
+        voxelShader.setFloat("uDayFloor", com.skyisland.world.LightEngine.AMBIENT_FLOOR);
     }
 
     /**
@@ -181,6 +265,8 @@ public final class Renderer {
         voxelShader.bind();
         voxelShader.setInt("uBlockAtlas",
                 com.skyisland.render.mesh.BlockTextureAtlas.TEXTURE_UNIT);
+        // ★ M5a：昼夜三 uniform 也必须写在 bind 之后（理由同 uBlockAtlas）。
+        applyDaylightUniforms();
         chunkRenderer.render(world, camera, voxelShader, frustum);
         entityRenderer.render(voxelShader, camera, entities);
         combatFxRenderer.render(voxelShader, camera, fx);
@@ -221,6 +307,8 @@ public final class Renderer {
         voxelShader.bind();
         voxelShader.setInt("uBlockAtlas",
                 com.skyisland.render.mesh.BlockTextureAtlas.TEXTURE_UNIT);
+        // ★ M5a：手持物同样走 voxelShader，必须重新告知昼夜（uniform 是逐程序的）。
+        applyDaylightUniforms();
         viewmodelRenderer.render(voxelShader, model, framebufferWidth, framebufferHeight);
     }
 

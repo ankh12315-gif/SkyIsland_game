@@ -1,5 +1,7 @@
 package com.skyisland.render;
 
+import com.skyisland.world.LightEngine;
+
 import com.skyisland.render.fx.CombatFxRenderer;
 import com.skyisland.render.geom.Boxes;
 import com.skyisland.render.mesh.CrackOverlay;
@@ -197,10 +199,10 @@ class VertexFormatConsistencyTest {
                 "voxel.vert 缺少 location 0 = aPos");
         assertTrue(code.contains("layout (location = 1) in vec4 aColor"),
                 "voxel.vert 缺少 location 1 = aColor");
-        assertTrue(code.contains("layout (location = " + VertexFormat.LOCATION_LAYER_AO
-                        + ") in vec2 aLayerAo"),
-                "voxel.vert 缺少 location " + VertexFormat.LOCATION_LAYER_AO
-                        + " = aLayerAo");
+        assertTrue(code.contains("layout (location = " + VertexFormat.LOCATION_LAYER_LIGHT
+                        + ") in vec2 aLayerLight"),
+                "voxel.vert 缺少 location " + VertexFormat.LOCATION_LAYER_LIGHT
+                        + " = aLayerLight");
         assertTrue(code.contains("layout (location = " + VertexFormat.LOCATION_UV
                         + ") in vec2 aUv"),
                 "voxel.vert 缺少 location " + VertexFormat.LOCATION_UV
@@ -216,14 +218,14 @@ class VertexFormatConsistencyTest {
         String frag = stripGlslComments(readShader("voxel.frag"));
         String vert = stripGlslComments(readShader("voxel.vert"));
 
-        assertTrue(vert.contains("out vec2 vLayerAo;"),
-                "voxel.vert 必须把 aLayerAo 传下去（out varying）");
+        assertTrue(vert.contains("out vec2 vLayerLight;"),
+                "voxel.vert 必须把 aLayerLight 传下去（out varying）");
         assertTrue(vert.contains("out vec2 vUv;"),
                 "voxel.vert 必须把 aUv 传下去 —— 否则片元拿不到 UV");
         assertTrue(frag.contains("in vec2 vUv;"),
                 "voxel.frag 必须声明配对的 in vec2 vUv —— 缺了它 UV 传下来也没人用");
-        assertTrue(frag.contains("in vec2 vLayerAo;"),
-                "voxel.frag 必须声明配对的 in vec2 vLayerAo —— "
+        assertTrue(frag.contains("in vec2 vLayerLight;"),
+                "voxel.frag 必须声明配对的 in vec2 vLayerLight —— "
                         + "只声明不消费是可接受的（编译器会优化掉），但完全不声明会让"
                         + "'格式已就位'这件事在着色器侧无从断言");
 
@@ -235,13 +237,36 @@ class VertexFormatConsistencyTest {
                 "voxel.frag 必须真的采样纹理数组 —— S3 的核心变更没有落到片元");
         assertTrue(frag.contains("uniform sampler2DArray uBlockAtlas;"),
                 "voxel.frag 必须声明 sampler2DArray");
-        assertTrue(frag.contains("float alpha = texel.a * (1.0 - vLayerAo.y) * uAlpha;"),
-                "alpha 必须是 逐像素 texel.a × 遮蔽 × 材质 三者乘算 —— "
+        // ★ M5a 起这条断言**再次改变了判据**：alpha 从"三层"退回"两层"。
+        //   被删掉的是 (1 - ao) 那一项 —— ao 从 S2 起就是一个从未被计算过的占位，
+        //   恒为 0 ⇒ 该因子恒等于 1。而它所在的槽位现已改派为打包光照（0..31），
+        //   留着会让 alpha 变成**负数**，玻璃与树叶直接消失。
+        assertTrue(frag.contains("float alpha = texel.a * uAlpha;"),
+                "alpha 必须是 逐像素 texel.a × 材质 两层乘算 —— "
                         + "漏掉 texel.a 则玻璃无法'边框实 + 内部透'、树叶无法镂空；"
-                        + "漏掉 (1-ao) 则 ao 语义反了；漏掉 uAlpha 则 pass 调节失效");
-        assertTrue(frag.contains("vec3 rgb = texel.rgb * vColor.rgb * vColor.a;"),
-                "rgb 必须是 贴图 × 顶点色调 × 明暗 三者乘算 —— "
-                        + "删掉 vColor.a 就是删掉明暗，方块会糊成一张平贴纸（PRD §6.2 硬要求）");
+                        + "漏掉 uAlpha 则 pass 调节失效");
+        assertFalse(frag.contains("vLayerLight.y) * uAlpha"),
+                "★ M5a：alpha 里绝不能再有 (1 - vLayerLight.y) —— "
+                        + "vLayerLight.y 现在是 0..31 的打包光照，(1 - 它) 会让 alpha 变成负数，"
+                        + "玻璃/树叶整块消失");
+        assertTrue(frag.contains("float lightPack = vLayerLight.y;"),
+                "voxel.frag 必须真的解码打包光照 —— 否则顶点的第二分量形同虚设");
+        assertTrue(frag.contains("float skyN = step(16.0, lightPack);"),
+                "解码必须用 step(16.0, ...) 取'见天'标志，与 VertexFormat#SKY_FLAG_BIT 一致");
+        assertTrue(frag.contains("float torchN = mod(lightPack, 16.0) / 15.0;"),
+                "解码必须用 mod(lightPack, 16.0) 取火把等级，与 VertexFormat#packLight 一致");
+        assertTrue(frag.contains("max(skyN * uSkyLevel, torchN)"),
+                "★ 火把分量不得乘 uSkyLevel —— 乘了夜里火把会跟着变暗，"
+                        + "PRD §4.4 明写「火把成为主要照明」");
+        assertTrue(frag.contains("uniform float uSkyLevel;"),
+                "voxel.frag 必须声明 uSkyLevel（天光档位）");
+        assertTrue(frag.contains("uniform float uAmbientFloor;"),
+                "voxel.frag 必须声明 uAmbientFloor（当前明暗地板）");
+        assertTrue(frag.contains("uniform float uDayFloor;"),
+                "voxel.frag 必须声明 uDayFloor（烘焙时的白天地板，是分母基准）");
+        assertTrue(frag.contains("vec3 rgb = texel.rgb * vColor.rgb * shade;"),
+                "★ M5a：rgb 必须乘上按当前时刻算出的 shade，"
+                        + "而不是烘焙进顶点的 vColor.a —— 否则昼夜改了 uniform 却看不出变化");
     }
 
     /**
@@ -292,16 +317,16 @@ class VertexFormatConsistencyTest {
     @Test
     void everyVertexWriterFillsAllNineFloats() {
         // 地形 + 十字面：pushVertex 是唯一入口，异形方块经 MeshSink 也走它
-        assertWritesLayerAndAo(SourceScan.readMain("com/skyisland/render/mesh/ChunkMesher.java"),
+        assertWritesLayerAndLight(SourceScan.readMain("com/skyisland/render/mesh/ChunkMesher.java"),
                 "ChunkMesher.pushVertex（地形与异形方块的唯一顶点入口）");
         // 实体 / 手持物：Boxes.emit 是唯一入口
-        assertWritesLayerAndAo(SourceScan.readMain("com/skyisland/render/geom/Boxes.java"),
+        assertWritesLayerAndLight(SourceScan.readMain("com/skyisland/render/geom/Boxes.java"),
                 "Boxes.emit（实体与手持物的唯一顶点入口）");
         // 挖掘裂纹
-        assertWritesLayerAndAo(SourceScan.readMain("com/skyisland/render/mesh/CrackOverlay.java"),
+        assertWritesLayerAndLight(SourceScan.readMain("com/skyisland/render/mesh/CrackOverlay.java"),
                 "CrackOverlay.buildVertices（挖掘裂纹）");
         // 粒子 / 曳光 / 闪光
-        assertWritesLayerAndAo(SourceScan.readMain("com/skyisland/render/fx/CombatFxRenderer.java"),
+        assertWritesLayerAndLight(SourceScan.readMain("com/skyisland/render/fx/CombatFxRenderer.java"),
                 "CombatFxRenderer.emitQuad（粒子/曳光/闪光）");
     }
 
@@ -311,7 +336,7 @@ class VertexFormatConsistencyTest {
      * <p>匹配的是对 {@code VertexFormat.DEFAULT_LAYER} / {@code DEFAULT_AO} 的引用，
      * 而非裸数字 —— 这样"有人把占位值改成一个魔数"也会被发现。
      */
-    private static void assertWritesLayerAndAo(String source, String where) {
+    private static void assertWritesLayerAndLight(String source, String where) {
         String code = SourceScan.withoutComments(source);
         // 层号：地形走形参 layer，非方块几何写纯白层常量。
         //两者都是"写了层号"，因此这里查的是**层号被使用**而不是某个具体常量名。
@@ -319,8 +344,14 @@ class VertexFormatConsistencyTest {
                 where + " 没有写纹理层号 —— 少写一个 float 会让后续顶点整体前移，几何错乱");
         assertTrue(code.contains("VertexFormat.DEFAULT_UV") || where.contains("地形"),
                 where + " 没有写 UV —— 少写两个 float 会让后续顶点整体前移 8 字节");
-        assertTrue(code.contains("VertexFormat.DEFAULT_AO"),
-                where + " 没有写环境光遮蔽（缺少 VertexFormat.DEFAULT_AO）");
+        // ★ M5a：第二分量改派为打包光照。匹配常量名而非裸数字 ——
+        // 地形走 packLight(...) 的返回值，其余三类各写一个语义常量。
+        assertTrue(code.contains("VertexFormat.LIGHT_SKY_EXPOSED")
+                        || code.contains("VertexFormat.LIGHT_ALWAYS_LIT")
+                        || code.contains("VertexFormat.packLight"),
+                where + " 没有写打包光照（缺少 VertexFormat.LIGHT_SKY_EXPOSED / "
+                        + "LIGHT_ALWAYS_LIT / packLight）—— 该槽位若留 0，"
+                        + "这个几何在夜里会静默变成最暗");
     }
 
     /**
@@ -500,18 +531,53 @@ class VertexFormatConsistencyTest {
         assertEquals(List.of(
                         "location=0 vec3 aPos",
                         "location=1 vec4 aColor",
-                        "location=" + VertexFormat.LOCATION_LAYER_AO + " vec2 aLayerAo",
+                        "location=" + VertexFormat.LOCATION_LAYER_LIGHT + " vec2 aLayerLight",
                         "location=" + VertexFormat.LOCATION_UV + " vec2 aUv"),
                 found,
                 "voxel.vert 的属性声明必须恰好是这四条 —— 多一条会让常量表失去完备性，"
                         + "少一条则某个字段无人读取");
     }
 
-    /** ao 的占位值必须是 0 而不是 1（片元要乘 {@code (1 - ao)}）。 */
+    /**
+     * ★ M5a：第二分量从"ao 占位"改派为**打包光照**后的常量口径。
+     *
+     * <p>三条各自都会咬人：
+     * <ul>
+     *   <li>{@code LIGHT_SKY_EXPOSED} 必须正好是标志位本身（16）——
+     *       写成 {@code 16 + 15} 会让"见天"这个语义里混进火把；</li>
+     *   <li>{@code LIGHT_ALWAYS_LIT} 必须正好是满档（{@code MAX_LIGHT}）——
+     *       写成 {@code MAX_LIGHT - 1} 时粒子在白天就比地形暗一点，
+     *       而那种偏差极难被归因到"某个常量差了一格"；</li>
+     *   <li>打包值必须落在 0..{@code 2*MAX_LIGHT+1} 内 —— 越界会让
+     *       {@code mod(lightPack, 16.0)} 解出错误的火把等级，且不报任何错。</li>
+     * </ul>
+     */
+    @Test
+    void thePackedLightConstantsMeanWhatTheirNamesSay() {
+        assertEquals(LightEngine.MAX_LIGHT, VertexFormat.LIGHT_ALWAYS_LIT, 0f,
+                "LIGHT_ALWAYS_LIT 必须是满档火把（粒子/曳光/裂纹不受昼夜影响）");
+        assertEquals(VertexFormat.SKY_FLAG_BIT, VertexFormat.LIGHT_SKY_EXPOSED, 0f,
+                "LIGHT_SKY_EXPOSED 就是标志位本身：见天、无火把");
+
+        for (boolean sky : new boolean[] {false, true}) {
+            for (int torch = 0; torch <= LightEngine.MAX_LIGHT; torch++) {
+                float lightPack = VertexFormat.packLight(sky, torch);
+                assertTrue(lightPack >= 0f && lightPack <= 2f * LightEngine.MAX_LIGHT + 1f,
+                        "打包值越界：" + sky + "/" + torch + " -> " + lightPack);
+                assertEquals(sky ? 1f : 0f, lightPack >= VertexFormat.SKY_FLAG_BIT ? 1f : 0f, 0f,
+                        "'见天'标志解码错误：" + sky + "/" + torch + " -> " + lightPack);
+                assertEquals((float) torch, lightPack % VertexFormat.SKY_FLAG_BIT, 0f,
+                        "火把等级解码错误：" + sky + "/" + torch + " -> " + lightPack);
+            }
+        }
+        // 越界的火把等级必须被夹住，而不是让 lightPack 越界（否则片元解出错值）
+        assertEquals((float) LightEngine.MAX_LIGHT,
+                VertexFormat.packLight(false, LightEngine.MAX_LIGHT + 9), 0f);
+        assertEquals(0f, VertexFormat.packLight(false, -3), 0f);
+    }
+
     @Test
     void aoPlaceholderMeansNoOcclusion() {
-        assertEquals(0f, VertexFormat.DEFAULT_AO, 0f,
-                "ao = 0 才表示\"完全不遮蔽\"；传 1 会被 (1 - ao) 压成全黑");
         assertEquals(0f, VertexFormat.DEFAULT_UV, 0f,
                 "非方块几何的 UV 是固定占位（它们采样纯白层，UV 取何值都不影响结果）");
     }

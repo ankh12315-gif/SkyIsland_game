@@ -26,20 +26,25 @@ class BlockRegistryTest {
     /**
      * 登记子集的数量。故意写死：新增方块时必须有人显式改这个数字并想一遍存档兼容。
      *
-     * <p><b>17 = 1 空气 + 15 玩家常规 + 1 系统方块。</b>
+     * <p><b>22 = 1 空气 + 20 玩家常规 + 1 系统方块。</b>
      *
      * <p>沿革：M1 为 10（含提前注册的石砖）；Pre-M2 Corrective Closure（用户裁决 A10）
      * 把石砖移回 Alpha / M4，降为 9；M2 补齐 PRD 5.1 缺失的 6 种
      * （原木 / 树叶 / 铁矿石 / 煤炭矿石 / 火把 / 木门）后升为 15
-     * —— 此时才真正达成 PRD 的「13 种玩家常规方块 + 1 种系统方块」。
+     * —— 此时才真正达成 PRD 的「13 种玩家常规方块 + 1 种系统方块」；
+     * 2026-10-02 步枪材料链追加铜矿石与晶体矿石，升为 17；
+     * <b>2026-10-07（M4-S5）补齐 PRD_BLOCK_CREATIVE §3.1 的 5 种，升为 22。</b>
      *
-     * <p><b>2026-10-02 升为 17：</b>步枪材料链追加了铜矿石与晶体矿石
-     * （PRD 5.1【Alpha 必须】），玩家常规方块由 13 升为 15。
-     * <b>这次改动的连带影响比"多两块方块"大</b>：方块物品排在物品表最前面，
-     * 因此所有非方块物品的 runtimeId 整体 +2（见 {@code ItemRegistryTest}
-     * 的 {@code pistolRuntimeIdIsStable}）。改这个数字前必须想一遍那条位移。
+     * <p><b>2026-10-07 这次改动的连带影响比"多五块方块"大</b>：方块物品排在物品表最前面，
+     * 因此所有非方块物品的 runtimeId 整体 <b>+5</b>（手枪 19→24、SMG 20→25、步枪 27→32），
+     * 物品表 28 → 33（见 {@code ItemRegistryTest} 的
+     * {@code registrySizeIsPinnedAndRuntimeIdsStillMatchTheirIndex}）。
+     *
+     * <p>★ <b>22 不是 13。</b>MVP 门禁口径 13（{@code MVP_CORE_PLAYER_BLOCK_COUNT}）
+     * 与注册表规模是<b>两回事，不可互相推导</b>：门禁口径衡量"PRD 的 MVP 口径没被改动"，
+     * 注册表规模衡量"代码里登记了多少种"。S5 补方块不改变 M3 的验收结论。
      */
-    private static final int EXPECTED_BLOCK_COUNT = 17;
+    private static final int EXPECTED_BLOCK_COUNT = 22;
 
     @Test
     void airOccupiesRuntimeIdZero() {
@@ -61,7 +66,8 @@ class BlockRegistryTest {
     @Test
     void m1SubsetHasExpectedSize() {
         assertEquals(EXPECTED_BLOCK_COUNT, BlockRegistry.size(),
-                "M1 注册子集被改动 —— 请同时确认存档兼容性与本测试里的断言");
+                "注册子集被改动 —— 请同时确认存档兼容性与本测试里的断言。"
+                        + "★ 当前 22 = 空气 1 + 玩家常规 20 + 系统 1（PRD §3.4 口径）。");
     }
 
     // ================================================================
@@ -72,19 +78,26 @@ class BlockRegistryTest {
      * PRD 5.1 / 5.1.1 的数量口径。
      *
      * <p>原来这里断言"玩家常规方块 = 13"（MVP 口径）。2026-10-02 追加了
-     * 2 种【Alpha 必须】矿石后变成 15 —— 但把它拆成
-     * "MVP 核心 13 + Alpha 追加 2 = 15" 三条断言，而不是把 13 改成 15：
-     * 只该数字的话，"PRD 的 MVP 口径被悄悄改动"这件事就再也看不出来了。
+     * 2 种【Alpha 必须】矿石后变成 15；2026-10-07（M4-S5）补齐 5 种后变成 20。
+     * 但它<b>始终被拆成"MVP 核心 13 + Alpha 追加 2 + Alpha 内容 3 + 后续迭代 2"</b>四条，
+     * 而不是把 13 改成 20：只改数字的话，"PRD 的 MVP 口径被悄悄改动"这件事就再也看不出来了。
+     *
+     * <p>★ 13 那一行是本测试的<b>重点</b>，不是走过场。
      */
     @Test
     void blockCountMatchesPrdMvpCorePlusAlphaOres() {
         assertEquals(BlockRegistry.MVP_CORE_PLAYER_BLOCK_COUNT, 13,
-                "PRD 5.1：MVP 玩家常规方块口径 = 13 种（这个常量是 PRD 的原文数字）");
+                "PRD 5.1：MVP 玩家常规方块口径 = 13 种（这个常量是 PRD 的原文数字，"
+                        + "S5 补方块**不许**改它 —— 解除的是登记与实现，不是 MVP 门禁范围）");
         assertEquals(BlockRegistry.ALPHA_ORE_BLOCK_COUNT, 2,
                 "步枪材料链追加的 Alpha 矿石 = 2 种（铜矿石 / 晶体矿石）");
-        assertEquals(BlockRegistry.MVP_CORE_PLAYER_BLOCK_COUNT + BlockRegistry.ALPHA_ORE_BLOCK_COUNT,
+        assertEquals(BlockRegistry.ALPHA_CONTENT_BLOCK_COUNT, 3,
+                "S5 追加的 Alpha 内容方块 = 3 种（金矿石 / 小麦 / 石砖）");
+        assertEquals(BlockRegistry.POST_MVP_BLOCK_COUNT, 2,
+                "S5 追加的后续迭代方块 = 2 种（铁块 / 台阶）");
+        assertEquals(BlockRegistry.EXPECTED_PLAYER_BLOCK_COUNT,
                 BlockRegistry.playerBlockCount(),
-                "当前玩家常规方块 = MVP 核心 13 + Alpha 矿石 2 = 15");
+                "当前玩家常规方块 = MVP 核心 13 + Alpha 矿石 2 + Alpha 内容 3 + 后续迭代 2 = 20");
         assertEquals(1, BlockRegistry.systemBlockCount(),
                 "PRD 5.1.1：系统方块 = 1 种（资源核心），单独计数、不得算作玩家方块");
     }

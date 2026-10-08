@@ -1,31 +1,33 @@
 package com.skyisland.world.block;
 
 /**
- * <b>测试专用</b>的方块工厂 —— 提供 PRD §3.2.2（小麦）与§3.2.5（台阶）规格的方块，
- * 但<b>不把它们登记进 {@link BlockRegistry}</b>。
+ * <b>测试专用</b>的方块工厂 —— 提供 PRD §3.2.2（小麦）与§3.2.5（台阶）规格的方块。
  *
- * <h2>为什么不登记</h2>
- * 登记是 S5 的职责（PRD §8），而 {@code BlockRegistry} 一旦 bootstrap 就冻结，
- * 且 {@code BlockRegistryTest} 对 {@code size()} 与 {@code playerBlockCount()} 有硬编码断言。
- * 在S1 期间登记测试方块会让那些断言变红，等于<b>把后续步骤的账先欠下</b>。
+ * <h2>★ 更新（2026-10-07，M4-S5 落地后）</h2>
+ * <p>S5 已在 {@link BlockRegistry} 里<b>正式登记</b>了小麦与台阶
+ * （见 {@code BlockRegistryS5Test}）。本类<b>仍然保留</b>，但用途已变：
+ * <ul>
+ *   <li><b>不再是</b> wheat / slab 的规格来源 —— 那两项现在由 {@code BlockRegistry} 断言；</li>
+ *   <li>它现在只提供<b>真实注册表无法表达的东西</b>：
+ *       {@link #crossWithCollisionFlagOn} 那种"故意把 collision 配成 true 的十字面方块"。
+ *       这在生产注册表里<b>不可能合法存在</b>，而它正是验证
+ *       「形态对玩法开关有否决权」这条不变式唯一的构造方式
+ *       （见 {@code BlockRegistryS5Test#crossShapeHasVetoPowerOverTheCollisionFlag}）。</li>
+ * </ul>
  *
- * <h2>为什么需要它</h2>
- * 异形网格与碰撞的判据是"顶点数/碰撞盒形状"，这些都必须在<b>真实的主循环</b>上验证
- * （只测辅助类无法排除"主循环压根没调用它"的死接线）。
- * 而主循环读的是 {@code ChunkMesher.build(..., IntFunction<Block>)} 里的解析器 ——
- * 注入本类产物即可端到端跑通，<b>且对生产注册表零污染</b>。
- *
- * <h2>runtimeId 的取法</h2>
- * 用 {@link #TEST_RUNTIME_ID_BASE} 起的一段<b>远离现有 0..16</b> 的高位 ID：
- * 若测试世界里的测试方块 ID 与真实方块 ID 撞了，
- * 区块里就会<b>同时</b>出现两种方块，断言会以一种极难定位的方式失败。
+ * <h2>为什么它仍然不污染生产注册表</h2>
+ * {@code BlockRegistry} 一旦 bootstrap 就冻结，且 {@code BlockRegistryTest}
+ * 对 {@code size()} 与 {@code playerBlockCount()} 有硬编码断言。
+ * 把这些方块塞进测试世界时必须用 {@link #TEST_RUNTIME_ID_BASE} 起的
+ * <b>远离生产 ID 段（0..21）</b>的高位 ID：若撞了，
+ * 区块里就会<b>同时</b>出现两种方块，断言会以极难定位的方式失败。
  */
 public final class BlockFixtures {
 
     /**
      * 测试方块的 runtimeId 起点。
      *
-     * <p>现有注册表占 0..16（17 种，见 {@code BlockRegistryTest}）。
+     * <p>现有注册表占 0..21（22 种，见 {@code BlockRegistryTest}；2026-10-07 S5 之后）。
      * 取 <b>1000</b> 起，与之相距甚远，撞车时肉眼即可发现。
      */
     public static final int TEST_RUNTIME_ID_BASE = 1000;

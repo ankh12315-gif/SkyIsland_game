@@ -39,8 +39,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p><b>关于"满方块路径未被破坏"：</b>原有 {@link ChunkMesherTest} 全部保持不变并全绿，
  * 那才是最强证据（满方块走的是<b>另一条</b>代码分支，见 {@code emitFace} 的形态分派）。
- * 本类末尾仍有一条"注册表里17 种方块全是满方块"的显式断言，
- * 防止将来有人顺手把某个既有方块改成异形却忘了重算面数。
+ * 本类末尾有一条"既有 17 种方块全是满方块、且 S5 新增 2 种确为异形"的显式断言，
+ * 防止将来有人顺手把某个既有方块改成异形却忘了重算面数
+ * —— 也防止有人反过来把小麦/台阶改成满方块来"修绿"它。
  */
 class NonFullBlockMesherTest {
 
@@ -327,14 +328,43 @@ class NonFullBlockMesherTest {
 
     // ============================================================ 满方块路径未被破坏
 
+/**
+     * ★ 原有 17 种方块必须<b>仍然全是满方块</b>；只有 S5 新增的 2 种可以是异形。
+     *
+     * <p><b>这条断言的意图从未变</b>：防"顺手把既有方块改成异形"——
+     * 那样会让一批按 6 面写死的断言集体变红，
+     * 而变红的原因（数量变化）与真正的病因（形态被改）相隔很远。
+     *
+     * <p><b>2026-10-07 的形态化改动（不是放宽）</b>：
+     * S5 登记小麦（{@link BlockShape#CROSS}）与台阶（{@link BlockShape#SLAB_BOTTOM}）后，
+     * "注册表里所有方块都是满方块"这句话本身就不成立了。
+     * 但<b>不能因此把断言删掉或改成 >= </b>——那正好会放过它本来要防的那件事。
+     * 因此改为<b>显式白名单</b>：既有的 17 种（含空气）逐一断死为 FULL，
+     * 白名单里的 2 种则断死为它们各自的形态（防止形态被悄悄改掉）。
+     *
+     * <p>白名单用 {@code stable ID} 字符串而不是 {@code runtimeId}：
+     * 后者会随每次追加方块整体位移，改一次就得重钉一次。
+     */
     @Test
-    void everyRegisteredBlockIsStillAFullCube() {
-        // 防"顺手把既有方块改成异形"：那样会让一批按 6 面写死的断言集体变红，
-        // 而变红的原因（数量变化）与真正的病因（形态被改）相隔很远。
+    void everyPreS5BlockIsStillAFullCubeAndS5OnesAreNot() {
+        java.util.Set<String> nonFullByS5 = java.util.Set.of(
+                "skyisland:wheat",   // 十字交叉面
+                "skyisland:slab");   // 半高台阶
         for (Block b : BlockRegistry.all()) {
+            if (nonFullByS5.contains(b.id())) {
+                continue;
+            }
             assertSame(BlockShape.FULL, b.shape(),
-                    "既有方块 " + b.id() + " 的形态被改动了 —— 本轮（登记属 S5）不应发生");
+                    "既有方块 " + b.id() + " 的形态被改动了 —— 本轮（登记属 S5）不应发生。"
+                            + "若确实要改形态，请先重算按 6 面写死的那批断言，并更新本白名单。");
         }
+        // 反向：白名单里的两种必须**仍然是**异形，防止"为了让它变绿"而改成满方块。
+        assertSame(BlockShape.CROSS, BlockRegistry.wheat().shape(),
+                "小麦必须是十字交叉面（PRD §3.2.2）。"
+                        + "★ 把它改成 FULL 是本断言最可能的取巧方式 —— 那会让上面那条绿。");
+        assertSame(BlockShape.SLAB_BOTTOM, BlockRegistry.slab().shape(),
+                "台阶必须是半高（PRD §3.5 降级裁定）。"
+                        + "★ 改成 FULL 会让玩家以为站在一整格高的方块上。");
     }
 
     @Test

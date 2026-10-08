@@ -85,7 +85,7 @@ public final class CrackOverlay {
      */
     private static final float INNER_MARGIN = 0.06f;
 
-    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerAo(vec2)。 */
+    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerLight(vec2)。 */
     private static final int FLOATS_PER_VERTEX = VertexFormat.FLOATS_PER_VERTEX;
     /**
      * 每段 6 个顶点（两个三角形，不用 EBO：总顶点数最多 60，索引省不下什么）。
@@ -339,7 +339,9 @@ public final class CrackOverlay {
                 // S2/S3 新增：裂纹不是体素，采样纯白层（画面因此逐像素不变）。
                 // 必须写满 —— 少写两个 float 会让下一个顶点整体前移 8 字节。
                 out[w++] = BlockTextureLayers.NEUTRAL_WHITE;
-                out[w++] = VertexFormat.DEFAULT_AO;
+                // ★ M5a：第二分量改派为打包光照。裂纹是覆盖层，
+            //   跟着昼夜变暗就等于"夜里看不见自己在挖哪一块"。
+            out[w++] = VertexFormat.LIGHT_ALWAYS_LIT;
                 // S3 新增：UV（纯白层上取何值都不影响结果）。
                 out[w++] = VertexFormat.DEFAULT_UV;
                 out[w++] = VertexFormat.DEFAULT_UV;

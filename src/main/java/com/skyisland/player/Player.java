@@ -63,6 +63,42 @@ public final class Player {
 
     public static final double REACH = 5.0;
 
+    // ------------------------------------------------------------ 创造模式（M4-S8b，PRD §5）
+
+    /**
+     * 飞行水平速度（格/秒）。
+     *
+     * <p>取 {@link #WALK_SPEED} 的约 2 倍：飞行是用来<b>到达</b>的，
+     * 按走路速度横穿自己刚建的东西会让人失去飞的动机。
+     * PRD §5.4 没有指定数值，这里取一个"明显快于走、又慢到还能精确停在某一格"的值。
+     */
+    public static final double FLY_SPEED = 9.0;
+
+    /** 飞行上升 / 下降速度（格/秒）；两者等速，垂直定位才对称可控。 */
+    public static final double FLY_VERTICAL_SPEED = 6.0;
+
+    /**
+     * 双击空格的判定窗口（秒）。
+     *
+     * <p>0.3 是通用的人机工效值；它必须<b>明显大于</b>一次单跳的按键时长
+     * （否则"想跳一下"会被判成双击而意外起飞），又必须<b>明显小于</b>
+     * 两次意图跳跃之间的间隔（否则"跳→落地→再跳"会被误判成双击）。
+     */
+    public static final double DOUBLE_TAP_SECONDS = 0.3;
+
+    /** 飞行垂直速度的逼近系数（与水平同口径：越大越跟手）。 */
+    private static final double FLY_VERTICAL_ACCEL = 12.0;
+
+    /**
+     * 创造模式"按住左键连续破坏"的间隔（秒）。
+     *
+     * <p>PRD §5.2 只说"破坏瞬时"，没说"长按时的重复率"。
+     * 若按逻辑步重复，按住左键扫一圈会以 <b>60 格/秒</b> 摧毁地形 ——
+     * 那不是"瞬时"，那是"不可控"。取 0.15 秒（约 6.7 格/秒）让长按仍然是
+     * 一个可以瞄准的动作，同时逐格点击不受任何影响（点一次立刻破坏）。
+     */
+    public static final double CREATIVE_BREAK_COOLDOWN_SECONDS = 0.15;
+
     // ------------------------------------------------------------ 瞄准（M2）
 
     /**
@@ -299,6 +335,45 @@ public final class Player {
      */
     private double lookDegPerPixel = Camera.SENSITIVITY_DEG_PER_PIXEL;
 
+    // ---- 创造模式能力（M4-S8b，PRD §5.2 – §5.5）----
+
+    /**
+     * 创造能力总开关：瞬时破坏 / 放置不消耗 / 免疫伤害 / 虚空不死 / 可飞行，
+     * 五条都由它一个开关控制（PRD §5「主理人全选，五项全做」）。
+     *
+     * <p><b>为什么是 {@code Player} 上的一个布尔，而不是让它去问游戏模式：</b>
+     * 物理层不该依赖存档层。模式由 {@code SaveManager#effectiveGameMode()} 在装配期
+     * 一次性定死（PRD §4.3 模式锁定），这里只持有那个决定的<b>结果</b> ——
+     * 与 {@code CombatController#setReserveMode} 同一条口径。
+     * 反过来若让 {@code Player} 每步去查模式，"本局会不会中途变"就会变成一个
+     * 谁也说不清的问题（存档读两次可能给出两个答案）。
+     */
+    private boolean creativeMode;
+
+    /** 是否正在飞行（PRD §5.4）。只有创造模式下才可能为 {@code true}。 */
+    private boolean flying;
+
+    /** 双击空格检测：上一次"跳键按下沿"的时刻（{@link #clockSeconds} 口径）。 */
+    private double lastJumpTapSeconds = Double.NEGATIVE_INFINITY;
+
+    /** 跳键在本步之前是否已经按住（用于取按下沿）。 */
+    private boolean jumpWasHeld;
+
+    /**
+     * 玩家内部时钟（秒）。只为双击判定服务 ——
+     * 它是"逻辑步累加"而不是墙钟，于是<b>帧率与逻辑步长的任何变化都不影响双击窗口</b>。
+     */
+    private double clockSeconds;
+
+    /** 是否已经因坠入虚空而被"停在虚空底部"（创造模式，只用于把日志压成一条）。 */
+    private boolean parkedInVoid;
+
+    /** 上一次创造模式破坏的时刻（{@link #clockSeconds} 口径），用于长按重复率。 */
+    private double lastCreativeBreakSeconds = Double.NEGATIVE_INFINITY;
+
+    /** 创造模式免疫掉的伤害次数（PRD §5.5）。 */
+    private long damageNegated;
+
     // ---- 挖掘状态（B10）----
     private boolean mining;
     private int miningX = Integer.MIN_VALUE;
@@ -443,9 +518,16 @@ public final class Player {
 
         updateLook(intent);
         updateAiming(intent);
+        // ★ 飞行开关必须在移动之前判定：本步起飞就要用飞行的水平速度与无重力。
+        updateFlightToggle(intent, dt);
         applyMovementInput(intent, dt);
-        applyJump(intent);
-        applyGravity(dt);
+        if (flying) {
+            // ★ 飞行时"跳跃 + 重力"整条被"垂直速度可控"替代，而不是叠加在上面。
+            applyFlightVertical(intent, dt);
+        } else {
+            applyJump(intent);
+            applyGravity(dt);
+        }
         // 本步开始时的滞空状态 == 上一步结束时的状态；必须在位移之前取，
         // 否则"落地那一步"会被当成"本来就站在地上"，最后一步的下坠量就丢了。
         boolean airborneAtStepStart = !onGround;
@@ -635,13 +717,16 @@ public final class Player {
                 dirX = 0;
                 dirZ = 0;
             }
-        } else if (!onGround) {
-            // 空中且没有输入：保持动量，不做任何衰减
+        } else if (!onGround && !flying) {
+            // 空中且没有输入：保持动量，不做任何衰减。
+            // ★ 飞行例外：空中悬停不按键必须收住水平速度，否则"松开方向键继续飘"
+            //   会让飞行无法精确停在一格上方 —— 而精确停住正是飞行唯一的用途。
             return;
         }
 
-        double targetVx = dirX * WALK_SPEED;
-        double targetVz = dirZ * WALK_SPEED;
+        double speed = flying ? FLY_SPEED : WALK_SPEED;
+        double targetVx = dirX * speed;
+        double targetVz = dirZ * speed;
         if (aiming) {
             // PRD 5.4.3：瞄准时移动速度降至 60%。
             // 只削"目标速度"而不削结果速度：加速 / 减速 / 空中惯性共用同一条曲线，
@@ -654,7 +739,8 @@ public final class Player {
 
         // 指数逼近：与帧率无关（用 exp(-k·dt) 而不是每帧固定比例），
         // 否则逻辑步与渲染帧率一变，"手感"就会跟着变。
-        double accel = onGround ? GROUND_ACCEL : AIR_ACCEL;
+        // 飞行时的水平控制与地面同档（跟手），空中惯性只属于"跳跃/坠落"那条路
+        double accel = (onGround || flying) ? GROUND_ACCEL : AIR_ACCEL;
         double t = 1.0 - Math.exp(-accel * dt);
         velocity.x += (targetVx - velocity.x) * t;
         velocity.z += (targetVz - velocity.z) * t;
@@ -662,6 +748,10 @@ public final class Player {
 
     /**
      * 起跳。
+     *
+     * <p><b>飞行时不走这里。</b>飞行中空格是"上升"而不是"起跳"，
+     * 若两条路都走，玩家在飞行中按住空格会同时获得上升速度与一次起跳初速，
+     * 表现为"一按空格就往上弹一下" —— 而且只在恰好贴着地面时发生，极难归因。
      *
      * <p><b>为什么"是否在地面"用上一步的结果而不是本步重算：</b>
      * 站立判定依赖"位移已经发生"，而跳跃必须发生在位移<u>之前</u>。
@@ -673,10 +763,125 @@ public final class Player {
      * 而"按住空格连跳"是允许的 —— 落地后每步都会重新赋值，表现为连续起跳。
      */
     private void applyJump(PlayerIntent intent) {
+        if (flying) {
+            return;
+        }
         if (intent.jump() && onGround) {
             velocity.y = JUMP_VELOCITY;
             onGround = false;   // 立即离开地面态，避免同一步内被再次判定为站立
         }
+    }
+
+    // ============================================================ 创造模式能力（M4-S8b）
+
+    public boolean isCreativeMode() {
+        return creativeMode;
+    }
+
+    /**
+     * 设定创造能力总开关（PRD §5.2 – §5.5 五项）。
+     *
+     * <p><b>关闭时必须同时停止飞行：</b>否则玩家会"以生存模式的身体继续飞着"，
+     * 而生存模式既没有免疫也没有虚空保护 —— 一次飞行变成一次必死的下坠。
+     * 这种"能力被拿走但状态还在"的残留是典型的半途状态，必须在这里一次性收干净。
+     */
+    public void setCreativeMode(boolean enabled) {
+        if (creativeMode && !enabled && flying) {
+            flying = false;
+            if (velocity.y > 0) {
+                velocity.y = 0;
+            }
+            Log.info("[玩家] 创造能力已关闭，飞行状态一并停止。");
+        }
+        this.creativeMode = enabled;
+    }
+
+    public boolean isFlying() {
+        return flying;
+    }
+
+    /** 创造模式免疫掉的伤害次数（含坠落与怪物攻击）。创造能力关闭后不复位。 */
+    public long damageNegatedCount() {
+        return damageNegated;
+    }
+
+    /**
+     * 直接设定飞行状态。
+     *
+     * <p><b>非创造模式一律拒绝</b>：飞行是创造能力的一部分（PRD §5.4），
+     * 生存模式没有入口可以打开它。这条拒绝不是防御性代码 —— 它是
+     * "飞行只有创造模式能开"这条规则<b>唯一</b>的落点，因此必须有断言盯着。
+     */
+    public void setFlying(boolean enabled) {
+        if (enabled && !creativeMode) {
+            Log.noteWarning("Player", "生存模式不允许开启飞行（PRD §5.4），已忽略。");
+            return;
+        }
+        if (flying == enabled) {
+            return;
+        }
+        flying = enabled;
+        if (!flying) {
+            // 停飞不保留上升速度：否则"关掉飞行"会变成"再往上冲一段"，
+            // 而那一段高度在关闭创造能力后是要用坠落伤害去还的。
+            if (velocity.y > 0) {
+                velocity.y = 0;
+            }
+        }
+    }
+
+    /**
+     * 双击空格切换飞行（PRD §5.4）。
+     *
+     * <p><b>为什么判"按下沿之间的间隔"而不是"按住时长"：</b>
+     * 双击的语义是"两次独立的按下"，按住空格（连跳）不该起飞。
+     * 判按住时长会把"长按空格连续起跳"误判成双击 —— 而那正是生存模式里最常见的操作。
+     *
+     * <p><b>为什么用逻辑步累加的 {@link #clockSeconds} 而不是墙钟：</b>
+     * 窗口必须是"游戏内时间"，否则一次掉帧（墙钟跳 200 ms）会让两次正常跳跃
+     * 变成一次双击。这与本项目"帧率不得影响行为"是同一条纪律。
+     */
+    private void updateFlightToggle(PlayerIntent intent, double dt) {
+        clockSeconds += dt;
+        boolean held = intent.jump();
+        boolean tapped = held && !jumpWasHeld;
+        jumpWasHeld = held;
+        if (!creativeMode) {
+            // 生存模式：单击与双击都是跳跃，双击窗口不积累（否则切模式后第一次跳就起飞）
+            lastJumpTapSeconds = Double.NEGATIVE_INFINITY;
+            return;
+        }
+        if (!tapped) {
+            return;
+        }
+        boolean doubleTap = clockSeconds - lastJumpTapSeconds <= DOUBLE_TAP_SECONDS;
+        lastJumpTapSeconds = clockSeconds;
+        if (!doubleTap) {
+            return;
+        }
+        // ★ 记下这一次"双击"已被消费：不把 lastJumpTapSeconds 推远的话，
+        //   第三次点击又会与第二次组成一次新的双击（连点 = 反复开关）。
+        lastJumpTapSeconds = Double.NEGATIVE_INFINITY;
+        setFlying(!flying);
+        Log.info("[玩家] 双击空格：飞行已%s。", flying ? "开启" : "关闭");
+    }
+
+    /**
+     * 飞行时的垂直速度（PRD §5.4「垂直速度可控」）。
+     *
+     * <p>上升 = 空格，下降 = Shift（{@code sneak}），都不按 = 悬停。
+     * 三种状态都走同一条指数逼近曲线，于是"松开空格"是平滑收住而不是急停 ——
+     * 垂直方向的手感与水平方向（{@link #applyMovementInput}）因此保持一致。
+     */
+    private void applyFlightVertical(PlayerIntent intent, double dt) {
+        double target = 0;
+        if (intent.jump()) {
+            target = FLY_VERTICAL_SPEED;
+        } else if (intent.sneak()) {
+            target = -FLY_VERTICAL_SPEED;
+        }
+        double t = 1.0 - Math.exp(-FLY_VERTICAL_ACCEL * dt);
+        velocity.y += (target - velocity.y) * t;
     }
 
     private void applyGravity(double dt) {
@@ -824,6 +1029,13 @@ if (world.collidesWith(probe.minX(), probe.minY(), probe.minZ(),
      * @param descended 本逻辑步实际下降的高度（格），上升为负
      */
     private void updateFallState(World world, double descended, boolean airborneAtStepStart) {
+        if (flying) {
+            // ★ 飞行中的升降不是"坠落"：不累计坠落距离，也不产生落地事件。
+            //   否则玩家飞高之后关掉飞行，落地结算会把整段飞行高度当成坠落伤害
+            //   （创造模式免疫了它，但那个数会留在 HUD 上，看起来像 bug）。
+            fallDistance = 0;
+            return;
+        }
         // 只要"这一步的前后不同时站在地面上"，这段位移就算滞空位移。
         // 两个端点都要看：只看落地后的状态会漏掉落地那一步的最后一截，
         // 只看起跳前的状态会漏掉走下悬崖那一步的第一截。
@@ -926,6 +1138,27 @@ if (world.collidesWith(probe.minX(), probe.minY(), probe.minZ(),
     }
 
     private void checkVoid(World world) {
+        // ★ PRD §5.5 的例外（必须写明）：创造模式下玩家可能主动飞下虚空，
+        //   若按生存规则处理，"飞行"就变成"自杀"。裁定是不掉落、不死亡，
+        //   视为"停在虚空底部"。生存模式的虚空死亡规则一字不改（走下面那条路）。
+        if (creativeMode) {
+            if (Coords.isVoidDeath(position.y)) {
+                position.y = Coords.VOID_KILL_Y;
+                if (velocity.y < 0) {
+                    velocity.y = 0;
+                }
+                fallDistance = 0;
+                if (!parkedInVoid) {
+                    parkedInVoid = true;
+                    Log.info("[玩家] 创造模式：已停在虚空底部 (y=%.2f)，不死亡、不掉落。", position.y);
+                }
+            } else if (position.y > Coords.VOID_KILL_Y + 1.0) {
+                // ★ 只有"明确离开虚空"才复位提示标志。
+                //   若紧贴阈值复位，玩家被夹在 y=-8 上会每一步都重打一次日志。
+                parkedInVoid = false;
+            }
+            return;
+        }
         if (Coords.isVoidDeath(position.y)) {
             // PRD 5.3：「坠落至 y < -8 直接死亡，<b>不结算普通坠落伤害</b>」。
             // 虚空是"直接死"，不是"挨一次致命伤" —— 所以走 die() 而不是 hurt()。
@@ -996,6 +1229,14 @@ if (world.collidesWith(probe.minX(), probe.minY(), probe.minZ(),
         if (dead || amount <= 0) {
             return;
         }
+        // ★ PRD §5.5：创造模式免疫伤害（怪物攻击与坠落伤害都走这里）。
+        //   位置必须在这里而不是在调用方：调用方有三个（落地结算、实体 tick、战斗），
+        //   在其中任何一侧加判断都会漏掉另外两个，而漏掉的表现是
+        //   "创造模式被打死" —— 一个本不该存在的状态。
+        if (creativeMode) {
+            damageNegated++;
+            return;
+        }
         DamageCause source = cause == null ? DamageCause.GENERIC : cause;
         lastDamageCause = source;
         lastDamageAmount = amount;
@@ -1014,6 +1255,29 @@ if (world.collidesWith(probe.minX(), probe.minY(), probe.minZ(),
     /** 满血（调试 / 自测用；MVP 无自然回血，PRD 5.3.2 的自然回血属 Alpha）。 */
     public void healFull() {
         health = MAX_HEALTH;
+    }
+
+    /**
+     * 从存档恢复生命值（M2 起{@code player.json} 才有这个字段）。
+     *
+     * <p><b>为什么是独立方法而不是 {@link #applyLoadedState} 的第 10 个参数</b>：
+     * {@code applyLoadedState} 已经有 9 个参数、5 处调用点
+     * （{@code SaveManager}、{@code SkyIslandGame.startNewWorld} 与三处自测）。
+     * 为一个可独立追加的字段改签名，收益是"参数列表更整齐"，
+     * 代价是<b>所有调用点都要复核</b> —— 而自测调用点漏改的症状是
+     * "编译不过"，尚属可接受；真正危险的是改完之后**没人重新核对语义**。
+     *
+     * <p>★<b>夹到 {@code [1, MAX_HEALTH]} 而不是 {@code [0, MAX_HEALTH]}：</b>
+     * 读档后 {@code health == 0} 会被 {@link #isDead()} 判成已死，
+     * 玩家一进世界就进入死亡流程。存档里出现 0 只可能是坏档或旧版本产物，
+     * 把它当"1 血"处理比"一进游戏就死"温和得多。
+     *
+     * <p>★ <b>刻意不写 {@code dead} 标志</b>：读档恢复的是"生命值"这一个数，
+     * 而 {@code dead} 的语义是"这一局已经结束过"，由 {@code deaths} 与重生流程决定。
+     * 两者混在一起会出现"血是 3、但标志说已死"这种自相矛盾的状态。
+     */
+    public void applyLoadedHealth(int loaded) {
+        health = Math.max(1, Math.min(MAX_HEALTH, loaded));
     }
 
     private void die(World world, String cause, boolean voidDeath) {
@@ -1247,38 +1511,62 @@ if (world.collidesWith(probe.minX(), probe.minY(), probe.minZ(),
             return;
         }
 
-        miningProgressSeconds += dt;
-        if (miningProgressSeconds >= block.hardness()) {
-            World.MutationResult r = world.breakBlock(miningX, miningY, miningZ,
-                    World.MutationCause.PLAYER_BREAK);
-            if (r.success()) {
-                // ------------------------------------------------------------
-                // G13 修复：按方块的掉落表结算，不再一律掉落自身。
-                //
-                // M1 这里写的是 inventory.add(hit.blockRuntimeId(), 1)，
-                // 于是"挖石头得到石头"，而 PRD 5.1 要求石头掉圆石、草方块掉泥土、
-                // 玻璃与树叶不掉落。审计把这条记为 G13（方块掉落表完全未实现），
-                // 根因是"掉落规则没有地方可写"—— 现在它写在方块的注册行里。
-                //
-                // 掉落物走 stable ID 查物品表：方块与物品是两套注册表，
-                // 煤炭矿石掉的是"煤炭物品"，不是"煤炭矿石方块"。
-                // ------------------------------------------------------------
-                if (block.hasDrop()) {
-                    int dropItemId = ItemRegistry.runtimeIdOf(block.dropItemId());
-                    int leftover = inventory.add(dropItemId, block.dropCount());
-                    if (leftover > 0) {
-                        Log.noteWarning("Player", "背包已满，丢弃 " + leftover + " 个 " + block.dropItemId());
-                    }
-                    notifyBlockBroken(miningX, miningY, miningZ, block, leftover);
-                } else {
-                    Log.info("[挖掘] %s 无掉落（PRD 5.1）", block.id());
-                    notifyBlockBroken(miningX, miningY, miningZ, block, 0);
-                }
-                blocksBroken++;
-            } else {
-                Log.noteWarning("Player", "破坏被世界拒绝: " + r.reason());
+        // ★ PRD §5.2：创造模式破坏瞬时（不累积破坏时间）。
+        //   注意它在"不可破坏"判定<b>之后</b> —— 资源核心在创造模式下同样挖不动
+        //   （§5.2 明文：`breakable = false` 不被创造模式覆盖）。
+        //   放到前面的话，创造模式就成了"用 UI 绕过 PRD 硬约束"的又一条路。
+        if (creativeMode) {
+            if (clockSeconds - lastCreativeBreakSeconds >= CREATIVE_BREAK_COOLDOWN_SECONDS) {
+                lastCreativeBreakSeconds = clockSeconds;
+                executeBreak(world, block);
             }
             resetMining();
+            return;
+        }
+
+        miningProgressSeconds += dt;
+        if (miningProgressSeconds >= block.hardness()) {
+            executeBreak(world, block);
+            resetMining();
+        }
+    }
+
+    /**
+     * 执行"破坏 + 按掉落表结算"。
+     *
+     * <p>抽成独立方法是为了让<b>生存模式的进度破坏</b>与<b>创造模式的瞬时破坏</b>
+     * 走<b>同一段</b>结算代码 —— 掉落规则只有一份，就不会出现
+     * "创造模式挖石头不掉圆石"这种只在一种模式下成立的偏差。
+     */
+    private void executeBreak(World world, Block block) {
+        World.MutationResult r = world.breakBlock(miningX, miningY, miningZ,
+                World.MutationCause.PLAYER_BREAK);
+        if (r.success()) {
+            // ------------------------------------------------------------
+            // G13 修复：按方块的掉落表结算，不再一律掉落自身。
+            //
+            // M1 这里写的是 inventory.add(hit.blockRuntimeId(), 1)，
+            // 于是"挖石头得到石头"，而 PRD 5.1 要求石头掉圆石、草方块掉泥土、
+            // 玻璃与树叶不掉落。审计把这条记为 G13（方块掉落表完全未实现），
+            // 根因是"掉落规则没有地方可写"—— 现在它写在方块的注册行里。
+            //
+            // 掉落物走 stable ID 查物品表：方块与物品是两套注册表，
+            // 煤炭矿石掉的是"煤炭物品"，不是"煤炭矿石方块"。
+            // ------------------------------------------------------------
+            if (block.hasDrop()) {
+                int dropItemId = ItemRegistry.runtimeIdOf(block.dropItemId());
+                int leftover = inventory.add(dropItemId, block.dropCount());
+                if (leftover > 0) {
+                    Log.noteWarning("Player", "背包已满，丢弃 " + leftover + " 个 " + block.dropItemId());
+                }
+                notifyBlockBroken(miningX, miningY, miningZ, block, leftover);
+            } else {
+                Log.info("[挖掘] %s 无掉落（PRD 5.1）", block.id());
+                notifyBlockBroken(miningX, miningY, miningZ, block, 0);
+            }
+            blocksBroken++;
+        } else {
+            Log.noteWarning("Player", "破坏被世界拒绝: " + r.reason());
         }
     }
 
@@ -1323,7 +1611,12 @@ if (world.collidesWith(probe.minX(), probe.minY(), probe.minZ(),
                 World.MutationCause.PLAYER_PLACE,
                 this::occupiesBlock);
         if (r.success()) {
-            inventory.consumeSelected(1);
+            // ★ PRD §5.3：创造模式放置不消耗。
+            //   "不消耗"不能靠"面板给的是 ∞ 所以扣了也看不出来"来实现 ——
+            //   那只是把消耗推迟 64 次，玩家建到第 65 格时手上会凭空变空。
+            if (!creativeMode) {
+                inventory.consumeSelected(1);
+            }
             blocksPlaced++;
             lastPlacementMessage = "已放置 " + selectedBlock.id()
                     + " 于 (" + hit.adjacentX() + "," + hit.adjacentY() + "," + hit.adjacentZ() + ")";

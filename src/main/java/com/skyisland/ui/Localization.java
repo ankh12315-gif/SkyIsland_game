@@ -63,6 +63,17 @@ public final class Localization {
      */
     public static final String HUD_AMMO_FORMAT_INFINITE = "hud.ammo.format.infinite";
 
+    /**
+     * M5a：右上角的昼夜时刻条 —— 形如「第 1 天 白天 06:41」。
+     *
+     * <p><b>为什么阶段名不作为参数传进来，而是整个格式串都在这里</b>：
+     * 阶段名（黎明/白天/黄昏/夜晚）是 {@code DayPhase} 的领域名，
+     * 而 PRD 6.7 禁止 UI 代码里散落文案 —— 两者不冲突的前提是
+     * <b>UI 只负责把数字与一个领域名交给 {@code Localization}</b>，不自己拼句子。
+     * 所以这里用 {@code %s} 收阶段名，而不是让 HUD 去查表拼「第 N 天 白天」。
+     */
+    public static final String HUD_DAY_STATUS = "hud.day.status";
+
     // ---- 即时提示（PRD 6.7「即时提示」）----
     public static final String MSG_OUT_OF_AMMO = "msg.out_of_ammo";
     public static final String MSG_INVENTORY_FULL = "msg.inventory_full";
@@ -150,6 +161,24 @@ public final class Localization {
     public static final String MSG_INV_DROPPED_ON_CLOSE = "msg.inv_dropped_on_close";
     public static final String MSG_INV_MOVE_BLOCKED = "msg.inv_move_blocked";
 
+    // ---------------------------------------------------------- 创造标签页（M4-S7）
+    // ★ DeadLocalizationKeyTest 把"登记了但没有任何消费者"的 key 判为死 key，
+    //   所以下面四条必须在 InventoryRenderer / SkyIslandGame 里<b>真的被画或被用</b>，
+    //   否则门禁会红。登记它们的原因是：创造面板一旦有绘制点，
+    //   文案就必须从 Localization 走（PRD §6.7 禁止 Java UI 代码里散落中文字面量）。
+    /** 标签页 1：背包（与 {@link #INV_TITLE} 同为「背包」但不是同一个绘制点）。 */
+    public static final String INV_TAB_BACKPACK = "inv.tab_backpack";
+    /** 标签页 2：创造（仅创造模式出现，PRD §5.1「背包界面内的独立标签页『创造』」）。 */
+    public static final String INV_TAB_CREATIVE = "inv.tab_creative";
+    /** 创造页的操作提示（取代背包页的取放提示 —— 那一行在这里是错的）。 */
+    public static final String INV_CREATIVE_HINT = "inv.creative_hint";
+    /** 手上已有别的东西时，单击面板取不出来的提示。 */
+    public static final String MSG_CREATIVE_HANDS_BUSY = "msg.creative_hands_busy";
+    /** 飞行开启提示（PRD §5.4：双击空格切换）。 */
+    public static final String MSG_FLY_ON = "msg.fly_on";
+    /** 飞行关闭提示。 */
+    public static final String MSG_FLY_OFF = "msg.fly_off";
+
     // ---------------------------------------------------------- 合成
     // 上一轮（范围裁定：数据层 + 合成逻辑）只登记了缺料那一条，因为那时没有界面、
     // 其余文案没有绘制点 —— DeadLocalizationKeyTest 会把它们判成死 key。
@@ -191,6 +220,9 @@ public final class Localization {
         TEXT.put(HUD_AMMO_FORMAT, "%d / %d");
         // M2.1：后备弹药无限时的同一条读数（如「12 / ∞」）
         TEXT.put(HUD_AMMO_FORMAT_INFINITE, "%d / ∞");
+        // M5a：时刻条。「%02d:%02d」是本阶段剩余的 mm:ss ——
+        // 显示剩余而不是已过，是因为玩家要据此决定"还能不能出去一趟"。
+        TEXT.put(HUD_DAY_STATUS, "第 %d 天 %s %02d:%02d");
 
         TEXT.put(MSG_OUT_OF_AMMO, "弹药不足");
         TEXT.put(MSG_INVENTORY_FULL, "背包已满");
@@ -259,6 +291,15 @@ public final class Localization {
         TEXT.put(INV_CURSOR_HINT, "左键取放，Shift+左键快速移动，E/Esc 关闭");
         TEXT.put(MSG_INV_DROPPED_ON_CLOSE, "背包已满，%d 个物品已丢弃");
         TEXT.put(MSG_INV_MOVE_BLOCKED, "没有空位，无法移动");
+        // 创造标签页（M4-S7）：三条都是"有绘制点才登记"的，
+        // 见 DeadLocalizationKeyTest —— 登记而不画 = 死 key = 门禁红。
+        TEXT.put(INV_TAB_BACKPACK, "背包");
+        TEXT.put(INV_TAB_CREATIVE, "创造");
+        TEXT.put(INV_CREATIVE_HINT, "左键取满一组（64）到手上，E/Esc 关闭");
+        TEXT.put(MSG_CREATIVE_HANDS_BUSY, "手上已有东西，先放回背包再取");
+        // M4-S8b 飞行（PRD §5.4）
+        TEXT.put(MSG_FLY_ON, "飞行已开启：空格上升 / Shift 下降 / 双击空格关闭");
+        TEXT.put(MSG_FLY_OFF, "飞行已关闭");
         TEXT.put(MSG_CRAFT_MISSING, "缺少 %s ×%d");
         TEXT.put(CRAFT_SECTION_TITLE, "合成");
         TEXT.put(CRAFT_ACTION, "[合成]");
@@ -312,6 +353,19 @@ public final class Localization {
         DISPLAY_NAMES.put("skyisland:gunpowder", "火药");
         DISPLAY_NAMES.put("skyisland:rifle_ammo", "步枪弹");
         DISPLAY_NAMES.put("skyisland:rifle", "步枪");
+
+        // ---- M4-S5 补齐的5 种方块（PRD_BLOCK_CREATIVE_v1.0.md §3.2）----
+        // LocalizationTest 断言"注册表里每一个方块与物品都有显示名"。
+        // ★ 注意 `skyisland:gold_ore` 这一条同时充当**物品**显示名 ——
+        //   因为方块物品与方块同 stable ID（见 ItemRegistry.addBlockItem），
+        //   不需要也不应该为它登记第二条物品名。
+        // 台阶译作「台阶」而不是「半砖」：PRD 与玩家认知里它就是台阶，
+        // 而「半砖」在中文语境里更容易被读成一种砖。
+        DISPLAY_NAMES.put("skyisland:gold_ore", "金矿石");
+        DISPLAY_NAMES.put("skyisland:wheat", "小麦");
+        DISPLAY_NAMES.put("skyisland:stone_brick", "石砖");
+        DISPLAY_NAMES.put("skyisland:iron_block", "铁块");
+        DISPLAY_NAMES.put("skyisland:slab", "台阶");
 
         DISPLAY_NAMES.put("skyisland:melee_monster", "近战怪");
     }

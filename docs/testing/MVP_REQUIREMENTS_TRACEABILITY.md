@@ -198,7 +198,7 @@
 | MVP-WORLD-026 | §4.5 / L286 | WORLD | 岛屿下方无地形，向下可见天空/雾；**虚空底部渲染为深色** | M1 | NOT_IMPLEMENTED | 无 | 无 | **无登记 → G14（本报告复核新增）**；DRIFT-B-07（技术文档无条目） | M3 | **GAP** |
 | MVP-WORLD-027 | §4.5 / L287 | WORLD | 放置须邻接支撑，仍可逐格搭桥 | M1 | IMPLEMENTED | `WorldTest.placeBlockRejectsWithoutAdjacentSupport` | M1 §2-4 | 无 | — | COVERED |
 | MVP-WORLD-028 | §4.5 / L289 | WORLD | 沙子悬空不下落（无重力方块） | M1 | IMPLEMENTED | 无专门断言 | M1 试玩（沙子未下落） | 无 | — | COVERED_WITH_TODO |
-| MVP-WORLD-029 | §4.5 / L290 | WORLD | 虚空坠落过程不结算普通坠落伤害 | M1 | PARTIAL | 无 | M1 §2-10 | **成立只是因为跌落伤害根本没实现**（MVP-SURV-003 判 GAP）；须在 SURV-003 关闭后重新求值 | M2 | COVERED_WITH_TODO |
+| MVP-WORLD-029 | §4.5 / L290 | WORLD | 虚空坠落过程不结算普通坠落伤害 | M1 | PARTIAL | 无 | M1 §2-10 | ~~**成立只是因为跌落伤害根本没实现**（MVP-SURV-003 判 GAP）；须在 SURV-003 关闭后重新求值~~ **[2026-10 复扫] 前提已消失，结论仍成立** —— 该条不再是「因缺机制而侥幸成立」，而是**结构性不可能**（虚空线以下 7 层独立防线，第 7 层数据结构无法表示）。详见 `docs/testing/D2_rescan_2026-10.md` §6.2 | M2 | COVERED_WITH_TODO |
 | MVP-WORLD-030 | §4.6 / L301 | WORLD | 普通矿脉挖空后不自动补充 | M3 | NOT_IMPLEMENTED | 无 | 无 | R7（`resourceCores` → M2）+ R1 T-8.2（间接） | M3 | DEFERRED_WITH_RECORD |
 | MVP-WORLD-031 | §4.6 / L302 | WORLD | 石矿岛生成 1 个资源核心 | M3 | PARTIAL | `BlockRegistryTest.resourceCoreIsUnbreakableUnplaceableAndEmissive` | M1 截图（测试世界 (2,64,2)，非正式岛布局） | R1 T-8.2 + R7（→ M2） | M3 | COVERED_WITH_TODO |
 | MVP-WORLD-032 | §4.6 / L303 | WORLD | 资源核心无法被任何方式移除 | M3 | IMPLEMENTED | `PlayerPhysicsTest.unbreakableBlockIsNeverBroken` + `WorldTest.rejectedBreakOfEmissiveBlockKeepsRegistryConsistent` | M1.5 §5.4 | 无（已提前于计划关闭） | — | COVERED |
@@ -286,7 +286,7 @@
 | MVP-SURV-009 | §5.3 / L438 | SURV | 重生后生命恢复为 20/20 | M2 | NOT_IMPLEMENTED | 无 | 无 | R2「生命值与饥饿」 | M2 | DEFERRED_WITH_RECORD |
 | MVP-SURV-010 | §5.3 / L439 | SURV | 「死亡掉落物品」设置项可关闭 | M3 | NOT_IMPLEMENTED（`GameSettings` 无该字段） | 无 | 无 | **无登记 → G2**（设置系统已实现却漏项） | M3 | **GAP** |
 | MVP-SURV-011 | §5.3.1 / L448 | SURV | 系统记录 lastSafePosition | M2 | IMPLEMENTED | `PlayerPhysicsTest.fallingIntoVoidRespawnsAtLastSafePosition` | M1 §2-11（落点 (0.50, 64.00, −24.01)） | 无 | — | COVERED |
-| MVP-SURV-012 | §5.3.1 / L449 | SURV | lastSafePosition 只在**稳定站立 ≥ 0.5 秒**后更新 | M2 | PARTIAL（代码用 **0.25 s** 节流，`Player.java:74`） | `PlayerPhysicsTest`（安全点更新路径） | M1 §2-11 | **数值与 PRD 不符（0.25 vs 0.5）且无登记、无裁决** | M2 | **CONFLICT** |
+| MVP-SURV-012 | §5.3.1 / L449 | SURV | lastSafePosition 只在**稳定站立 ≥ 0.5 秒**后更新 | M2 | COVERED **[2026-10 复扫订正]** 代码为 `Player.java:108` `SAFE_POSITION_INTERVAL = 0.5`，**已符合 PRD 0.5**；原写 0.25 s 与 `:74` 均已过时（该行现为无关的 `ItemRegistryTest` 注释），本行是全表唯一残留 `Player.java:74` 处。回归锁：`SafePositionTest` 3 例（:79 守下界 / :84 守上界） | `PlayerPhysicsTest`（安全点更新路径） | M1 §2-11 | **数值与 PRD 不符（0.25 vs 0.5）且无登记、无裁决** | M2 | **CONFLICT** |
 | MVP-SURV-013 | §5.3.1 / L450 | SURV | 虚空死亡的掉落物生成在 lastSafePosition 附近 | M2 | NOT_IMPLEMENTED | 无 | 无 | R1 T-8.3 + R11（PRD §11 M2 通过标准第 6 条） | M2 | DEFERRED_WITH_RECORD |
 | MVP-SURV-014 | §5.3.1 / L450 | SURV | 位置不合法时螺旋搜索，掉落物绝不落入虚空 | M2 | NOT_IMPLEMENTED | 无 | 无 | R1 T-8.3（无掉落物实体，无从附着） | M2 | DEFERRED_WITH_RECORD |
 | MVP-SURV-015 | §5.3.1 / L457 | SURV | 默认重生点为 (0,64,0) | M2 | PARTIAL（重生走 `lastSafePosition`；固定 (0,64,0) 仅出现在读档清洗路径） | `PlayerPhysicsTest.sanitizeFindsAFreeSpotWhenTheSavedPositionIsBuried` | M1 §2-11 | 语义差异无登记；坐标 ±1 层见 TECH D1 | M2 | COVERED_WITH_TODO |
@@ -433,7 +433,7 @@
 | MVP-HUD-009 | §6.1 / L749 | HUD | 右上角显示天数与昼夜阶段 | M3 | NOT_IMPLEMENTED | 无 | 无 | R2「昼夜循环」+ R7（`worldTimeSeconds`/`dayCount` DEFERRED） | M3 | DEFERRED_WITH_RECORD |
 | MVP-HUD-010 | §6.1 / L750 | HUD | 生命 ≤6 时生命条闪烁 | M2 | NOT_IMPLEMENTED | 无 | 无 | R2「生命值与饥饿」 | M2 | DEFERRED_WITH_RECORD |
 | MVP-HUD-011 | §6.1 / L751 | HUD | 中下部显示即时提示（含「弹药不足」「背包已满」） | M2 | PARTIAL（`HudModel.eventMessage` 机制存在，但 5 处调用全为生命周期消息） | 无 | M1.5 §7.4 | **无登记 → G6** | M3 | **GAP** |
-| MVP-HUD-012 | §6.1 / L751 | HUD | 即时提示 2 秒后淡出 | M2 | PARTIAL（实际 0.8 / 1.5 / 4.0 / 6.0 秒依调用而异，无统一 2 秒） | 无 | 无 | **无登记** | M3 | **GAP** |
+| MVP-HUD-012 | §6.1 / L751 | HUD | 即时提示 2 秒后淡出 | M2 | PARTIAL（实际 **7 档** 1.5/2.0/2.5/3.0/4.0/5.0/6.0 秒依调用而异，无统一 2 秒）<br>**[2026-10 复扫订正]** 原写「0.8/1.5/4.0/6.0」有误：0.8 是 `HudRenderer.java:397` 的**淡出窗口**（`eventSecondsLeft / 0.8`），不是时长档位。实测 19 处外部调用点，7 档全部在用、无死档。 | 无 | 无 | **无登记** | M3 | **GAP** |
 | MVP-HUD-013 | §6.1 / L752 | HUD | F3 可切换左上角调试信息 | M1 | IMPLEMENTED | `HudModel.showDebugOverlay` | M1.5 §7.4（F3 overlay 截图） | 无 | — | COVERED |
 
 ### 2.11 UI — 背包界面 / 合成界面 / 主菜单（25 条）
@@ -517,7 +517,7 @@
 | MVP-TEXT-004 | §6.7 / L838 | TEXT | 背包满时提示「背包已满」 | M3 | NOT_IMPLEMENTED（仅 `Player.java:589` 的 `Log.noteWarning`，**非 HUD 提示**） | 无 | 无 | **无登记 → G6** | M3 | **GAP** |
 | MVP-TEXT-005 | §6.7 / L838 | TEXT | 进入瞄准时提示「右键瞄准，R 换弹」 | M2 | NOT_IMPLEMENTED | 无 | 无 | **无登记**（G6 同类） | M2 | **GAP** |
 | MVP-TEXT-006 | §6.7 / L839 | TEXT | 首次进入世界显示「WASD 移动，左键挖掘，右键放置」，3 秒淡出，仅首次 | M3 | NOT_IMPLEMENTED（`showEvent` 5 处调用无一为玩法提示；无 `firstRun` 状态位） | 无 | 无 | **无登记 → G5** | M3 | **GAP** |
-| MVP-TEXT-007 | §6.7 / L840 | TEXT | 每条提示显示 2 秒后淡出 | M2 | PARTIAL（实际 0.8 / 1.5 / 4.0 / 6.0 秒，无统一 2 秒） | 无 | 无 | **无登记** | M3 | **GAP** |
+| MVP-TEXT-007 | §6.7 / L840 | TEXT | 每条提示显示 2 秒后淡出 | M2 | PARTIAL（实际 **7 档** 1.5/2.0/2.5/3.0/4.0/5.0/6.0 秒，无统一 2 秒）<br>**[2026-10 复扫订正]** 同 :436 —— 0.8 是淡出窗口非时长档位。★ 本条与 `MVP-HUD-012` 是同一个工程，主表 §14.2 #35 原文即写「与 #26 同源，合并实现」，排工时不应算作 2 条。 | 无 | 无 | **无登记** | M3 | **GAP** |
 | MVP-TEXT-008 | §6.7 / L840 | TEXT | 同类提示 5 秒节流 | M3 | NOT_IMPLEMENTED | 无 | 无 | **无登记** | M3 | **GAP** |
 | MVP-TEXT-009 | §6.7 / L841 | TEXT | 死亡文案「你倒下了」+ 物品状态 | M2 | NOT_IMPLEMENTED | 无 | 无 | R2「生命值与饥饿」（宿主点名） | M2 | DEFERRED_WITH_RECORD |
 | MVP-TEXT-010 | §6.7 / L843 | TEXT | 弹药计数格式为「弹匣 / 后备」 | M2 | NOT_IMPLEMENTED | 无 | 无 | R2「弹药」（宿主点名） | M2 | DEFERRED_WITH_RECORD |
@@ -762,7 +762,7 @@ T-8.9 只登记了"挖掘音效 + 破坏音效 + 破坏粒子"。以下同样是
 | 项 | 内容 |
 |---|---|
 | **PRD 要求** | §4.5 **L286**：「虚空可见性 ｜ 岛屿下方无任何地形，向下即见天空/雾；**虚空底部渲染为深色**｜【MVP 必须】」 |
-| **代码实现** | `Renderer.java:39-41 / 96` 只有 `SKY_R/G/B` 单一常量天空色；**无雾、无随高度/方向的天空渐变、无虚空底部深色**。`src/main` grep `fog` / `void` 渲染路径零命中 |
+| **代码实现** | `Renderer.java:48-50`（常量定义）/ `:133`（`glClearColor`）只有 `SKY_R/G/B` 单一常量天空色<br>**[2026-10 复扫]** 原行号 `:39-41 / :96` 已漂移 —— `:39-41` 现为 GLState 注释尾、`:96` 为 `entityRenderer.init()`。结论不变。；**无雾、无随高度/方向的天空渐变、无虚空底部深色**。`src/main` grep `fog` / `void` 渲染路径零命中 |
 | **登记状态** | **无登记**。技术文档 §G 只有面剔除与网格，§I.1 只有 `VOID_KILL_Y`（杀玩家的阈值，**不是渲染**） |
 | **主表 ID** | **MVP-WORLD-026**（同时是 D1 DRIFT-B-07） |
 | **判定 / 最晚关闭** | **GAP** / **M3**（属表现层，按 §V′.5 需像素级取证） |
@@ -796,7 +796,7 @@ T-8.9 只登记了"挖掘音效 + 破坏音效 + 破坏粒子"。以下同样是
 | 7 | **MVP-MINE-017** | **每种方块类型**配置放置音效 | 随 M2 音频后端接入最经济 |
 | 8 | **MVP-SURV-003** | 坠落伤害 = `max(0, floor(格数 − 3))` | **是 PRD §11 M1 通过标准第 5 条，M1 当年漏验** |
 | 9 | **MVP-GATE-005** | 坠落 4 格造成 1 点伤害，坠落 3 格无伤 | 同上（门禁条目本身） |
-| 10 | **MVP-SURV-012** | `lastSafePosition` 只在稳定站立 ≥ 0.5 秒后更新 | 代码实际用 **0.25 s**（`Player.java:74`），与 PRD 差 2 倍 |
+| 10 | **MVP-SURV-012** | `lastSafePosition` 只在稳定站立 ≥ 0.5 秒后更新 | **[2026-10 复扫订正]** 代码实际用 **0.5 s**（`Player.java:108` `SAFE_POSITION_INTERVAL = 0.5`），**已符合 PRD**；`:74` 引用已漂移（该行现为无关的 `ItemRegistryTest` 注释）。原写「0.25 s」过时 —— `SafePositionTest` 3 例双向锁住该值（`:79` 守下界 / `:84` 守上界） |
 | 11 | **MVP-COMBAT-024** | 命中怪物：命中音效 + 受击闪白 | M2 战斗反馈，同批落地 |
 | 12 | **MVP-COMBAT-025** | 命中方块：溅射粒子 + 撞击音效 | 同上 |
 | 13 | **MVP-COMBAT-026** | 射击有 0.05 秒曳光轨迹 | 同上 |
@@ -835,7 +835,7 @@ T-8.9 只登记了"挖掘音效 + 破坏音效 + 破坏粒子"。以下同样是
 | 18 | **MVP-TEXT-004** | 背包满时提示「背包已满」← **G6** |
 | 19 | **MVP-TEXT-006** | 首次进入提示「WASD 移动…」3 秒淡出、仅首次 ← **G5** |
 | 20 | **MVP-TEXT-007** | 每条提示显示 2 秒后淡出 ← **G6** |
-| 21 | **MVP-TEXT-008** | 同类提示 5 秒节流（代码用 0.8/1.5/4.0/6.0 秒，无统一 2 秒）← **G6** |
+| 21 | **MVP-TEXT-008** | 同类提示 5 秒节流（代码用 **7 档** 1.5/2.0/2.5/3.0/4.0/5.0/6.0 秒，无统一 2 秒）← **G6**<br>**[2026-10 复扫订正]** 原「0.8/1.5/4.0/6.0」有误，0.8 是淡出窗口。复算：常量 `EVENT_DEDUPE_SECONDS = 5.0` 已就位且值精确，仅覆盖 4 处调用点，另 15 处直调无节流。 |
 | 22 | **MVP-SCOPE-001** | MVP 方块数量口径 13 + 1 ← **G1** |
 
 ---
@@ -1038,7 +1038,7 @@ M2_ENTRY_READY = false
 | 23 | MVP-SURV-010（死亡掉落开关） | GAP | M3 | **M3** | 随 G2 设置补项同批 | No |
 | 24 | MVP-HUD-003（准星可交互高亮） | GAP | M3 | **M3** | M3；与 #11/#14 同属准星，分阶段交付 | No |
 | 25 | MVP-HUD-011（即时提示含弹药不足/背包满） | GAP | M3 | **M3** | M3；但「弹药不足」由 #15 在 M2 先行交付 | No |
-| 26 | MVP-HUD-012（即时提示 2 s 淡出） | GAP | M3 | **M3** | M3 统一为 2 s（现状 0.8/1.5/4.0/6.0 秒不一致） | No |
+| 26 | MVP-HUD-012（即时提示 2 s 淡出） | GAP | M3 | **M3** | M3 统一为 2 s（现状 **7 档** 1.5/2.0/2.5/3.0/4.0/5.0/6.0 不一致）<br>**[2026-10 复扫]** 0.8 是淡出窗口非时长档位；实测 19 处外部调用点。★ 建议按语义分 2 档（瞬时 2.0 / 重要 6.0）而非全部并成一个常量 —— 4.0 s 那 3 处是世界生命周期类、6.0 s 那 2 处是失败类。 | No |
 | 27 | MVP-UI-021（主菜单新建世界） | GAP | M3 | **M3** | 随 G3 主菜单补项同批 | No |
 | 28 | MVP-UI-022（加载最近存档） | GAP | M3 | **M3** | 随 G3 同批；依赖 T-9 异步存档 | No |
 | 29 | MVP-SET-002（视距 2–8 默认 6） | GAP | M3 | **M3** | 随 G2 设置补项同批 | No |

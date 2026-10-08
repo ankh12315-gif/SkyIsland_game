@@ -117,12 +117,15 @@ public final class ChunkMesher {
                     // 异形方块分派（PRD §7 R1）。十字面<b>不走 6 面循环</b>，
                     // 半高盒走 6 面循环但角点被替换为半高版本。
                     if (block.shape().isCross()) {
-                        int lightLevel = lights.lightAt(originX, originZ, lx, ly, lz);
-                        float shade = BlockFace.NEG_Z.shade() * lights.shadeFactor(lightLevel);
+                        int skyLight = lights.skyLightAt(lx, ly, lz);
+                        int torchLight = lights.torchLightAt(originX, originZ, lx, ly, lz);
+                        float shade = BlockFace.NEG_Z.shade()
+                                * lights.shadeFactor(Math.max(skyLight, torchLight));
+                        float packedLight = VertexFormat.packLight(skyLight > 0, torchLight);
                         // 十字面作物只有一张层（美术规格 §3.20 裁定两向共用）
                         float layer = BlockTextureLayers.layerFor(block, BlockFace.POS_Y);
                         BlockTextureLayers.isValid((int) layer, "十字面方块 " + block.id());
-                        NonFullMesh.emitCross(target, lx, ly, lz, block, shade, layer);
+                        NonFullMesh.emitCross(target, lx, ly, lz, block, shade, packedLight, layer);
                         continue;
                     }
 
@@ -131,15 +134,22 @@ public final class ChunkMesher {
                         if (!block.rendersFaceAgainst(neighbor)) {
                             continue;
                         }
-                        int lightLevel = lights.lightAt(originX, originZ, lx, ly, lz);
-                        float shade = face.shade() * lights.shadeFactor(lightLevel);
+                        // ★ M5a：必须把天光与火把**分开**取，不能只取 lightAt 的 max。
+                        //   只取 max 会让顶点里丢失"这一份亮度是天光给的还是火把给的"，
+                        //   而片元只有拿到两者才能做到「夜里火把不随天光变暗」（PRD §4.4）。
+                        //   shade 仍按 max 计算 ⇒ 与改动前逐位一致（白天不会因为这次改动变色）。
+                        int skyLight = lights.skyLightAt(lx, ly, lz);
+                        int torchLight = lights.torchLightAt(originX, originZ, lx, ly, lz);
+                        float shade = face.shade() * lights.shadeFactor(Math.max(skyLight, torchLight));
+                        float packedLight = VertexFormat.packLight(skyLight > 0, torchLight);
                         // ★ 层号按**面**决定（三贴图规则，PRD §6.3）：
                         // 草方块顶面用 grass_top、侧面用 grass_side、底面用 dirt。
                         // 层号越界在GPU 上表现为黑块且不报错，故此处廉价断言一次。
                         float layer = BlockTextureLayers.layerFor(block, face);
                         BlockTextureLayers.isValid((int) layer,
                                 "方块 " + block.id() + " 的 " + face + " 面");
-                        emitFace(target, lx, ly, lz, face, block, shade, block.shape(), layer);
+                        emitFace(target, lx, ly, lz, face, block, shade, packedLight,
+                                block.shape(), layer);
                     }
                 }
             }
@@ -189,7 +199,8 @@ public final class ChunkMesher {
      * 这是唯一需要为形态分派的地方 —— 剔除、光照、子网格归属三件事对所有形态一致。
      */
     private static void emitFace(MeshBuilder out, int lx, int ly, int lz, BlockFace face,
-                                 Block block, float shade, BlockShape shape, float layer) {
+                                 Block block, float shade, float packedLight,
+                                 BlockShape shape, float layer) {
         int baseIndex = out.vertexCount();
         for (int i = 0; i < BlockFace.QUAD_INDICES.length; i++) {
             // 索引先写，值由下面的顶点顺序决定 —— 这里不直接写 0,1,2,0,2,3 而是加基准，
@@ -204,7 +215,7 @@ public final class ChunkMesher {
                         ly + face.corner(corner, 1),
                         lz + face.corner(corner, 2),
                         block.colorR(), block.colorG(), block.colorB(), shade,
-                        layer, uv[0], uv[1]);
+                        packedLight, layer, uv[0], uv[1]);
             }
         } else {
             // 半高盒：角点显式给出（12 个 float = 4 角 × xyz），顺序与 BlockFace 一致
@@ -219,7 +230,7 @@ public final class ChunkMesher {
                         ly + corners[base + 1],
                         lz + corners[base + 2],
                         block.colorR(), block.colorG(), block.colorB(), shade,
-                        layer, uv[0], uv[1]);
+                        packedLight, layer, uv[0], uv[1]);
             }
         }
         out.faceEmitted();
@@ -243,7 +254,7 @@ public final class ChunkMesher {
         private int faces = 0;
 
         void pushVertex(float x, float y, float z, float r, float g, float b, float shade,
-                        float layer, float u, float v) {
+                        float packedLight, float layer, float u, float v) {
             if (vertexFloats + MeshData.FLOATS_PER_VERTEX > vertices.length) {
                 float[] bigger = new float[vertices.length * 2];
                 System.arraycopy(vertices, 0, bigger, 0, vertexFloats);
@@ -256,12 +267,13 @@ public final class ChunkMesher {
             vertices[vertexFloats++] = g;
             vertices[vertexFloats++] = b;
             vertices[vertexFloats++] = shade;
-            // S2 新增的两个 float：纹理层号与环境光遮蔽。
+            // S2 新增的两个 float：纹理层号与（当时叫 AO 的）第二分量。
+            // ★ M5a：第二分量改派为**打包光照**（VertexFormat#packLight），不再是 AO。
             // ★ 异形方块（十字面）也走这里 —— NonFullMesh.MeshSink 的实现
             // 就是本方法，所以"十字面补写了 layer"不是靠另写一遍，
             // 而是结构上不可能漏。这一点由 NonFullBlockMesherTest 钉死。
             vertices[vertexFloats++] = layer;
-            vertices[vertexFloats++] = VertexFormat.DEFAULT_AO;
+            vertices[vertexFloats++] = packedLight;
             // S3 新增：该面在贴图内的 UV（由 BlockFace.cornerUv 显式给出）。
             vertices[vertexFloats++] = u;
             vertices[vertexFloats++] = v;
@@ -293,7 +305,7 @@ public final class ChunkMesher {
                              float x1, float y1, float z1,
                              float x2, float y2, float z2,
                              float x3, float y3, float z3,
-                             Block block, float shade, float layer) {
+                             Block block, float shade, float packedLight, float layer) {
             int baseIndex = vertexCount();
             for (int i = 0; i < BlockFace.QUAD_INDICES.length; i++) {
                 pushIndex(baseIndex + BlockFace.QUAD_INDICES[i]);
@@ -303,10 +315,10 @@ public final class ChunkMesher {
             float r = block.colorR();
             float g = block.colorG();
             float b = block.colorB();
-            pushVertex(x0, y0, z0, r, g, b, shade, layer, 0f, 0f);
-            pushVertex(x1, y1, z1, r, g, b, shade, layer, 1f, 0f);
-            pushVertex(x2, y2, z2, r, g, b, shade, layer, 1f, 1f);
-            pushVertex(x3, y3, z3, r, g, b, shade, layer, 0f, 1f);
+            pushVertex(x0, y0, z0, r, g, b, shade, packedLight, layer, 0f, 0f);
+            pushVertex(x1, y1, z1, r, g, b, shade, packedLight, layer, 1f, 0f);
+            pushVertex(x2, y2, z2, r, g, b, shade, packedLight, layer, 1f, 1f);
+            pushVertex(x3, y3, z3, r, g, b, shade, packedLight, layer, 0f, 1f);
             faceEmitted();
         }
 

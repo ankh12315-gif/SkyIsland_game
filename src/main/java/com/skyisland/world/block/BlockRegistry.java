@@ -71,6 +71,52 @@ public final class BlockRegistry {
     }
 
     /**
+     * 完整注册 +显式几何形态（M4-S5）。
+     *
+     * <p><b>为什么必须有这个重载，而不是在 bootstrap 里直接 {@code new Block(...)}：</b>
+     * 直接构造会绕过 {@link #verify()}（runtimeId == 下标这条不变式的守门人），
+     * 于是"注册顺序即 ID"就退化成"靠人记得别写错"。
+     * 而小麦（{@link BlockShape#CROSS}）与台阶（{@link BlockShape#SLAB_BOTTOM}）
+     * 恰恰是<b>不能</b>走 FULL 路径的两种形态 —— PRD §7 R1 点名的
+     * 「看不见的墙」就发生在它们身上。
+     *
+     * <p>形态参数必须<b>显式</b>传，不提供"默认 FULL 再单独设形态"的写法：
+     * 那会让人以为形态是可选的装饰性属性，而它实际上决定碰撞体。
+     */
+    private static Block register(String stableId,
+                                  boolean solid,
+                                  boolean transparent,
+                                  boolean breakable,
+                                  boolean placeable,
+                                  boolean collision,
+                                  float hardness,
+                                  int lightEmission,
+                                  RenderType renderType,
+                                  int rgb,
+                                  String dropItemId,
+                                  int dropCount,
+                                  BlockShape shape) {
+        if (bootstrapped) {
+            throw new IllegalStateException("注册表已冻结，不允许运行期追加方块: " + stableId);
+        }
+        if (BY_RUNTIME_ID.size() >= MAX_BLOCKS) {
+            throw new IllegalStateException("方块数量超过上限 " + MAX_BLOCKS);
+        }
+        if (BY_STABLE_ID.containsKey(stableId)) {
+            throw new IllegalStateException("stable ID 重复注册: " + stableId);
+        }
+        int runtimeId = BY_RUNTIME_ID.size();
+        float r = ((rgb >> 16) & 0xFF) / 255f;
+        float g = ((rgb >> 8) & 0xFF) / 255f;
+        float b = (rgb & 0xFF) / 255f;
+        Block block = new Block(runtimeId, stableId, solid, transparent, breakable, placeable,
+                collision, hardness, lightEmission, renderType, r, g, b, dropItemId, dropCount, shape);
+        BY_RUNTIME_ID.add(block);
+        BY_STABLE_ID.put(stableId, block);
+        return block;
+    }
+
+    /**
      * 完整注册：显式给出掉落物（PRD 5.1 的「掉落物」列）。
      *
      * <p><b>这是 G13 的修复点。</b>审计发现 M1 的破坏结算一律
@@ -238,6 +284,81 @@ public final class BlockRegistry {
                 8.0f, 0, RenderType.OPAQUE, 0x7FB8C8,
                 "skyisland:crystal", 1);
 
+        // ================================================================
+        // M4-S5：补齐PRD 5.1 表内剩余的 5 种方块。
+        //
+        // 范围（PRD_BLOCK_CREATIVE_v1.0.md §1.2 主理人裁决 + §3.1）：
+        // **只补 PRD 5.1 已列的 5 种** —— 金矿石 / 小麦 / 石砖 / 铁块 / 台阶。
+        // 主理人未选"MC 经典 20 种"或"完整 60+"，因此本文不新增表外任何方块。
+        //
+        // ★ 三个必须知道的口径分离（这三条互不推导，混起来就会得出错误结论）：
+        //   ① MVP_CORE_PLAYER_BLOCK_COUNT = 13 —— **本轮一个字都不改**。
+        //      它是"PRD 的 MVP 口径没被本轮改动"的唯一可断言证据。
+        //   ② 注册表实际规模 17 → 22 —— 本轮登记 5 种后的真实方块总数。
+        //   ③ 创造面板规划 20 —— 属P2（PRD §3.4 playerBlockCount() = 20）。
+        // 换句话说：**门禁口径与注册表规模是两回事，不可互相推导。**
+        //
+        // ★ 连带影响（必须显式登记，见 ItemRegistryTest）：
+        // 方块物品与方块严格对齐且排在物品表最前，
+        // 因此本轮 +5 方块 ⇒ 方块物品段 16 → 21 ⇒ **所有非方块物品 runtimeId 整体 +5**
+        // （手枪 19 → 24、SMG 20 → 25、步枪 27 → 32），物品表 28 → 34。
+        // 这条位移是安全的（存档只写 stable string ID），但硬编码数字必须有人显式改。
+        //
+        // ★ 顺序要求：**追加在末尾，不得插队**（下方注释与本段同为契约）。
+        // ================================================================
+
+        // ---- 【Alpha 必须】3 种 ----
+
+        // 金矿石：PRD §3.2.1 —— 空手 4.0 秒，掉落自身 ×1。
+        // 稳定 ID 用单数 `gold_ore`（PRD §3.2.1 明文：不得写成 gold_ores）。
+        // 关于"物品形态"（PRD §3.3）：**无需任何额外代码** —— 登记方块即自动获得同名方块物品，
+        // 这正是 R04 铜锭配方能直接拿 `skyisland:copper_ore` 当合成输入的原因。
+        // 基色取美术规格 §3.16 的"岩石底"建议值。
+        register("skyisland:gold_ore", true, false, true, true, true,
+                4.0f, 0, RenderType.OPAQUE, 0x8E7F63);
+
+        // 小麦：PRD §3.2.2 —— 作物方块，**solid=false / collision=false**
+        // （作物不阻挡通行，否则玩家会撞上一堵看不见的墙 = PRD §7 R1 头号风险），
+        // 空手 0.2 秒，RenderType=TRANSPARENT（作物需镂空，不能是实心方块），
+        // 形态=CROSS（十字交叉面，无顶面无底面）。
+        // 掉落只写小麦 ×1。
+        // ★ 主理人 2026-10-07 裁定「本轮不登记 skyisland:wheat_seeds」。
+        //   理由（已全量 grep 核实，不是推测）：项目里**不存在任何种植/农场系统**
+        //   （`\bseed\b` 的全部命中是 worldSeed / fxSeedCounter 噪声）。
+        //   小麦种的唯一用途是"种植小麦"，登记一个当前无使用方的物品
+        //   就是一条**死接线** —— 本项目明令禁止（v2 §6.2「禁止只添加字符串标签」）。
+        //   另：PRD §3.3 要求的 ×1–2 随机数量，其本身也被 PRD §11 自列为"需追加确认"项。
+        //   ⇒ 本轮落地 PRD §3.3 的**一半**：小麦方块本体 + 其贴图层在位，
+        //     小麦种待农业闭环（Alpha）落地时一并补，届时需扩展随机掉落数据结构。
+        register("skyisland:wheat", false, true, true, true, false,
+                0.2f, 0, RenderType.TRANSPARENT, 0x9CB84A,
+                "skyisland:wheat", 1,
+                BlockShape.CROSS);
+
+        // 石砖：PRD §3.2.3 —— 空手 2.0 秒，掉落自身 ×1。
+        // ★ 它曾被 PRD v0.3.2 明令禁止进入 MVP Registry（按用户裁决 A10 在 Pre-M2 移除），
+        //   本轮由主理人 2026-10-05 显式放行（PRD_BLOCK_CREATIVE §2 冻结项解除表）。
+        //   但它**仍不计入 MVP 的 13 种口径** —— 解除的是"登记与实现"，不是"MVP 门禁范围"。
+        // 稳定 ID 必须是单数 `stone_brick`（不得 stone_bricks）。
+        register("skyisland:stone_brick", true, false, true, true, true,
+                2.0f, 0, RenderType.OPAQUE, 0x8A8A8A);
+
+        // ---- 【后续迭代】2 种 ----
+
+        // 铁块：PRD §3.2.4 —— 空手 5.0 秒，掉落自身 ×1。
+        // 全场最亮方块（基色 D6D6D6），目的是与矿石类五种在明度上拉开。
+        register("skyisland:iron_block", true, false, true, true, true,
+                5.0f, 0, RenderType.OPAQUE, 0xD6D6D6);
+
+        // 台阶：PRD §3.2.5 + §3.5 —— 空手 2.0 秒，掉落自身 ×1，
+        // 形态=SLAB_BOTTOM（**仅下半形态**）。
+        // ★ collision=true 但**只有下半格参与碰撞**（形态决定碰撞盒，不由 collision 字段决定）。
+        // PRD §3.5 已裁定本轮不做上半形态，且**不预先造 block state 字段**。
+        register("skyisland:slab", true, false, true, true, true,
+                2.0f, 0, RenderType.OPAQUE, 0x8A8A8A,
+                "skyisland:slab", 1,
+                BlockShape.SLAB_BOTTOM);
+
         bootstrapped = true;
         verify();
     }
@@ -338,6 +459,33 @@ public final class BlockRegistry {
         return byName("skyisland:crystal_ore");
     }
 
+    // ---- M4-S5 补齐的 5 种（PRD_BLOCK_CREATIVE_v1.0.md §3.2）----
+
+    /** 金矿石（PRD §3.2.1）。稳定 ID 是单数 {@code gold_ore}。 */
+    public static Block goldOre() {
+        return byName("skyisland:gold_ore");
+    }
+
+    /** 小麦（PRD §3.2.2，成熟作物）。形态=CROSS，无碰撞体。 */
+    public static Block wheat() {
+        return byName("skyisland:wheat");
+    }
+
+    /** 石砖（PRD §3.2.3）。稳定 ID 是单数 {@code stone_brick}。 */
+    public static Block stoneBrick() {
+        return byName("skyisland:stone_brick");
+    }
+
+    /** 铁块（PRD §3.2.4）。 */
+    public static Block ironBlock() {
+        return byName("skyisland:iron_block");
+    }
+
+    /** 台阶（PRD §3.2.5）。本轮**仅下半形态**（PRD §3.5 降级裁定）。 */
+    public static Block slab() {
+        return byName("skyisland:slab");
+    }
+
     /**
      * PRD 5.1 定义的 <b>MVP 核心玩家常规方块数</b>。
      *
@@ -352,10 +500,39 @@ public final class BlockRegistry {
     public static final int ALPHA_ORE_BLOCK_COUNT = 2;
 
     /**
+     * M4-S5 追加的【Alpha 必须】内容方块数（金矿石 + 小麦 + 石砖）。
+     *
+     * <p>PRD_BLOCK_CREATIVE_v1.0.md §3.4 原文把这个数叫
+     * {@code ALPHA_CONTENT_BLOCK_COUNT} = 3。
+     */
+    public static final int ALPHA_CONTENT_BLOCK_COUNT = 3;
+
+    /**
+     * M4-S5 追加的【后续迭代】方块数（铁块 + 台阶）。
+     *
+     * <p>PRD §3.4 原文叫 {@code POST_MVP_BLOCK_COUNT} = 2。
+     */
+    public static final int POST_MVP_BLOCK_COUNT = 2;
+
+    /**
+     * PRD §3.4 规定的 <b>玩家常规方块总数</b> = 13 + 2 + 3 + 2 = <b>20</b>。
+     *
+     * <p>把它做成<b>由四段常量加出来</b>而不是一个写死的 20，
+     * 是为了让"13 有没有被改动"变成一个可断言的事实：
+     * 若有人把 MVP_CORE_PLAYER_BLOCK_COUNT 顺手改成 20，
+     * 这条会变成 27 并立刻变红，而直接写死 20 则永远看不出来。
+     */
+    public static final int EXPECTED_PLAYER_BLOCK_COUNT =
+            MVP_CORE_PLAYER_BLOCK_COUNT + ALPHA_ORE_BLOCK_COUNT
+                    + ALPHA_CONTENT_BLOCK_COUNT + POST_MVP_BLOCK_COUNT;
+
+    /**
      * 玩家常规方块数量（PRD 5.1 / 5.1.1 口径）。
      *
      * <p>PRD 的口径原本是 <b>13 种玩家常规方块 + 1 种系统方块</b>；
-     * 2026-10-02 追加 2 种 Alpha 矿石后为 <b>15 + 1</b>。
+     * 2026-10-02 追加 2 种Alpha 矿石后为 <b>15 + 1</b>；
+     * 2026-10-07（M4-S5）补齐 PRD_BLOCK_CREATIVE §3.1 的 5 种后为 <b>20 + 1</b>，
+     * 与 PRD §3.4 的 {@link #EXPECTED_PLAYER_BLOCK_COUNT} 相等。
      * 系统方块单独计数、不得当作玩家可用方块（PRD 第 8 章）。
      * 这个方法把口径写成可断言的数字，让"方块数量对不对"不再靠人工数表。
      */

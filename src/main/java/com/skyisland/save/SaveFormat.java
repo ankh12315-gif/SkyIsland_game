@@ -60,6 +60,38 @@ public final class SaveFormat {
         return "c." + cx + "." + cz + ".bin";
     }
 
+    /** 一对区块坐标。存在的原因是"返回 {@code int[]}"会让调用方分不清长度与顺序。 */
+    public record ChunkCoordinate(int cx, int cz) {
+    }
+
+    /**
+     * {@link #chunkFileName} 的<b>逆运算</b>。
+     *
+     * <p>为什么必须存在：M4-S8a 之后区块是<b>按需加载</b>的，读档不能再"遍历整个区块目录
+     * 全部应用一遍"（那样等于把全世界重新加载一次）。取而代之的是"某个坐标的区块被生成时，
+     * 按坐标取它自己的增量文件" —— 于是必须能从文件名反解出坐标。
+     *
+     * @return 解析出的坐标；不是区块文件或格式不符一律返回 {@code null}
+     *         （存档目录里允许有别的文件，判定失败是正常路径而不是错误）
+     */
+    public static ChunkCoordinate parseChunkFileName(String fileName) {
+        if (fileName == null || !fileName.startsWith("c.") || !fileName.endsWith(".bin")) {
+            return null;
+        }
+        String body = fileName.substring(2, fileName.length() - 4);
+        int dot = body.indexOf('.');
+        if (dot <= 0 || dot >= body.length() - 1) {
+            return null;
+        }
+        try {
+            int cx = Integer.parseInt(body.substring(0, dot));
+            int cz = Integer.parseInt(body.substring(dot + 1));
+            return new ChunkCoordinate(cx, cz);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     /**
      * 解析存档根目录。
      *

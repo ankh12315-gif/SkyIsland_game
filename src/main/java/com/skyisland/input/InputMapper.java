@@ -90,6 +90,11 @@ public final class InputMapper {
         double[] look = LookConfig.toLookDelta(raw[0], raw[1], invertMouseY);
 
         boolean jump = actionHeld(in, bindings, Action.JUMP);
+        // ★ M4-S8b：潜行键（Shift）是创造模式飞行的下降键，走电平语义。
+        //   它<b>不</b>进键位表：键位表管的是"可重绑的动作"，而 Shift 在这里
+        //   是与创造飞行绑定的固定修饰键，与背包里的 Shift 点击同类（后者也是直读）。
+        boolean sneak = in.isKeyDown(GLFW.GLFW_KEY_LEFT_SHIFT)
+                || in.isKeyDown(GLFW.GLFW_KEY_RIGHT_SHIFT);
         boolean attackHeld = actionHeld(in, bindings, Action.PRIMARY_ACTION);
         // v2 §7.3：左键同时要"电平"（AUTO 持续开火）与"按下沿"（SINGLE 半自动开火）。
         // 同一个动作查两次是刻意的 —— 两个消费者要的是同一次按键的不同时间切片，
@@ -121,7 +126,7 @@ public final class InputMapper {
                 look[0], look[1],
                 attackHeld, attackPressed, usePressed, useHeld, reloadPressed, respawnPressed,
                 toggleDebug, savePressed, screenshotPressed,
-                scrollSteps, slot);
+                scrollSteps, slot, sneak);
     }
 
     // ============================================================ 动作查询

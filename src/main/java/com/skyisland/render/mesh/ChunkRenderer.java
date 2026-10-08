@@ -79,8 +79,9 @@ public final class ChunkRenderer {
         int processed = 0;
         for (Chunk chunk : batch) {
             if (!isStillLoaded(world, chunk)) {
-                // 区块被卸载：它的网格必须一起释放，否则 GPU 资源会随加载/卸载循环泄漏
-                disposeMesh(chunk);
+                // 区块被卸载：它的网格必须一起释放，否则 GPU 资源会随加载/卸载循环泄漏。
+                // 正常路径下 World.ChunkUnloadListener 已经先行释放过了，这里是第二道网。
+                releaseMesh(chunk);
                 continue;
             }
             long started = System.nanoTime();
@@ -203,7 +204,19 @@ public final class ChunkRenderer {
 
     // ============================================================ 释放与统计
 
-    private void disposeMesh(Chunk chunk) {
+    /**
+     * 释放<b>单个</b>区块的 GPU 网格。
+     *
+     * <p>★ M4-S8a：这是它必须 public 的理由 —— {@code World} 卸载区块时，
+     * {@link #processRebuildQueue} 的那道"已卸载就释放"只在
+     * <u>该区块恰好还排在重建队列里</u>时才走得通；而绝大多数被卸载的区块
+     * 网格是干净的、根本不在队列里，于是它的 VBO 会永远留在 {@link #meshes} 中。
+     * 症状是"卸载了但显存不降"，而且是缓慢累积 —— 跑十分钟才看得出来。
+     *
+     * <p>卸载路径通过 {@code World.ChunkUnloadListener} 调到这里，
+     * 于是"卸载"只有一个漏斗、清理无法被绕过。
+     */
+    public void releaseMesh(Chunk chunk) {
         ChunkMesh mesh = meshes.remove(chunk);
         if (mesh != null) {
             mesh.dispose();

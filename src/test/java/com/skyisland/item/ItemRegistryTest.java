@@ -119,11 +119,18 @@ class ItemRegistryTest {
      * 顺手改成"重新排一遍注册顺序"。runtimeId 一旦位移，所有把 runtimeId 写进
      * 存档/顶点缓存的地方都会静默错位。
      *
-     * <p><b>为什么现在是 19 而不是 17（2026-10-02 的 +2）：</b>
+     * <p><b>为什么现在是 24（2026-10-07 的 +5）：</b>
      * {@code ItemRegistry} 先按 {@code BlockRegistry} 的顺序生成<b>方块物品</b>，
-     * 再排非方块物品。步枪材料链新增了铜矿石 / 晶体矿石两种方块，
-     * 于是方块物品多 2 个，其后所有非方块物品的 runtimeId 整体 +2
-     * （煤炭 15→17、手枪弹 16→18、手枪 17→19、SMG 18→20）。
+     * 再排非方块物品。M4-S5 补齐 PRD_BLOCK_CREATIVE §3.1 的 5 种方块后，
+     * 方块物品由 16 变21，其后所有非方块物品的 runtimeId 整体 <b>+5</b>。
+     *
+     * <p><b>位移沿革（每次都有人显式改，数字来自实测不是推算）：</b>
+     * <ul>
+     *   <li>原始：煤炭 13、手枪弹 14、手枪 <b>15</b>、SMG 16；</li>
+     *   <li>2026-10-02（+2 铜/晶体矿石）：煤炭 15、手枪弹 16、手枪 <b>17</b>、SMG 18；</li>
+     *   <li>2026-10-02（+7 非方块：木棍/铁锭/铜锭/晶体/火药/步枪弹/步枪）：手表尾追加到 27；</li>
+     *   <li>2026-10-07（+5 方块，M4-S5）：煤炭 22、手枪弹 23、手枪 <b>24</b>、SMG 25、步枪 32。</li>
+     * </ul>
      *
      * <p>这条位移是<b>允许且安全</b>的，但必须显式登记：PRD 12.3 规定存档只写
      * stable string ID，运行期一律不把 runtimeId 写进存档 —— 所以位移不会污染老存档。
@@ -131,8 +138,9 @@ class ItemRegistryTest {
      */
     @Test
     void pistolRuntimeIdIsStable() {
-        assertEquals(19, ItemRegistry.pistol().runtimeId(),
-                "手枪 runtimeId 必须保持 19 —— 2026-10-02 因新增 2 种矿石方块而整体 +2");
+        assertEquals(24, ItemRegistry.pistol().runtimeId(),
+                "手枪 runtimeId 必须保持 24 —— 2026-10-07 因M4-S5 补5 种方块而整体 +5。"
+                        + "（上一轮 2026-10-02 因 2 种矿石方块 +2 时是 19，17→19→24）");
     }
 
     // ============================================================ SMG（v2 §10 / §11.1 / §11.2）
@@ -189,9 +197,9 @@ class ItemRegistryTest {
      */
     @Test
     void smgIsAppendedAfterThePistolWithoutShiftingIt() {
-        assertEquals(19, ItemRegistry.pistol().runtimeId(),
-                "手枪 runtimeId 必须逐值不变（v2 §11.2；2026-10-02 起为 19，见上一条说明）");
-        assertEquals(20, ItemRegistry.smg().runtimeId(),
+        assertEquals(24, ItemRegistry.pistol().runtimeId(),
+                "手枪 runtimeId 必须逐值不变（v2 §11.2；2026-10-07 S5 起为 24，见上一条说明）");
+        assertEquals(25, ItemRegistry.smg().runtimeId(),
                 "SMG 必须紧接在手枪之后（表尾追加，v2 §11.1「只追加，不插队」）");
         assertTrue(ItemRegistry.smg().runtimeId() > ItemRegistry.pistol().runtimeId(),
                 "SMG 的 runtimeId 必须大于手枪");
@@ -200,20 +208,27 @@ class ItemRegistryTest {
     /**
      * 物品表长度被钉死，且 {@code runtimeId == BY_RUNTIME_ID 下标}。
      *
-     * <p><b>28 是怎么来的：</b>空槽 1 + 方块物品 16（13 MVP 常规 + 2 Alpha 矿石 + 1 系统）
-     * + 非方块物品 11（煤炭 / 手枪弹 / 手枪 / SMG / 木棍 / 铁锭 / 铜锭 / 晶体 / 火药 /
+     * <p><b>33 是怎么来的：</b>空槽 1 + 方块物品 21（13 MVP 常规 + 2 Alpha 矿石
+     * + 3 Alpha 内容 + 2 后续迭代 + 1 系统）+ 非方块物品 11
+     *（煤炭 / 手枪弹 / 手枪 / SMG / 木棍 / 铁锭 / 铜锭 / 晶体 / 火药 /
      * 步枪弹 / 步枪）。
      *
      * <p>写成字面量而不是 {@code size()-1}，是为了让"有人又悄悄多注册一件物品"
      * 也必然变红 —— 本项目的口径是"新增物品必须有人显式改这个数字并想一遍"。
      * M3 时代这条断言写的是 19（只准多一件 SMG，v2 §18 的扩枪禁令）；
      * M4 前置（步枪材料链）把预期的增量显式改成了 +9（2 方块 + 7 物品），
-     * 于是"扩枪"这件事本身也变成了一个必须有人签字确认的动作。
+     * 于是"扩枪"这件事本身也变成了一个必须有人签字确认的动作；
+     * <b>2026-10-07（M4-S5 补 5 种方块）再+5</b> —— 方块物品段 16 → 21，
+     * 连带<b>所有非方块物品 runtimeId 整体 +5</b>（手枪 19→24、SMG 20→25、步枪 27→32）。
+     *
+     * <p>★ 顺带说明为什么这里<b>没有小麦种</b>：主理人 2026-10-07 裁定本轮不登记
+     * {@code skyisland:wheat_seeds}（项目内不存在种植系统，登记即死接线）。
+     * 若将来农业闭环落地，这条数字要改成 34。
      */
     @Test
     void registrySizeIsPinnedAndRuntimeIdsStillMatchTheirIndex() {
-        assertEquals(28, ItemRegistry.size(),
-                "物品表长度必须正好 28（空槽 1 + 方块物品 16 + 非方块物品 11）；"
+        assertEquals(33, ItemRegistry.size(),
+                "物品表长度必须正好 33（空槽 1 + 方块物品 21 + 非方块物品 11）；"
                         + "多一件或少一件都说明有人改动了注册集却没有同步这条断言");
         for (int i = 0; i < ItemRegistry.size(); i++) {
             assertEquals(i, ItemRegistry.byRuntimeId(i).runtimeId(),

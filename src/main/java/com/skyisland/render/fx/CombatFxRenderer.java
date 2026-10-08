@@ -47,7 +47,7 @@ import java.nio.FloatBuffer;
  */
 public final class CombatFxRenderer {
 
-    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerAo(vec2)。 */
+    /** 顶点格式与 {@code voxel.vert} 一致：aPos(vec3) + aColor(vec4) + aLayerLight(vec2)。 */
     private static final int FLOATS_PER_VERTEX = VertexFormat.FLOATS_PER_VERTEX;
 
     /** 每面 2 个三角形 = 6 个顶点。 */
@@ -579,7 +579,10 @@ public final class CombatFxRenderer {
             // （texel.rgb = 1，故画面与 S2 逐像素一致）。
             // 必须写满 —— 少写两个 float 会让下一个顶点整体前移 8 字节。
             out[w++] = BlockTextureLayers.NEUTRAL_WHITE;
-            out[w++] = VertexFormat.DEFAULT_AO;
+            // ★ M5a：第二分量改派为打包光照。粒子/曳光/闪光是**表现**而非被照亮的物体，
+            //   夜里的曳光若跟着变暗，玩家在交火中就看不见自己射出的弹道 ——
+            //   那不是氛围，是可用性。故用 LIGHT_ALWAYS_LIT（火把分量恒为满档）。
+            out[w++] = VertexFormat.LIGHT_ALWAYS_LIT;
             // S3 新增：UV（纯白层上取何值都不影响结果）。
             out[w++] = VertexFormat.DEFAULT_UV;
             out[w++] = VertexFormat.DEFAULT_UV;

@@ -1,6 +1,7 @@
 package com.skyisland.save;
 
 import com.skyisland.player.Inventory;
+import com.skyisland.player.Player;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,9 +25,13 @@ import java.util.List;
  * 运行时 ID 只由注册顺序决定，新增一个方块就会让大于它的 ID 整体位移 ——
  * 旧存档里存的数值 ID 会指向错误的方块（表现为"读档后石头变成玻璃"）。
  *
- * <p><b>M1 未纳入的字段：</b>{@code health} / {@code fallDistance}
- * （M1 的唯一死亡是坠入虚空，不扣血、不计算坠落伤害）、{@code magazineAmmo}
- * （M1 无枪械）。同 {@link LevelMeta}，这些是<b>可选新增字段，不需要升 saveVersion</b>。
+ * <p><b>生命值 {@code health}：M2 起纳入（M1 才有唯一死因"坠入虚空"，不扣血）。</b>
+ * 缺省值 {@code 20} 与 {@code Player.MAX_HEALTH} 一致，
+ * 旧存档缺该字段时 Gson 走字段初始化器 ⇒ 读出来就是满血（向后兼容，不升 saveVersion）。
+ *
+ * <p><b>仍是可选新增字段、不需升 {@code saveVersion} 的：</b>{@code fallDistance}
+ * （坠落伤害已在 M2 实现但距离值本身不入档）、{@code magazineAmmo}（弹匣内余弹由枪械状态另行持久化）。
+ * 同 {@link LevelMeta}，这些是<b>可选新增字段，不需要升 saveVersion</b>。
  */
 public final class PlayerState {
 
@@ -42,6 +47,17 @@ public final class PlayerState {
     public boolean onGround;
 
     public int deaths;
+
+    /**
+     * 当前生命值（0 < health ≤ {@code Player.MAX_HEALTH}）。
+     *
+     * <p><b>为什么默认 20 而不是 0：</b>Gson 反序列化时JSON 里缺失的字段
+     * 会保留 POJO 的字段初始值。默认 0 意味着<b>每一个旧存档都会被读成 0 血</b>，
+     * 玩家一读档就死（症状是"进游戏瞬间黑屏重生"，极难归因）。
+     * 20 让旧存档自然读成满血 —— 这与 {@code LevelMeta} 的 {@code gameMode} 同一条先例：
+     * <b>新增可选字段的默认值必须落在"安全侧"</b>。
+     */
+    public int health = Player.MAX_HEALTH;
 
     public double lastSafeX;
     public double lastSafeY;
@@ -87,6 +103,16 @@ public final class PlayerState {
         }
         if (selectedSlot < 0 || selectedSlot > 8) {
             problems.add("selectedSlot 越界: " + selectedSlot);
+        }
+        // health 只在"非正"时报错，不设上限校验。
+        //
+        // ★ 为什么上限不报：读档侧会夹到 [1, MAX_HEALTH]（见 Player#applyLoadedHealth），
+        //   所以 player.json 里写9999 不会造成伤害 —— 它在装载时就被夹住了。
+        //   在这里报它只会让日志多一条玩家看不懂的告警，而真正的防线在装载侧。
+        // ★ 为什么下限要报：health <= 0 意味着"读档即死"，那是一个真实的坏存档，
+        //   必须让人看见（症状是玩家一进世界就重生，且日志里什么都没有）。
+        if (health <= 0) {
+            problems.add("生命值非正（读档即死）: " + health);
         }
         for (Slot slot : inventory) {
             // M2.2：上限取自 Inventory.SLOT_COUNT（36），不再写死 8。

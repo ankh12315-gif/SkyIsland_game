@@ -46,11 +46,11 @@ final class NonFullMesh {
      * 内缩反而会在格子之间留下可见的缝。
      */
     static void emitCross(MeshSink sink, int lx, int ly, int lz,
-                          Block block, float shade, float layer) {
+                          Block block, float shade, float packedLight, float layer) {
         // 对角面 A：从格角 (0,0) 斜贯到对角 (1,1)
-        emitDoubleSided(sink, lx, ly, lz, block, shade, layer, 0f, 0f, 1f, 1f);
+        emitDoubleSided(sink, lx, ly, lz, block, shade, packedLight, layer, 0f, 0f, 1f, 1f);
         // 对角面 B：从格角 (1,0) 斜贯到对角 (0,1)
-        emitDoubleSided(sink, lx, ly, lz, block, shade, layer, 1f, 0f, 0f, 1f);
+        emitDoubleSided(sink, lx, ly, lz, block, shade, packedLight, layer, 1f, 0f, 0f, 1f);
     }
 
     /**
@@ -60,20 +60,20 @@ final class NonFullMesh {
      * @param x1z1 面的另一端（局部 x, z）
      */
     private static void emitDoubleSided(MeshSink sink, int lx, int ly, int lz,
-                                        Block block, float shade, float layer,
+                                        Block block, float shade, float packedLight, float layer,
                                         float x0, float z0, float x1, float z1) {
         // 正面：从 +Z/+X 侧看逆时针（与 BlockFace 的环绕约定一致）
         sink.pushQuad(lx + x0, ly, lz + z0,
                 lx + x1, ly, lz + z1,
                 lx + x1, ly + 1, lz + z1,
                 lx + x0, ly + 1, lz + z0,
-                block, shade, layer);
+                block, shade, packedLight, layer);
         // 背面：绕序反转，法线朝另一侧（否则从这一侧看整个作物消失）
         sink.pushQuad(lx + x0, ly, lz + z0,
                 lx + x0, ly + 1, lz + z0,
                 lx + x1, ly + 1, lz + z1,
                 lx + x1, ly, lz + z1,
-                block, shade, layer);
+                block, shade, packedLight, layer);
     }
 
     /**
@@ -141,6 +141,6 @@ final class NonFullMesh {
                       float x1, float y1, float z1,
                       float x2, float y2, float z2,
                       float x3, float y3, float z3,
-                      Block block, float shade, float layer);
+                      Block block, float shade, float packedLight, float layer);
     }
 }

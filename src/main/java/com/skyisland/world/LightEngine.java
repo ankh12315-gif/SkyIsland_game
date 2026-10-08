@@ -38,8 +38,16 @@ public final class LightEngine {
     /** 光源的最大影响半径（切比雪夫距离，§H.5）。 */
     public static final int TORCH_RADIUS = 6;
 
-    /** 无光照处的最低明暗，避免完全看不见（M1 无火把也无夜晚，但保留可读性余量）。 */
-    private static final float AMBIENT_FLOOR = 0.45f;
+    /**
+     * 无光照处的最低明暗，避免完全看不见（M1 无火把也无夜晚，但保留可读性余量）。
+     *
+     * <p>★ <b>M5a 起它是"白天的地板"</b>：夜晚的地板由 {@link DayClock#ambientFloor()}
+     * 按 {@link DayClock#NIGHT_BRIGHTNESS_RATIO}（PRD §4.4 的 15%）缩放得到。
+     * 之所以放在这里而不是写在 {@code DayClock} 里再抄一份：烘焙用的地板
+     * 与运行时用的地板<b>必须是同一个数</b>，否则"白天"这个基准会漂移，
+     * 而那种漂移的表现只是"夜里好像比预期亮一点"。
+     */
+    public static final float AMBIENT_FLOOR = 0.45f;
 
     private final int chunkSize = Coords.CHUNK_SIZE;
     private final int chunkHeight = Coords.CHUNK_HEIGHT;
