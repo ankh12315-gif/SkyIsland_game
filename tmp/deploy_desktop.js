@@ -1,19 +1,18 @@
-// 部署桌面入口：把 launcher/*.exe 复制到桌面，并核对 sha256。
+// 部署桌面入口：把 launcher/SkyIsland.exe 复制为「SkyIsland 启动.exe」，
+// 并把旧名（M3 一键启动.exe）移成 .bak。
 //
 // 为什么用 node 而不是 PowerShell：本项目所有脚本都是 UTF-8，
 // 而 PowerShell 的 -Command 走 GBK 控制台，中文文件名会被改写。
 // 同一个坑在 tmp/run_frozen_gate.js 的文件头记过一次。
 //
-// 两个入口，刻意分成两个二进制而不是"同一个 exe 加参数"：
-//   SkyIsland.exe          ->「SkyIsland 启动.exe」生存（有枪 + 合成）
-//   SkyIsland-creative.exe ->「SkyIsland 创造.exe」创造（无限方块 + 飞行）
-// 理由是 PRD_BLOCK_CREATIVE §4.3：模式在存档创建时定死。给生存 exe 加上
-// -Dskyisland.gameMode=creative 能传到 JVM，但**没有任何作用** —— 生存世界
-// 已经存在，游戏会照 level.json 读生存。症状是画面完全正常、只是背包少了
-// 「创造」标签，是最容易被误判成"构建坏了"的那种失败。
-//
-// 为什么用 node 而不是 PowerShell：本项目所有脚本都是 UTF-8，
-// 而 PowerShell 的 -Command 走 GBK 控制台，中文文件名会被改写。
+// ★ 为什么只有一个入口（2026-10-08 晚，主理人裁决「不要分成两个文件进入」）：
+//   这里曾经部署两个 exe（生存 / 创造）。创造模式已改成**游戏内双击空格**
+//   （PRD_BLOCK_CREATIVE §4.3′，会话不写盘），第二个入口已无存在理由，
+//   留着还会误导：创造世界里双击空格**没有**退出路径（§4.3），
+//   生存世界里才有 —— 两套行为不一致本身就是坑。
+//   本脚本曾用一张"入口表"遍历两个按钮；现在表里只有一行。
+//   之所以仍保留这张表而不是写死单个常量：它记录着"曾经有两个"，
+//   以及"再加第二个入口之前要先重新考虑这张表"。
 //
 // 用法：node tmp/deploy_desktop.js [--dry]
 'use strict';
@@ -27,25 +26,12 @@ const LAUNCHER = path.join(PROJ, 'launcher');
 const DESKTOP = process.env.SKYISLAND_DESKTOP
   || path.join(process.env.USERPROFILE || process.env.HOME || '', 'Desktop');
 
-/**
- * 桌面入口表。
- *
- * ★ 为什么是数组而不是两个散落的常量：两个入口漂移过一次（桌面 exe 是
- *   一份冻结的 09-23 二进制，世界名还停在 m21-play，而 .bat 早已改成
- *   islands-play —— 症状是"桌面按钮进的是一个只有手枪的世界"，
- *   而日志里每一行都正常）。把它写成表，"两个都要部署、两个都要核对
- *   sha256" 就是循环里的一行，而不是两份必须同步的代码。
- */
+/** 桌面入口表。★ 只有一行是刻意的，理由见文件头。 */
 const ENTRIES = [
   {
     src: 'SkyIsland.exe',
-    dstName: 'SkyIsland 启动.exe',      // 生存入口
+    dstName: 'SkyIsland 启动.exe',      // 唯一入口
     legacy: 'SkyIsland M3 一键启动.exe',  // M3 时代的旧名
-  },
-  {
-    src: 'SkyIsland-creative.exe',
-    dstName: 'SkyIsland 创造.exe',       // 创造入口
-    legacy: null,                        // 没有旧名
   },
 ];
 
@@ -136,4 +122,4 @@ if (failures > 0) {
   console.error('[deploy] Do not tell anyone the Desktop buttons were updated.');
   process.exit(3);
 }
-console.log('[deploy] done — both Desktop entry points match their build output.');
+console.log('[deploy] done — the Desktop entry point matches its build output.');

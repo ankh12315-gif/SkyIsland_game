@@ -112,14 +112,19 @@ REM
 REM  Logs: the game writes its own file, see the newest one in logs\
 REM ===========================================================================
 REM
-REM  WANT CREATIVE MODE (all blocks, no crafting, flight)?
-REM    Use the OTHER launcher:  play-creative.bat   (or the Desktop
-REM    button "SkyIsland 创造.exe").  It is a separate world on purpose --
-REM    PRD_BLOCK_CREATIVE section 4.3 fixes the mode when the save is created,
-REM    so adding -Dskyisland.gameMode=creative HERE does nothing at all: this
-REM    world already exists, the game reads survival from level.json, and the
-REM    only symptom is a missing 创造 tab on an otherwise normal-looking game.
-REM    See the "创造模式" section of README.md for the block-picking steps.
+REM  CREATIVE MODE (all blocks, no crafting, flight) -- there is NO second
+REM  launcher for it.  Double-tap SPACE in this world: that enters a creative
+REM  session AND takes off immediately.  Double-tap again to stop flying, and
+REM  once more to leave the session.  The session lives only for this run --
+REM  it is never written to the save (PRD_BLOCK_CREATIVE 4.3').
+REM  A separate creative launcher existed on 2026-10-08 and was removed the
+REM  same day: two entry points for one game is one too many, and the same key
+REM  behaved differently in the two worlds.
+REM  See the "创造模式" section of README.md for the block-picking steps.
+REM
+REM  NOTE: -Dskyisland.gameMode=creative would do NOTHING here.  This save
+REM  already exists, so the game reads survival from level.json and silently
+REM  ignores the switch (PRD 4.3).  Do not add it -- it only looks effective.
 REM
 REM ===========================================================================
 

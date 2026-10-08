@@ -2421,6 +2421,12 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         if (hovered < 0 || !pressed) {
             return;
         }
+        // ★ 与 InputMapper 的 sneak 不同，这里**刻意保持直读**：
+        //   它是鼠标操作的修饰键（Shift+左键 = 快速搬运），不是"游戏动作"。
+        //   放进键位表会让"改 CROUCH"顺手把背包搬运也改了 —— 而那两件事
+        //   在中文 Windows 上面对的是同一个输入法占用问题（Shift 会被中英切换吃掉），
+        //   所以玩家若要绕开，他会在设置里改 CROUCH，然后发现背包搬运还是失灵。
+        //   明确写出这个取舍，免得后来者以为它是漏改。
         boolean shift = input.isKeyDown(GLFW.GLFW_KEY_LEFT_SHIFT)
                 || input.isKeyDown(GLFW.GLFW_KEY_RIGHT_SHIFT);
         InventoryInteraction.Outcome outcome = shift

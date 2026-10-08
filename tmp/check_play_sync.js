@@ -62,35 +62,29 @@ if (!batSave) {
   failures.push('play.bat: no set "SAVE=%PROJ%..." line');
 }
 
-// ---- .c：生存分支的 #define ----
-// ★ 为什么不再读 `kWorldName = L"..."`：
-//   2026-10-08 下午加了创造入口（SKYISLAND_CREATIVE 分支）之后，源码把常量
-//   收敛成单一赋值点 —— `kWorldName = SKY_WORLD;`，值移进了 #ifdef 的 #define。
-//   于是本守卫读到的是 `world=...` / `save=(none)` 并报红。
-//   值得记的不是"改守卫"，而是：**它变红的形态与世界名真的漂移了完全一样**。
-//   如果当时把 islands-play 填回断言里，它会重新变绿，而真相是判据已经不再读
-//   它声称读的东西 —— 一个正在失效的守卫比没有守卫更危险，因为它给人虚假的确信。
-//   ⇒ 改成读 #else 侧（生存分支）的 #define，与 check_creative_sync.js 同一口径。
+// ---- .c：#define 常量 ----
+// ★ 这里曾经绕过一次大弯，值得留档（2026-10-08 当天两次）：
+//   ① 下午加创造入口时，源码把常量收敛成单一赋值点（kWorldName = SKY_WORLD），
+//      于是本守卫读到 `world=...` / `save=(none)` 并报红。
+//      **危险的不是"要改守卫"，而是它变红的形态与世界名真的漂移完全一样** ——
+//      当时若把 islands-play 填回断言，它会重新变绿，而真相是判据已经不再读
+//      它声称读的东西。正在失效的守卫比没有守卫更危险，它给出虚假的确信。
+//   ② 晚间创造入口被删（改游戏内双击空格进入），#ifdef 消失，本守卫再次失效。
+// ⇒ 结论固化在下面：**判据只认 #define 的值，绝不认"它离哪个赋值点多近"**，
+//   且 #define 的名字（SKY_WORLD / SKY_SAVE / SKY_SET）与 C 源里的
+//   `kWorldName = SKY_WORLD;` 分离是有意的 —— 它让"值只写一遍"成立。
 const c = read(C, 'skyisland_launcher.c');
-const branch = /#ifdef SKYISLAND_CREATIVE[\s\S]*?#else([\s\S]*?)#endif/.exec(c);
-if (!branch) {
-  console.error('[check_play_sync] skyisland_launcher.c: no '
-    + '`#ifdef SKYISLAND_CREATIVE / #else / #endif` block — the survival '
-    + 'constants cannot be located.');
-  process.exit(1);
-}
-const survivalBranch = branch[1];
 const cDefine = (name) => {
-  const m = new RegExp('#\\s*define\\s+' + name + '\\s+L"([^"]*)"').exec(survivalBranch);
+  const m = new RegExp('#\\s*define\\s+' + name + '\\s+L"([^"]*)"').exec(c);
   return m ? m[1] : null;
 };
 const cWorld = cDefine('SKY_WORLD') ? [null, cDefine('SKY_WORLD')] : null;
 const cSave = cDefine('SKY_SAVE') ? [null, cDefine('SKY_SAVE')] : null;
 if (!cWorld) {
-  failures.push('skyisland_launcher.c: survival branch has no #define SKY_WORLD');
+  failures.push('skyisland_launcher.c: no #define SKY_WORLD');
 }
 if (!cSave) {
-  failures.push('skyisland_launcher.c: survival branch has no #define SKY_SAVE');
+  failures.push('skyisland_launcher.c: no #define SKY_SAVE');
 }
 
 const batSaveLabel = batSave ? norm(batSave[1]) : '(none)';
@@ -109,7 +103,7 @@ if (batSave && cSave && norm(batSave[1]) !== norm(cSave[1])) {
 
 // ---- 附带检查：settings 文件名也不能分叉（它决定灵敏度等设置落在哪）----
 const batSettings = /-Dskyisland\.settingsFile=(\S+)/.exec(bat);
-// 设置文件同样读 #define（kSettingsRel 也已变成单一赋值点）
+// 设置文件同样读 #define
 const cSettingsName = cDefine('SKY_SET');
 const cSettings = cSettingsName ? [null, cSettingsName] : null;
 if (batSettings && cSettings) {

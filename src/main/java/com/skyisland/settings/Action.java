@@ -34,10 +34,29 @@ public enum Action {
     JUMP("jump", "Jump", Group.MOVEMENT, "M1.5 已消费"),
 
     /**
-     * 蹲下。PRD 里有这个动作，但 M1 的 {@code Player} 明确不含 crouch
-     * （TECH_DESIGN §I 的排除清单），因此本阶段只到"键位可配置"。
+     * 蹲下 / 飞行下降。
+     *
+     * <p><b>2026-10-08 起它有了真实消费方</b>：创造模式的飞行下降键
+     * （{@code PlayerIntent#sneak} → {@code Player#applyFlightVertical}）。
+     * 在那之前 {@link InputMapper} 是<b>直读</b> {@code LEFT_SHIFT || RIGHT_SHIFT}
+     * 的，理由写的是"Shift 是与创造飞行绑定的固定修饰键，不进键位表"。
+     *
+     * <p>那个理由站不住，主理人报"按 Shift 会切换中英文"才暴露出来：
+     * <b>直读 = 不可重绑</b>，而中文 Windows 上 Shift 被输入法占用，
+     * 于是飞行下降在一个完全正常的系统配置下不可用，
+     * 而玩家除了改系统设置之外无从下手。
+     * 加上"键位表里早就有 CROUCH、却零消费方"，
+     * 同一件事存在两套真相（设置界面让人改一个按不动的键）。
+     *
+     * <p>★ <b>界面显示名改成 "Fly Descend"，因为它现在只驱动飞行下降。</b>
+     * {@code label} 刻意不动（它是落盘契约里给人看的那一半之外的另一项，
+     * 但 {@code id="crouch"} 才是真正的落盘契约，{@code label} 可以改）。
+     * 留着 "Crouch" 会让玩家在设置里看到一个叫蹲下的键，
+     * 按下去发现只有飞的时候有用 —— 那正是本条注释一直想避免的
+     * "「能改键」被误读成「能蹲下」"。
+     * <p>PRD 里的<b>蹲下玩法本身仍未实现</b>（{@code Player} 不含 crouch 姿态）。
      */
-    CROUCH("crouch", "Crouch", Group.MOVEMENT, "已绑定，玩法消费方在 M2"),
+    CROUCH("crouch", "Fly Descend", Group.MOVEMENT, "M4-S8b 已消费（飞行下降）"),
 
     // ---- 交互（M1.5 全部有消费方）----
     /** 主操作：M1 的语义是"长按挖掘"，M2 加枪后同时是"开火"。 */

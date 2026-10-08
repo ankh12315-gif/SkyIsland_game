@@ -89,49 +89,38 @@ static const wchar_t* const kDefaultJdkDir = L"D:\\software\\jdk-25";
  * being true. See docs/testing/WORLD_ISLAND_GENERATOR_REPORT.md.
  * ------------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------------
- *  CREATIVE variant (compile with -DSKYISLAND_CREATIVE=1)
+ *  Play world identity — ONE entry point only.
  * ---------------------------------------------------------------------------
- * WHY a separate binary rather than an argument:
- *   this launcher already forwards extra args, so `SkyIsland.exe
- *   -Dskyisland.gameMode=creative` DOES reach the JVM. And it does nothing.
- *   PRD_BLOCK_CREATIVE 4.3: the mode is fixed when the save is created. The
- *   survival world in this very file already exists, so the game reads
- *   survival from level.json and (correctly) ignores the switch.
- *   The symptom is a perfectly normal game whose inventory has no 创造 tab,
- *   and the only clue is one log line. That is the worst kind of failure:
- *   it looks like a broken build rather than a locked world.
+ * ★ 2026-10-08 晚：这里曾经有一个 `#ifdef SKYISLAND_CREATIVE` 分支，
+ *   用来编译第二个「创造」exe 指向另一个世界。它已被**删除**，因为
+ *   创造模式现在可以在**同一个世界**里用「双击空格」进入
+ *   （PRD_BLOCK_CREATIVE §4.3′：会话只在本次运行内有效，不写盘）。
  *
- *   => the creative entry needs its OWN world + save dir, which is what the
- *      SKYISLAND_CREATIVE branch below supplies.
+ *   为什么删而不是留着：
+ *     ① 主理人明确要求"不要分成两个文件进入"。两个入口意味着两套世界、
+ *        两套存档、两个桌面按钮，而它们玩的是同一个游戏；
+ *     ② 留着就是**死代码**（本项目明令禁止"定义了却无消费者"）——
+ *        那个分支的唯一消费者（第二个 exe）已经不存在了；
+ *     ③ 更要命的是它会**误导**：创造世界里双击空格没有退出路径（§4.3），
+ *        而生存世界里双击空格能进出。会话功能落地之后，
+ *        "想玩创造"再没有理由去开第二个世界。
  *
- * ★ These constants MUST stay in lockstep with play-creative.bat.
- *   Guard: tmp/check_creative_sync.js parses BOTH files and compares them.
- *   They are deliberately #define'd and then assigned once, so that the guard
- *   has exactly one `kWorldName = L"..."` per branch to read. Writing two
- *   `static const wchar_t* const kWorldName` lines under #if/#else would make
- *   the guard's regex match whichever came first -- i.e. it would validate the
- *   survival build while the creative build drifted. */
-#ifdef SKYISLAND_CREATIVE
-#  define SKY_WORLD L"islands-creative"
-#  define SKY_SAVE  L"tmp\\islands-creative-saves"
-#  define SKY_SET   L"tmp\\islands-creative-settings.json"
-/* No infiniteReserve, no loadout=dev: guns are a SURVIVAL-only grant
- * (PRD 5.6), so asking for the dev loadout here would be asking for a thing
- * creative mode never hands out. A wrong guess in either direction is silent. */
-#  define SKY_SWITCHES L"-Dskyisland.gameMode=creative "
-#else
-#  define SKY_WORLD L"islands-play"
-#  define SKY_SAVE  L"tmp\\islands-play-saves"
-#  define SKY_SET   L"tmp\\islands-play-settings.json"
+ *   ⇒ 本文件与 play.bat 指向同一个世界，靠 tmp/check_play_sync.js 守住一致。
+ *     创造模式的入口是游戏内的双击空格，不是第二个可执行文件。
+ * ------------------------------------------------------------------------- */
+#define SKY_WORLD L"islands-play"
+#define SKY_SAVE  L"tmp\\islands-play-saves"
+#define SKY_SET   L"tmp\\islands-play-settings.json"
 /* Play switches, kept in lockstep with play.bat. Both are "fail towards the
  * product default": without them this entry point would silently differ from
  * the .bat one, which is exactly the class of bug this file already had.
  *   infiniteReserve=true -> ReserveMode.PROTOTYPE (v2 19-7 debug wording)
  *   loadout=dev          -> rifles + transition material kit, i.e. the DEV /
  *                           TEST loadout. A typo in the value would fall back to
- *                           SURVIVAL (fewer guns), never to a broken launcher. */
-#  define SKY_SWITCHES L"-Dskyisland.infiniteReserve=true -Dskyisland.loadout=dev "
-#endif
+ *                           SURVIVAL (fewer guns), never to a broken launcher.
+ * ★ No gameMode switch here, on purpose: the save already exists, so
+ *   -Dskyisland.gameMode=creative would be silently ignored (§4.3). */
+#define SKY_SWITCHES L"-Dskyisland.infiniteReserve=true -Dskyisland.loadout=dev "
 
 static const wchar_t* const kWorldName = SKY_WORLD;
 static const wchar_t* const kSaveRelDir = SKY_SAVE;
@@ -493,36 +482,6 @@ int main(void) {
         w_add(msg, MAXP * 2, saveDir);
         fail(msg, 4);
     }
-
-    /* ---- 4b. warn when a creative world already exists -------------------
-     * The one failure mode of this entry point that is completely silent.
-     * PRD_BLOCK_CREATIVE 4.3 fixes the mode when the save is created, so if
-     * this world already exists the -Dskyisland.gameMode=creative switch is
-     * ignored -- and the game looks entirely normal except the inventory has
-     * no 创造 tab. Say it here, where there is still a console.
-     *
-     * Deliberately a warning on stdout, not `fail()`: an existing save is a
-     * perfectly legitimate thing to re-open, so refusing to launch would be
-     * wrong. It only means "you are not getting creative this time". */
-#ifdef SKYISLAND_CREATIVE
-    {
-        wchar_t levelPath[MAXP];
-        w_join(levelPath, MAXP, saveDir, kWorldName);
-        w_add(levelPath, MAXP, L"\\level.json");
-        if (w_is_file(levelPath)) {
-            wchar_t warn[MAXP * 2];
-            w_set(warn, MAXP * 2, L"[WARN] This creative world ALREADY EXISTS.\n"
-                                    L"[WARN] The game mode is fixed when a save is created\n"
-                                    L"[WARN] (PRD 4.3), so this run keeps whatever mode it\n"
-                                    L"[WARN] was created with. If the CREATIVE tab is missing,\n"
-                                    L"[WARN] that is why -- it is not a broken build.\n"
-                                    L"[WARN] For a fresh creative world, delete or rename:\n"
-                                    L"[WARN]   ");
-            w_add(warn, MAXP * 2, levelPath);
-            say(stdout, warn);
-        }
-    }
-#endif
     if (!SetCurrentDirectoryW(proj)) {
         w_set(msg, MAXP * 2, L"Cannot switch to the project dir:\n");
         w_add(msg, MAXP * 2, proj);

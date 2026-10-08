@@ -90,11 +90,21 @@ public final class InputMapper {
         double[] look = LookConfig.toLookDelta(raw[0], raw[1], invertMouseY);
 
         boolean jump = actionHeld(in, bindings, Action.JUMP);
-        // ★ M4-S8b：潜行键（Shift）是创造模式飞行的下降键，走电平语义。
-        //   它<b>不</b>进键位表：键位表管的是"可重绑的动作"，而 Shift 在这里
-        //   是与创造飞行绑定的固定修饰键，与背包里的 Shift 点击同类（后者也是直读）。
-        boolean sneak = in.isKeyDown(GLFW.GLFW_KEY_LEFT_SHIFT)
-                || in.isKeyDown(GLFW.GLFW_KEY_RIGHT_SHIFT);
+        // ★ 2026-10-08：潜行键改走键位表（{@link Action#CROUCH}），不再直读 Shift。
+        //
+        // 为什么改（这一条是主理人报的"按 Shift 会切换中英文"带出来的）：
+        //   ① 直读 Shift 意味着**不可重绑**。而中文 Windows 上 Shift 被输入法
+        //      占用（中英切换），于是"创造飞行下降"这个功能在一个完全合理的
+        //      系统配置下不可用，而玩家除了改系统设置之外无从下手。
+        //   ② 键位表里**早就有** {@code Action.CROUCH}，默认绑 LEFT_SHIFT、
+        //      可重绑、可落盘 —— 但它的 `consumedBy` 一直写着"已绑定，玩法消费方在 M2"，
+        //      也就是**一个零消费方的动作**。真正的消费方（sneak）却在绕过它。
+        //      同一件事两套真相：设置界面让人改一个按不动的键。
+        //   ⇒ 让消费方读动作，动作与消费方就此只有一个真相。
+        //
+        // ★ 默认键位**不变**（KeyBindings 里 CROUCH 就是 LEFT_SHIFT），
+        //   所以这次改动对现有手感的唯一影响是"终于可以改了"。
+        boolean sneak = actionHeld(in, bindings, Action.CROUCH);
         boolean attackHeld = actionHeld(in, bindings, Action.PRIMARY_ACTION);
         // v2 §7.3：左键同时要"电平"（AUTO 持续开火）与"按下沿"（SINGLE 半自动开火）。
         // 同一个动作查两次是刻意的 —— 两个消费者要的是同一次按键的不同时间切片，

@@ -375,8 +375,19 @@ class MenuScreenTest {
         String forward = s.entry(Menus.bindId(com.skyisland.settings.Action.MOVE_FORWARD)).label();
         String reload = s.entry(Menus.bindId(com.skyisland.settings.Action.RELOAD)).label();
 
-        assertTrue(crouch.contains("M2"),
-                "蹲下至今没有玩法消费方，界面上必须写出来，否则'能改键'会被误读成'能蹲下'：" + crouch);
+        // ★ 2026-10-08：蹲下这一格的内容变了，所以本条的两个判据都反过来了。
+        //   上午它断言 crouch 带 [M2]（因为没有消费方）；现在它**有了**消费方
+        //   （飞行下降，InputMapper 改走 Action.CROUCH），所以 [M2] 必须摘掉。
+        assertFalse(crouch.contains("[M"),
+                "★ 蹲下/飞行下降自 M4-S8b 起已有真实消费方（创造飞行下降），"
+                        + "不得再挂里程碑标注 —— 留着会让玩家以为「按这个键没用」：" + crouch);
+
+        // ★ 但更重要的是**显示名**：它现在只驱动飞行下降，不驱动蹲下。
+        //   留着 "Crouch" 会让玩家以为按它能蹲，而实际只有飞的时候才有反应 ——
+        //   那正是本用例想避免的"「能改键」被误读成「能蹲下」"，只是换了个方向。
+        assertTrue(crouch.startsWith("Fly Descend"),
+                "★ 显示名必须写明它驱动的是飞行下降，而不是蹲下：" + crouch);
+
         assertFalse(forward.contains("M"),
                 "已消费的动作不需要标注：" + forward);
         // M2 起换弹有了真实消费方（GunState.tryStartReload），标注必须摘掉 ——

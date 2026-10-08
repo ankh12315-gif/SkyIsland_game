@@ -121,25 +121,16 @@ class NativeLauncherWiringTest {
         //   理由：把版本名写进断言，就等于让"下次再换名"必须先改测试 ——
         //   而那种"改名字就得改测试"的耦合，正是本类第 5 条注释里
         //   记的那个"冻结二进制没人重建"故障的同一个根。
-        // ★ 2026-10-08 下午：这一条在加创造入口时**变红了**，而变红的原因是
-        //   我自己把源码改了 —— `kWorldName = L"islands-play"` 变成了
-        //   `kWorldName = SKY_WORLD;`（值移进 #ifdef 的 #define，因为现在有两个分支）。
-        //   值得记的不是"要改测试"，而是：**这条断言的失败形态与"世界名漂移了"
-        //   一模一样**。若当时顺手把 islands-play 填回去，这条断言就重新变绿，
-        //   而真相是判据已经不再读它声称读的东西 —— 一个正在失效的守卫。
-        //   ⇒ 改成读 #define，并明确它读的是**生存分支**（the #else 侧），
-        //     创造分支由本类第 ⑨ 条单独守。
-        // ★ 用 defineOf(...) 而不是 contains("#define SKY_WORLD L\"...\""):
-        //   源码里是 `#  define`（井号后两个空格，对齐可读），写死单空格
-        //   的字面量会红在一个与功能毫无关系的地方 —— 改对齐就红。
-        //   那类断言的真正代价是**它会训练人忽略红灯**。
-        //   登记在案：本条已经因此红过一次（先红在"两分支同世界"，再红在空格）。
-        assertTrue("islands-play".equals(defineOf(survivalBranchOf(src), "SKY_WORLD")),
-                "★ 桌面启动器（生存分支）的世界名必须是 islands-play —— 它对应 PRD 4.2 的"
+        // ★ 用 defineOf(...) 而不是 contains("kWorldName = L\"...\""):
+        //   这一条当天被自己的重构弄红过**两次**（上午常量抽成 #define，
+        //   晚上 #ifdef 整块被删），而两次的失败形态都与"世界名漂移"一模一样 ——
+        //   当时若把字面量填回断言，它会重新变绿，而真相是判据已经不再读
+        //   它声称读的东西。**正在失效的守卫比没有守卫更危险。**
+        assertTrue("islands-play".equals(defineOf(src, "SKY_WORLD")),
+                "★ 桌面启动器的世界名必须是 islands-play —— 它对应 PRD 4.2 的"
                         + "空岛世界（主岛 + 四座资源岛 + 开局小屋）。2026-10-03 之前是 m21-play，"
                         + "2026-10-08 之前是 m3-play（那个建在已废弃的测试平台上）。"
-                        + "（判据读的是去掉注释后的源码、且只取 SKYISLAND_CREATIVE 的 #else 侧："
-                        + "现在有两个分支，各有一个创造世界。）");
+                        + "（判据读去掉注释后的源码里的 #define 值。）");
 
         assertTrue(src.contains("islands-play-saves"),
                 "存档目录必须跟着世界名同步，否则就等于把旧存档带进新地形");
@@ -417,111 +408,75 @@ class NativeLauncherWiringTest {
      * <p>⇒ 必须有一个指向<b>自己那个世界</b>的二进制，而本类守的就是
      * "它确实指向另一个世界" 这件事没有在将来被改坏。
      */
+    /**
+     * ★ <b>只有一个游玩入口</b>—— 这是一条<b>禁止性</b>断言。
+     *
+     * <p>2026-10-08 上午本类守的是相反的东西：必须存在
+     * {@code play-creative.bat} + 启动器的 {@code SKYISLAND_CREATIVE} 分支。
+     * 当天下午「创造会话」（游戏内双击空格）落地，晚上主理人裁决
+     * <b>「不要分成两个文件进入」</b>，于是那一整套被删除，本条改为禁止它回来。
+     *
+     * <h3>为什么值得写成一条断言</h3>
+     * <ul>
+     *   <li><b>死代码</b>：留着 {@code SKYISLAND_CREATIVE} 分支而没有第二个 exe，
+     *       就是本项目明令禁止的「定义了却无消费者」。</li>
+     *   <li><b>行为不一致</b>：创造世界里双击空格**没有**退出路径（§4.3 保留），
+     *       生存世界里才有（§4.3′ 新增）。两个入口玩的是同一个游戏，
+     *       同一个键在两个世界行为不同 —— 这本身就是坑。</li>
+     *   <li><b>守卫会跟着一起烂掉</b>：{@code check_creative_sync.js} 守的就是
+     *       "创造入口指向另一个世界"，文件删了它就变成一份对着不存在文件运行的脚本。</li>
+     * </ul>
+     * ⇒ 三样东西都必须**不存在**：造入口的 .bat、启动器的 #ifdef 分支、
+     * 它的同步守卫。缺任何一条都会让"两个入口"以某种形态复活。
+     */
     @Test
-    void theCreativeEntryHasItsOwnWorldAndIsGuarded() throws IOException {
-        Path bat = Path.of("play-creative.bat");
-        assertTrue(Files.exists(bat),
-                "找不到 " + bat + " —— 创造模式必须是独立入口：§4.3 让"
-                        + "「给生存世界加参数」彻底无效");
+    void thereIsExactlyOnePlayEntryPoint() throws IOException {
+        // ---- ① 造入口的 .bat 不得复活 ----
+        assertFalse(Files.exists(Path.of("play-creative.bat")),
+                "★ 不得再有第二个游玩入口。创造模式已改为游戏内**双击空格**进入"
+                        + "（PRD_BLOCK_CREATIVE §4.3′，会话不写盘），"
+                        + "主理人 2026-10-08 明确要求「不要分成两个文件进入」。"
+                        + "复活它的代价：死代码 + 同一个键在两个世界行为不同"
+                        + "（创造世界无退出路径）+ 同步守卫跟着烂掉");
 
-        String cSrc = Files.readString(
-                Path.of("launcher", "skyisland_launcher.c"), StandardCharsets.UTF_8);
+        // ---- ② 启动器不得再有 SKYISLAND_CREATIVE 分支 ----
+        // ★ 判据必须读**去掉注释后的源码**。这是本项目同一个坑的第四次：
+        //   我在 C 源里留了一段注释解释"这里曾经有 #ifdef SKYISLAND_CREATIVE，
+        //   它已被删除以及为什么" —— 而那句解释本身就含有 SKYISLAND_CREATIVE，
+        //   于是对原文的 contains 判据被**自己的说明文字**满足，本条当场变红。
+        //   前三次分别是：守卫判"创造分支没有 loadout"时红在解释性注释上；
+        //   reverse-verification 注入改到了 REM 注释；
+        //   本类第 ⑨ 条判"两个分支不得同世界"时踩到同一族。
+        //   ⇒ 纪律固定下来：**凡"某串字不该出现"的判据，一律读剥掉注释的源码。**
+        String cSrc = cWithoutComments();
+        assertFalse(cSrc.contains("SKYISLAND_CREATIVE"),
+                "★ skyisland_launcher.c 不得再有 SKYISLAND_CREATIVE 分支 —— "
+                        + "它唯一的消费者（第二个 exe）已被删除，留着就是死代码");
+        assertFalse(cSrc.contains("-Dskyisland.gameMode=creative"),
+                "★ 启动器不得传 gameMode 开关 —— 存档已存在时该开关会被**静默忽略**"
+                        + "（§4.3），症状是「画面完全正常、只是背包少了创造标签」。"
+                        + "在命令行里写它只会让人以为开关生效了");
 
-        assertTrue(cSrc.contains("#ifdef SKYISLAND_CREATIVE"),
-                "★ 启动器必须有 SKYISLAND_CREATIVE 分支 —— 否则"
-                        + "「SkyIsland 创造.exe」编译出来的仍然指向生存世界，"
-                        + "而症状是玩家看到创造模式「没生效」");
-        assertTrue(cSrc.contains("-Dskyisland.gameMode=creative"),
-                "创造分支必须真的传这个开关");
-
-        // ---- 创造分支的世界名必须与生存分支不同 ----
-        // 判据只读 #define，不读 `kWorldName = L"..."`：源码刻意把赋值收敛成
-        // 单一赋值点（kWorldName = SKY_WORLD），所以按"取第一个匹配"写的
-        // 断言只会校验生存分支，而创造分支悄悄漂移。
-        java.util.regex.Matcher branch = java.util.regex.Pattern.compile(
-                        "#ifdef SKYISLAND_CREATIVE([\\s\\S]*?)#else([\\s\\S]*?)#endif")
-                .matcher(cSrc);
-        assertTrue(branch.find(), "启动器里找不到 #ifdef SKYISLAND_CREATIVE ... #else ... #endif");
-        String creative = branch.group(1);
-        String survival = branch.group(2);
-
-        String creativeWorld = defineOf(creative, "SKY_WORLD");
-        String survivalWorld = defineOf(survival, "SKY_WORLD");
-        assertTrue(creativeWorld != null && survivalWorld != null,
-                "两个分支都必须有 #define SKY_WORLD（否则下面的比较无从谈起）");
-        assertFalse(creativeWorld.equals(survivalWorld),
-                "★ 创造与生存分支不能指向同一个世界「" + creativeWorld + "」—— "
-                        + "生存存档已经占了这个名字，§4.3 会让创造永远进不去，"
-                        + "而症状只是背包少一个标签");
-
-        // ---- 创造分支不得带生存专属开关（创造模式不发枪，PRD §5.6）----
-        // ★ 判据必须先去掉注释：那段注释**恰恰是在解释"这里不该有 loadout"**，
-        //   直接全文 grep 会红在自己的说明文字上 —— 与本项目在 Java 侧
-        //   "去掉注释后的源码"那条纪律同源。
-        String creativeCode = creative.replaceAll("(?s)/\\*.*?\\*/", " ")
-                .replaceAll("(?m)//.*$", " ");
-        assertFalse(creativeCode.contains("loadout") || creativeCode.contains("infiniteReserve"),
-                "★ 创造分支不得带 loadout / infiniteReserve —— 创造模式不发枪"
-                        + "（PRD §5.6），要了也永远拿不到，而它错起来没有报错");
-
-        // ---- .bat 侧同样要求 ----
-        // ★ 两条判据都只读**可执行行**。
-        //   play-creative.bat 的 REM 头部解释了"为什么不带 loadout"，
-        //   那段说明里就出现了 `-Dskyisland.loadout=dev` 字样 ——
-        //   对整文件 grep 会红在自己的注释上。第一版就这么写的，
-        //   症状是"断言说它要了 loadout，可我明明写的是不要"。
-        String batTxt = Files.readString(bat, StandardCharsets.UTF_8);
-        String batExec = java.util.Arrays.stream(batTxt.split("\\R"))
-                .map(String::trim)
-                .filter(l -> !l.isEmpty() && !l.regionMatches(true, 0, "REM", 0, 3)
-                        && !l.regionMatches(true, 0, "@echo", 0, 5))
-                .reduce("", (a, b) -> a + "\n" + b);
-
-        assertTrue(batExec.contains("-Dskyisland.gameMode=creative"),
-                "play-creative.bat 的**可执行行**上必须有该开关"
-                        + "（只在 REM 里写等于没写 —— cmd 不解析注释）");
-        assertFalse(batExec.contains("-Dskyisland.loadout"),
-                "play-creative.bat 不该在命令行上要 loadout —— 创造模式不发枪"
-                        + "（判据读可执行行：REM 头部解释了为什么不要它，那不算）");
-        assertFalse(batExec.contains("-Dskyisland.infiniteReserve"),
-                "同理，创造入口不需要 infiniteReserve");
-
-        // ---- 守卫必须入库 ----
-        Path guard = Path.of("tmp", "check_creative_sync.js");
-        assertTrue(Files.exists(guard), "找不到 " + guard);
+        // ---- ③ 它的同步守卫不得复活 ----
+        assertFalse(Files.exists(Path.of("tmp", "check_creative_sync.js")),
+                "★ tmp/check_creative_sync.js 不得复活 —— 它守的是一个已经不存在的入口，"
+                        + "留着会变成一份对着不存在文件运行的脚本");
         String gitignore = Files.readString(Path.of(".gitignore"), StandardCharsets.UTF_8);
-        assertTrue(gitignore.contains("!tmp/check_creative_sync.js"),
-                "tmp/check_creative_sync.js 必须在 .gitignore 的白名单里 —— "
-                        + "守卫不入库 = 换个克隆就没有它，而症状是「一切全绿」");
-
-        String js = Files.readString(guard, StandardCharsets.UTF_8);
-        assertTrue(js.contains("RV ok"),
-                "★ 守卫必须带反向验证 —— 它守的三种错位全部是**静默**失效，"
-                        + "没有 RV 就无法知道它是否真的会红");
-        assertTrue(js.contains("RV INVALID"),
-                "★ 守卫必须自检「注入是否真的改了文件」。本轮三次返工全部是"
-                        + "注入本身有缺陷却报成守卫漏判（改到了注释上 / 注入到"
-                        + "第一个匹配 / 拼回时丢了 #else），没有这一条就会一直查错方向");
-        assertTrue(js.contains("stripComments"),
-                "守卫判「创造分支有没有生存开关」时必须先去掉注释，"
-                        + "否则会被解释性注释满足或否证");
+        assertFalse(gitignore.contains("!tmp/check_creative_sync.js"),
+                ".gitignore 里的 !tmp/check_creative_sync.js 白名单必须一并移除 —— "
+                        + "放行一个已删除的文件不会报错，只会让 .gitignore 慢慢失真");
     }
 
     /**
-     * 取 {@code #ifdef SKYISLAND_CREATIVE ... #else ... #endif} 的<b>生存分支</b>
-     * （{@code #else} 与 {@code #endif} 之间那段）。
+     * 取 {@code #define <name> L"..."} 的值。
      *
-     * <p>找不到该结构时返回 {@code null} —— 调用方据此判红，而不是把它当成
-     * "空字符串所以包含判断为假"混进别的失败里。
+     * <p>★ 判据只认 {@code #define} 的值，**不认"它离哪个赋值点多近"**。
+     * 这一天里本类与 {@code check_play_sync.js} 各被自己的重构弄坏一次
+     * （上午把 {@code kWorldName = L"..."} 抽成 {@code = SKY_WORLD;}，
+     * 晚上又把 {@code #ifdef} 整块删掉），两次的失败形态都与"世界名漂移"一模一样。
+     * 那意味着：当时若把字面量填回断言，它会重新变绿，而真相是判据已经不再读
+     * 它声称读的东西。<b>正在失效的守卫比没有守卫更危险。</b>
      */
-    private static String survivalBranchOf(String cWithoutComments) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-                        "#ifdef SKYISLAND_CREATIVE[\\s\\S]*?#else([\\s\\S]*?)#endif")
-                .matcher(cWithoutComments);
-        return m.find() ? m.group(1) : null;
-    }
-
-    /** 从一段 C 文本里取 {@code #define <name> L"..."} 的值，取不到返回 {@code null}。 */
     private static String defineOf(String cText, String name) {
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile("#\\s*define\\s+" + name + "\\s+L\"([^\"]*)\"")
