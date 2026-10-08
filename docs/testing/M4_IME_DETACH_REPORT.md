@@ -1,0 +1,126 @@
+# M4 · 游戏内摘除 IME（SHIFT 不再被输入法抢走）
+
+| 项 | 值 |
+|---|---|
+| 日期 | 2026-10-08 |
+| 起因 | 主理人反馈：「按 shift 键会切换中英文，中文状态下我玩就没法玩了」 |
+| 诉求 | 游戏窗口聚焦时 Shift 只属于游戏；失焦后输入法恢复正常（大型网游行为） |
+| 落地 | `launcher/skyisland_ime.c`（JNI 桥）+ `ImeBridge` + `Window#detachIme` |
+| 实测 | **摘除前=有，摘除后=无**（`ImmGetContext` 读数，非"我们调了 API"） |
+| 单测 | `ImeBridgeWiringTest` 6 条 |
+| 反向验证 | 8 条断线全部精确变红、逐字节还原、残渣 0 |
+
+---
+
+## 1. 先定位：切换来自哪里
+
+**游戏里没有语言切换功能。** 三条都核实过：
+
+| 查什么 | 结果 |
+|---|---|
+| `Action` 枚举（10 个逻辑动作） | 无语言项 |
+| `Localization` | 只有 zh-CN 一种实现（PRD 6.7：语言不再是可调设置） |
+| 输入路径 | `glfwSetKeyCallback` 原始键回调，**无** `glfwSetCharCallback` / 文本输入 |
+
+⇒ 切换是 **Windows 输入法**（微软拼音默认开着「用 Shift 键切换中/英文」）。
+
+## 2. 为什么 GLFW 自带的 `GLFW_IME` hint 不是出路
+
+动手前核实，**避免"看起来更省事"的错路**：
+
+```
+$ javap org.lwjgl.system.windows.User32 | grep -i imm
+  （只有 WM_IME_* 消息常量，没有任何 Imm* 函数）
+
+$ objdump -p glfw.dll | grep 'DLL Name'
+  KERNEL32.dll / USER32.dll / GDI32.dll / SHELL32.dll      ← 没有 imm32
+```
+
+GLFW 的原生库**根本没有链接 imm32** ⇒ `GLFW_IME` 那个窗口 hint 在 Windows 上
+不做"摘掉 IME 上下文"这件事。LWJGL 也没绑 imm32。
+
+⇒ 唯一的正确 API 是 `ImmAssociateContextEx(hwnd, NULL, IACE_DEFAULT)`（imm32.dll），
+**只能自己写 C**。项目本来就用 mingw-w64 编启动器，工具链现成。
+
+## 3. ★ 为什么额外暴露一个查询接口
+
+`ImmAssociateContextEx` 的返回值**有歧义**：返回 NULL 既可能是"本来就没有上下文"
+（已经对了），也可能是"失败"。一个只信返回值的桥会**在失败时报告成功**，
+而那正是本项目最怕的东西：**一个会自己说谎的"成功"比没有更坏**。
+
+所以桥同时导出 `nIsEnabledForWindow`（`ImmGetContext(hwnd) != NULL`），
+游戏把**摘除前 / 摘除后**两条读数打进日志：
+
+```
+[窗口] IME：摘除前=有，摘除后=无（before=true/after=false 才算成功）
+[窗口] 输入法已与本窗口解绑：SHIFT 现在只属于游戏（失焦后系统输入法自动恢复）
+```
+
+这让"这个修复生效了吗"成为**可自动取证**的问题，而不是"你按 SHIFT 试试看"。
+
+## 4. 两个顺序/位置陷阱
+
+| 陷阱 | 后果 | 守卫 |
+|---|---|---|
+| 摘除放在 `glfwFocusWindow` **之前** | **聚焦会重新激活 IME**，先摘后聚焦等于没摘 —— 症状是"看起来做了、实测仍然失灵" | `theDetachHappensAfterFocus`（断言索引顺序） |
+| 加载失败抛异常 | dll 缺失时 `UnsatisfiedLinkError` 冒泡到主循环，**窗口打不开** | `theBridgeDegradesInsteadOfBlockingStartup` |
+
+降级路径必须存在：一个**可选**的原生辅助件绝不能有能力阻止游戏启动
+（那正是本项目反复付过学费的失败形态）。
+
+## 5. ★ 反向验证当场抓出我自己三条无效判据
+
+这个守卫守的是**一个修复**，而修复最典型的假绿形态是「类写好了、注释写得很清楚、
+但没人真的调用」—— 编译通过、单测全绿、门禁全绿，而 SHIFT 仍然失灵。
+本项目为「已定义、从未被调用」付过 M2.1 一次抓出 8 处的学费。
+
+| # | 注入 | 症状 | 真因 |
+|---|---|---|---|
+| A | 把调用点 `detachIme(handle);` 换成注释 | 守卫**没报**漏判 | 判据只判 `contains("ImeBridge")`，而 `private static void detachIme(long)` 这个**方法定义**就含这串字 |
+| E | 删掉构建脚本里的 `buildImeBridge();` | 全绿 | `function buildImeBridge()` 的**定义**里含同一串 |
+| F | 删掉链接参数 `'-limm32',` | 全绿 | 测试读的是**原文**，而我给那个函数写的文档注释里就写着 "WHY -limm32: …" |
+| H | 删掉 `launcher/` 加载候选 | 全绿 | 判据只判 `contains("launcher")`，而诊断字符串里就写着"已试过: … / launcher/ / target/" |
+
+★ 四条同源：**`contains("某个词")` 同时被"定义"和"注释"满足**。
+⇒ 三条纪律固化下来：
+
+1. 判"是否接线"必须断言**调用点**（`detachIme(handle);` 带参数带分号），
+   不能断言名字出现；
+2. 判"某串字不该出现"一律读**剥掉注释**的源码；
+3. 判"某个位置必须被覆盖"断言那个**表达式**
+   （`cwd.resolve("launcher").resolve(LIB_FILE)`），而不是路径里的那个词。
+
+### 注入自身还踩了两次（与前几轮同一家族）
+
+- 注入 H 第一版把 `return null;` 插到方法开头 ⇒ unreachable statement **编译错误**，
+  `exit≠0` 让"变红"成立，可失败行不是那条断言；
+- 第二版换成换整个方法体 ⇒ 编译通过但**断言照样绿**，因为被守的是
+  "诊断里有没有列出候选位置"，与方法体无关。
+  ⇒ 第三版才直接删掉那个候选路径。
+
+## 6. `.gitignore` 漏了 dll（差点把 43 KB 二进制提交进库）
+
+`git status` 把 `launcher/skyisland-ime.dll` 列成 `??`。
+"忘了加忽略规则"的默认后果是**它会被提交进库**；而二进制入库之后，
+下一个改 C 的人会撞上「我改了怎么没变化」（构建可能加载库里那份旧的）。
+
+⇒ `.gitignore` 加 `/launcher/*.dll`（与 `.exe` 同规则），并加断言守住
+（`theCSourceIsTrackedAndBuilt` 现在同时要求"源入库"与"产物不入库"）。
+
+## 7. 门禁数字
+
+| 检查 | 断言 | 失败 |
+|---|---:|---:|
+| 单元（surefire 全量） | **1518** | **0** |
+| ├ `ImeBridgeWiringTest` | 6 | 0 |
+| gate-m1 / ui / m2 | 27 / 89 / 193 | 0 / 0 / 0 |
+| 反向验证 | 8 条断线 | 0 漏判 |
+| 实机 IME 读数 | 摘除前=有 → 摘除后=无 | — |
+
+## 8. 遗留
+
+- **未做真人验证**：状态跃迁是机器读出来的，但"按 Shift 时输入法指示器不动"
+  这一步仍然只有人能确认。日志那两行就是为这一步准备的。
+- 失焦恢复依赖系统行为（未主动做任何事）—— 这是有意的：
+  主动"重新挂 IME"反而可能与系统抢上下文。
+- 非 Windows 平台上 `ImeBridge` 直接不可用，走降级路径（该问题只存在于中文 Windows）。

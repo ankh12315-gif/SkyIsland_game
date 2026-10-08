@@ -98,6 +98,22 @@ tmp/s3work/*
 !tmp/extract_play_exec.js
 !tmp/rv_play_sync.js
 
+# --- IME 桥的 C 源与其反向验证脚本, MUST stay tracked ---
+# WHY: 中文 Windows 的输入法默认开着「用 SHIFT 切换中/英文」，游戏窗口挂着
+#   IME 上下文时按 SHIFT 切的是输入法状态 —— 飞行下降键静默失灵。
+#   修法是 ImmAssociateContextEx(hwnd, NULL, IACE_DEFAULT)，而它**只能自己写 C**：
+#   核实过 LWJGL 没绑 imm32、GLFW 的原生库根本没 import imm32
+#   （objdump -p glfw.dll 只有 KERNEL32/USER32/GDI32/SHELL32）
+#   ⇒ GLFW_IME 那个窗口 hint 在 Windows 上不是出路。
+# dll 与 exe 一样不入库，所以**这个 .c 是唯一可追溯的产物** —— 没有它，
+#   换个克隆就既编不出也读不懂这个修复。
+# rv_ime_bridge.js 是它的反向验证：它守的是「一个修复」，而修复最典型的假绿形态
+#   是「类写好了、注释很清楚、但没人真的调用」。本轮它当场抓出守卫自己两条
+#   无效判据（方法定义冒充调用点 / 文档注释冒充链接参数 / 诊断字符串冒充候选路径）。
+# Guard: ImeBridgeWiringTest
+!launcher/skyisland_ime.c
+!tmp/rv_ime_bridge.js
+
 # --- 创造会话的反向验证脚本, MUST stay tracked ---
 # WHY: 创造会话（生存世界里双击空格进创造并起飞）的守卫守的是**安全性** ——
 #   会话不得写进存档、不得给创造存档退出路径。它的判据全是「源码里没有某串字」，
@@ -136,13 +152,21 @@ tmp/s3work/*
 !tools/xmlred.js
 
 # =====================================================================
-# launcher/ — native Windows .exe entry point.
+# launcher/ — native Windows binaries (launcher .exe + the JNI IME bridge).
 # STRATEGY: track the SOURCE (C launcher, .rc, manifest, icon builder,
 # source art), but NOT the compiled binaries or the windres/gcc scratch.
 # The .exe is regenerated from source via the same MinGW toolchain; keeping
 # it out of git avoids 300KB+ binary diffs on every rebuild.
+#
+# ★ `.dll` 与 `.exe` 同理，且**必须**排除：
+#   skyisland-ime.dll 是 skyisland_ime.c 的编译产物（43 KB）。
+#   本轮漏过它一次 —— `git status` 直接把它列成 `??`，也就是说"忘了加忽略规则"
+#   的默认后果是**它会被提交进库**，而一个 43 KB 的二进制入库之后，
+#   下一个改 C 的人会推到"我改了怎么没变化"（系统优先加载已入库的那份 dll）。
+#   ⇒ 与 .exe 同一条规则，不给例外。
 # =====================================================================
 /launcher/*.exe
+/launcher/*.dll
 /launcher/build/
 
 # =====================================================================

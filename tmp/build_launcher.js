@@ -149,6 +149,72 @@ if (!consoleOnly) {
   build('SkyIsland.exe', []);
 }
 build('SkyIsland-console.exe', ['-DSKYISLAND_KEEP_CONSOLE=1']);
+buildImeBridge();
+
+/**
+ * 编出 IME 桥 JNI dll（launcher/skyisland_ime.c）。
+ *
+ * WHY it lives in this script rather than its own:
+ *   the launcher's reason for existing was "the only supported way to turn the
+ *   .c back into a binary". The IME bridge has exactly the same character --
+ *   a source file that must be compiled, with no tracked artefact. Two
+ *   scripts each needing "run me after editing the C" is two things to forget.
+ *   Splitting them is also how a stale .dll ships next to a fresh .exe.
+ *
+ * WHY -limm32: that is the import library for ImmAssociateContextEx /
+ *   ImmGetContext, the only two calls we make (see the .c header for why
+ *   neither LWJGL nor GLFW can supply them).
+ */
+function buildImeBridge() {
+  const out = path.join(LAUNCHER, 'skyisland-ime.dll');
+  const src = path.join(LAUNCHER, 'skyisland_ime.c');
+  mustExist(src, 'skyisland_ime.c');
+
+  const jdkHome = process.env.JDK_HOME || 'D:\\software\\jdk-25';
+  const jniInc = path.join(jdkHome, 'include');
+  const jniWin = path.join(jniInc, 'win32');
+  mustExist(jniInc, `JNI headers (set JDK_HOME; tried ${jniInc})`);
+  mustExist(jniWin, `JNI win32 headers (set JDK_HOME; tried ${jniWin})`);
+
+  console.log(`[build_launcher] gcc -> ${out}  (JNI IME bridge)`);
+  const r = spawnSync(
+    path.join(MINGW, 'bin', 'gcc.exe'),
+    [
+      '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+      '-shared',
+      '-static-libgcc',
+      // JNI's calling convention: MinGW on Windows defaults to cdecl, same as
+      // the JDK expects for JNIEXPORT, so no -Wl,--kill-at is needed. The
+      // explicit JNICALL on every export is what actually pins it.
+      '-I', INCLUDE, '-I', jniInc, '-I', jniWin,
+      src,
+      '-o', out,
+      '-limm32',
+    ],
+    { encoding: 'utf8' }
+  );
+  if (r.error) {
+    console.error(`[build_launcher] cannot run gcc for the IME bridge: ${r.error.message}`);
+    process.exit(1);
+  }
+  const noise = `${r.stdout || ''}${r.stderr || ''}`;
+  if (noise) {
+    process.stdout.write(noise);
+  }
+  if (r.status !== 0) {
+    console.error(`[build_launcher] gcc exited ${r.status} building the IME bridge`);
+    process.exit(r.status === null ? 1 : r.status);
+  }
+  if (!fs.existsSync(out)) {
+    console.error(`[build_launcher] gcc reported success but ${out} is missing`);
+    process.exit(1);
+  }
+  console.log(`[build_launcher]   skyisland-ime.dll ${kbOf(out)}`);
+}
+
+function kbOf(p) {
+  return `${(fs.statSync(p).size / 1024).toFixed(0)} KB`;
+}
 
 console.log('[build_launcher] done.');
 console.log('[build_launcher] To publish the Desktop entry point, copy SkyIsland.exe');

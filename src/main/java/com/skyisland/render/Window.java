@@ -146,7 +146,49 @@ public final class Window {
         GLFW.glfwShowWindow(handle);
         GLFW.glfwFocusWindow(handle);
 
+        // ---- 摘掉 IME（中文 Windows 专用，见 ImeBridge 的类注释）----
+        // 必须在窗口**创建之后**做：IME 上下文是随窗口创建的。
+        // ★ 必须放在 glfwFocusWindow 之后 —— 聚焦会重新激活 IME，
+        //   先摘后聚焦等于没摘。那正是"看起来做了、实测仍然失灵"的典型顺序错。
+        detachIme(handle);
+
         return w;
+    }
+
+    /**
+     * 把输入法上下文从窗口上摘掉，并**把前后状态打进日志**。
+     *
+     * <p>为什么要在日志里留前后两条：项目里"我们调了那个 API"与"它生效了"
+     * 是两件事，只报成功会让日志说谎。`ImmGetContext` 的返回值就是那份证据，
+     * 玩家报"还是会被切"时，第一件要看的就是这两行。
+     *
+     * <p>桥不可用时只打一条警告，且<b>不抛出</b> —— 一个可选的原生辅助件
+     * 绝不能阻止游戏启动（那正是本项目反复付过学费的失败形态）。
+     */
+    private static void detachIme(long handle) {
+        if (!com.skyisland.platform.ImeBridge.isAvailable()) {
+            Log.noteWarning("窗口",
+                    "IME 桥不可用（" + com.skyisland.platform.ImeBridge.loadStatus()
+                            + "）：SHIFT 仍会被输入法的中英切换吃掉，"
+                            + "飞行下降键可能失灵；其余功能不受影响。"
+                            + "构建它：node tmp/build_launcher.js");
+            return;
+        }
+        final boolean before = com.skyisland.platform.ImeBridge.isEnabledForWindow(handle);
+        final boolean after = com.skyisland.platform.ImeBridge.disableForWindow(handle);
+        Log.info("[窗口] IME：摘除前=%s，摘除后=%s（before=true/after=false 才算成功）",
+                before ? "有" : "无", after ? "有" : "无");
+        if (before && !after) {
+            Log.info("[窗口] 输入法已与本窗口解绑：SHIFT 现在只属于游戏"
+                    + "（失焦后系统输入法自动恢复）");
+        } else if (after) {
+            Log.info("[窗口] 本窗口本来就没有 IME，无需解绑");
+        } else {
+            Log.noteWarning("窗口",
+                    "IME 摘除失败（before=" + before + " after=" + after + "）："
+                            + "SHIFT 仍可能被输入法吃掉。若反复出现，"
+                            + "可用 -Dskyisland.imeBridge=<dll 绝对路径> 指定它");
+        }
     }
 
     // ============================================================ 回调绑定
