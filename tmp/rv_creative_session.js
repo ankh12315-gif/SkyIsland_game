@@ -26,6 +26,7 @@ const FILES = {
   game: path.join(PROJ, 'src', 'main', 'java', 'com', 'skyisland', 'game', 'SkyIslandGame.java'),
   save: path.join(PROJ, 'src', 'main', 'java', 'com', 'skyisland', 'save', 'SaveManager.java'),
   loc: path.join(PROJ, 'src', 'main', 'java', 'com', 'skyisland', 'ui', 'Localization.java'),
+  renderer: path.join(PROJ, 'src', 'main', 'java', 'com', 'skyisland', 'render', 'ui', 'HudRenderer.java'),
 };
 
 /** 每条注入：改哪个文件 / 找不到就跳过要算失败 / 期望变红的断言。 */
@@ -89,6 +90,38 @@ const INJECTIONS = [
     find: '用无限方块盖的建筑仍然留在世界里',
     repl: '已回到生存能力',
     expect: /bothSessionNoticesExist/,
+  },
+  {
+    // ★ 2026-10-09：把「退出创造」塞回双击空格里 —— 正是主理人踩到的那个设计。
+    //   它必须是破坏性的：一次手感键的连按静默拿走全部五项能力。
+    name: 'G · 双击空格里重新塞回「退出会话」（静默拿走全部能力）',
+    file: 'player',
+    // ★ 锚点必须是**单行**：本仓库的 .java 是 CRLF，
+    //   跨行锚点写成 '\n' 永远匹配不上，而症状是
+    //   「RV INVALID — 锚点找不到」，看起来像源码变了，其实只是行尾。
+    //   这一条此前因此 INVALID 了两次。
+    find: '        setFlying(!flying);',
+    repl: '        if (creativeSession && !flying) { creativeSession = false; setCreativeMode(false); return; }   // RV-INJECT G\n'
+      + '        setFlying(!flying);',
+    expect: /doubleTapNeverExitsTheSession/,
+  },
+  {
+    // ★ 第一版的注入用的是 `!model.flying || model.onGround`，
+    //   而断言只查 `model.onGround && model.flying` 这一种形状 ⇒ 注入没被抓到。
+    //   真因是**断言写得太窄**：它匹配一种写法，而不是"依赖 onGround 这件事"。
+    //   ⇒ 断言改成"drawFlightBadge 的方法体里不得出现 model.onGround"。
+    name: 'H · HUD 的飞行指示与 onGround 挂钩（站着时永远不显示）',
+    file: 'renderer',
+    find: '        if (!model.flying && !model.creativeSession) {\n            return;\n        }',
+    repl: '        if (!model.flying || model.onGround) {\n            return;   // RV-INJECT H\n        }',
+    expect: /flightAndSessionAreShownOnTheHud/,
+  },
+  {
+    name: 'I · 结束会话后不重建暂停菜单（那一行会留在屏幕上，点了没反应）',
+    file: 'game',
+    find: '                        pauseMenuScreen = Menus.pauseMenu(false);\n',
+    repl: '                        // RV-INJECT I: 不重建\n',
+    expect: /theSessionExitIsReachableFromThePauseMenu/,
   },
 ];
 

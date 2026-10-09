@@ -44,6 +44,16 @@ public final class Menus {
     public static final String ID_OPEN_SETTINGS = "open_settings";
     public static final String ID_SAVE_TO_MAIN_MENU = "save_to_main_menu";
     public static final String ID_QUIT_GAME = "quit_game";
+    /**
+     * 结束创造会话（本次运行内）。
+     *
+     * <p>★ 它之所以在这里而不是"双击空格的第三态"：退出创造会
+     * <b>带走全部五项能力</b>。那种操作不该藏在某个手感键的第三次按下里 ——
+     * 实测那个版本让主理人遇到了"再双击一次，能力全没了"，
+     * 而且因为飞行状态在站着时不可见，他连自己会触发它都预判不了。
+     * ESC 菜单是玩家<b>预期找得到</b>的地方，且不会误触。
+     */
+    public static final String ID_END_CREATIVE_SESSION = "end_creative_session";
 
     // ---- 设置界面 ----
     public static final String ID_SENSITIVITY = "set_mouse_sensitivity";
@@ -112,16 +122,31 @@ public final class Menus {
 
     // ============================================================ 暂停菜单
 
-    /** 暂停菜单（规格第 2 条）。标题 / 副标题 / 各项文案全部走 Localization。 */
-    public static MenuScreen pauseMenu() {
+    /**
+     * 暂停菜单（规格第 2 条）。标题 / 副标题 / 各项文案全部走 Localization。
+     *
+     * @param creativeSession 本局是否处在创造会话中。为真时多一行"结束创造模式"。
+     */
+    public static MenuScreen pauseMenu(boolean creativeSession) {
         List<MenuEntry> entries = new ArrayList<>();
         entries.add(MenuEntry.action(ID_RESUME, Localization.text(MENU_PAUSE_RESUME)));
+        // ★ 只在创造会话里才出现：常驻一个在生存模式下点不动的菜单项，
+        //   是"看起来有能力、其实按了没反应"的另一种形式。
+        if (creativeSession) {
+            entries.add(MenuEntry.action(ID_END_CREATIVE_SESSION,
+                    Localization.text(MENU_PAUSE_END_CREATIVE)));
+        }
         entries.add(MenuEntry.action(ID_OPEN_SETTINGS, Localization.text(MENU_MAIN_SETTINGS)));
         entries.add(MenuEntry.action(ID_SAVE_TO_MAIN_MENU, Localization.text(MENU_PAUSE_SAVE_EXIT)));
         entries.add(MenuEntry.spacer());
         entries.add(MenuEntry.action(ID_QUIT_GAME, Localization.text(MENU_MAIN_QUIT)));
         return new MenuScreen(Localization.text(MENU_PAUSE_TITLE),
                 Localization.text(MENU_PAUSE_SUBTITLE), entries);
+    }
+
+    /** 无创造会话的暂停菜单（自测与旧调用方）。 */
+    public static MenuScreen pauseMenu() {
+        return pauseMenu(false);
     }
 
     // ============================================================ 设置界面

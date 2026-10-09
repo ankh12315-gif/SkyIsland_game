@@ -92,6 +92,7 @@ public final class HudRenderer {
         // M5a：时刻条画在**右上角**、且在调试 overlay 之外 ——
         //   调试信息是可关的，而"现在几点、还有多久天黑"是玩法信息（PRD §4.4）。
         drawDayStatus(model, fbWidth, fbHeight);
+        drawFlightBadge(model, fbWidth, fbHeight);
 
         if (model.showDebugOverlay) {
             drawDebugOverlay(model, fbWidth, fbHeight);
@@ -482,6 +483,41 @@ public final class HudRenderer {
         batch.rect(right - barW, barY, barW, barH, 0.16f, 0.16f, 0.18f, 1f);
         float p = Math.max(0f, Math.min(1f, model.dayPhaseProgress));
         batch.rect(right - barW, barY, barW * p, barH, color[0], color[1], color[2], 1f);
+    }
+
+    /**
+     * ★ 飞行 / 创造会话的<b>常驻</b>指示（2026-10-09）。
+     *
+     * <p>它必须存在，因为这个状态<b>在站着的时候是看不见的</b>：
+     * 站在地面时 {@code onGround == true}，而飞行照样可以是 true（悬停）。
+     * 两者看起来一模一样 ⇒ 玩家无法预判双击空格会发生什么。
+     * 实测里就出现过"我以为在走路、双击却是把飞行关掉"，
+     * 以及"再双击一次竟然把创造能力全没了"。
+     *
+     * <p>⇒ 只要 {@code flying} 为真就画，<b>不论是否站在地面</b>。
+     * 不可见的状态就是不可预测的操作。
+     */
+    private void drawFlightBadge(HudModel model, int fbWidth, int fbHeight) {
+        if (!model.flying && !model.creativeSession) {
+            return;
+        }
+        int scale = uiScale;
+        int lineHeight = BitmapFont.lineHeight(scale) + 2 * scale;
+        int y = 6 * scale + lineHeight * 3;
+        String text;
+        float[] color;
+        if (model.flying) {
+            text = "飞行中 · 空格上升 / "
+                    + (model.sneakKeyDisplay.isEmpty() ? "下降键" : model.sneakKeyDisplay)
+                    + " 下降 · 双击空格关闭";
+            color = UiTheme.TEXT_WARN;
+        } else {
+            text = "创造会话中 · E 取方块 · ESC 结束创造模式";
+            color = UiTheme.TEXT_PRIMARY;
+        }
+        int width = BitmapFont.textWidth(text, scale);
+        batch.textWithBackground(fbWidth / 2 - width / 2, y, text, scale, 2 * scale,
+                UiTheme.PANEL_BG, color);
     }
 
     private int textLine(int x, int y, int scale, int lineHeight, float[] color, String text) {

@@ -187,6 +187,42 @@ public final class HudModel {
     /** 瞄准目标的中文/可读名称（方块显示名或"怪物"）。 */
     public String targetDisplayName = "-";
 
+    // ---- M4-S8b′：飞行状态常驻显示（2026-10-09）----
+
+    /**
+     * ★ 当前是否处于<b>飞行</b>状态。与 {@code onGround} <b>无关</b>。
+     *
+     * <p>★ 为什么必须有这个常驻指示（这是主理人实测逼出来的）：
+     * 站着不动时 {@code onGround == true}，而飞行状态**照样可以是 true**
+     * （悬停在地面上方一格）。两者看起来一模一样，于是玩家
+     * <b>无法预判双击空格会发生什么</b> ——
+     * 实测里就出现了"我以为在走路、双击却是把飞行关掉"，
+     * 以及"再双击一次竟然把创造能力全没了"。
+     *
+     * <p>⇒ 只要处于飞行，这个指示就必须在屏幕上常驻，
+     * <b>不论是否站在地面</b>。它是把"不可见的状态"变成"可见的状态"，
+     * 而不可见的状态就是不可预测的操作。
+     */
+    public boolean flying;
+
+    /**
+     * ★ 是否处于<b>创造会话</b>（本次运行内的五项能力已开）。
+     *
+     * <p>与会话退出只差一次 ESC 菜单点击，所以它必须在屏幕上一直写着 ——
+     * 玩家有权知道"我现在手上有没有无限方块"。
+     */
+    public boolean creativeSession;
+
+    /**
+     * 下降键当前绑定的显示名（如 {@code "LEFT_CONTROL"}）。
+     *
+     * <p>为什么提示里要写出来：下降键的默认位从 Shift 改成 Ctrl 是为了绕开
+     * 中文输入法（实测 Shift 会被输入法吞掉，见 M4_IME_DETACH_REPORT）。
+     * 既然默认键因机器而异，把它<b>显示出来</b>才不会出现
+     * "按住提示里那个键却没反应"的困惑。
+     */
+    public String sneakKeyDisplay = "";
+
     // ---- M2：世界里的活体 ----
     public int aliveEntities;
     public int totalSpawnedEntities;

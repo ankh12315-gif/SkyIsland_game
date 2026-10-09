@@ -155,6 +155,92 @@ class CreativeSessionWiringTest {
     }
 
     @Test
+    @DisplayName("★ 双击空格的实现里不得再有「退出会话」分支")
+    void doubleTapNeverExitsTheSession() throws IOException {
+        String player = codeWithoutComments(PLAYER);
+
+        // ★ 判据是「applyDoubleTapSpace 的**方法体里**没有结束会话的调用」。
+        //   只判「整个文件里没有 endCreativeSession」是不够的 ——
+        //   ESC 菜单那条路径必须调它，所以它当然存在于文件里。
+        //   这与本文件第 ① 条同源：判据必须锚在正确的位置，
+        //   否则"某个东西存在"会被另一处的同名东西满足。
+        final int start = player.indexOf("private void applyDoubleTapSpace()");
+        assertTrue(start >= 0, "找不到 applyDoubleTapSpace");
+        final int end = player.indexOf("public boolean endCreativeSession()", start);
+        assertTrue(end > start, "找不到 endCreativeSession 的定义位置");
+        final String body = player.substring(start, end);
+
+        assertFalse(body.contains("endCreativeSession()"),
+                "★ 双击空格里不得出现退出会话的调用 —— 2026-10-09 主理人实测后已移除"
+                        + "那个「第三态」。退出创造会**带走全部五项能力**，"
+                        + "而触发它的是一次手感键的连按，且玩家预判不到"
+                        + "（飞行状态站着时不可见）。一个键静默拿走全部能力，"
+                        + "比它什么都不做更糟");
+        assertFalse(body.contains("creativeSession = false"),
+                "★ 同上：双击空格里不得把会话标志置回 false");
+    }
+
+    @Test
+    @DisplayName("★ 结束会话必须有可发现的入口（ESC 暂停菜单）")
+    void theSessionExitIsReachableFromThePauseMenu() throws IOException {
+        String menus = codeWithoutComments(
+                Path.of("src", "main", "java", "com", "skyisland", "ui", "Menus.java"));
+        String game = codeWithoutComments(GAME);
+
+        assertTrue(menus.contains("ID_END_CREATIVE_SESSION"),
+                "★ 暂停菜单必须有「结束创造模式」这一项 —— "
+                        + "把退出藏起来就会让玩家被留在创造里，"
+                        + "而 ESC 菜单是他们预期找得到的地方");
+        assertTrue(menus.contains("MENU_PAUSE_END_CREATIVE"),
+                "该菜单项必须走 Localization（玩家可见文案统一简体中文）");
+        assertTrue(game.contains("Menus.ID_END_CREATIVE_SESSION.equals(entryId)"),
+                "★ 游戏层必须真的处理这个菜单项 —— 菜单里有一行点了没反应，"
+                        + "比没有这一行更糟");
+        assertTrue(game.contains("player.endCreativeSession()"),
+                "处理时必须真的结束会话");
+        assertTrue(game.contains("Menus.pauseMenu(false)"),
+                "★ 结束后必须重建暂停菜单 —— 否则那一行会留在屏幕上，"
+                        + "第二次点它只会得到「本来就不在会话里」");
+    }
+
+    @Test
+    @DisplayName("★ 飞行/会话状态必须在 HUD 常驻（不可见 = 不可预测）")
+    void flightAndSessionAreShownOnTheHud() throws IOException {
+        String hud = codeWithoutComments(
+                Path.of("src", "main", "java", "com", "skyisland", "render", "ui", "HudModel.java"));
+        String renderer = codeWithoutComments(
+                Path.of("src", "main", "java", "com", "skyisland", "render", "ui", "HudRenderer.java"));
+        String game = codeWithoutComments(GAME);
+
+        assertTrue(hud.contains("public boolean flying;"),
+                "HUD 模型必须有 flying —— 站在地面时飞行状态**看不出来**，"
+                        + "而这就是玩家预判不了双击行为的直接原因");
+        assertTrue(hud.contains("public boolean creativeSession;"),
+                "HUD 模型必须有 creativeSession —— 玩家有权知道"
+                        + "「我现在手上有没有无限方块」");
+        assertTrue(renderer.contains("drawFlightBadge"),
+                "必须有渲染入口，且**常驻**（不是只在状态变化时弹一行）");
+        assertTrue(game.contains("hud.flying = player.isFlying()"),
+                "★ 每帧必须把真实飞行状态刷进 HUD —— 指示与状态脱钩比没有指示更糟");
+
+        // ★ 指示不得依赖 onGround，否则等于没有。
+        //   判据是「drawFlightBadge 的**方法体里**不得出现 model.onGround」，
+        //   而不是匹配某一种写法 —— 反向验证注入用的是
+        //   `!model.flying || model.onGround`，与 `&&` 那种形状不同，
+        //   第一版断言因为写得太窄而漏判（症状：注入没被抓住，却报成守卫的问题）。
+        final int badgeStart = renderer.indexOf("private void drawFlightBadge(");
+        assertTrue(badgeStart >= 0, "找不到 drawFlightBadge");
+        final int badgeEnd = renderer.indexOf("private int textLine(", badgeStart);
+        assertTrue(badgeEnd > badgeStart, "找不到 drawFlightBadge 的方法尾");
+        final String badgeBody = renderer.substring(badgeStart, badgeEnd);
+
+        assertFalse(badgeBody.contains("model.onGround"),
+                "★ 飞行指示**不得**依赖 onGround —— 站着的时候 onGround 为真，"
+                        + "挂上去就等于在玩家最需要它的时候永远不显示。"
+                        + "这正是主理人预判不了双击行为的直接原因");
+    }
+
+    @Test
     @DisplayName("§4.3 的两条文案都在（玩家必须当场知道不写存档）")
     void bothSessionNoticesExist() throws IOException {
         String loc = codeWithoutComments(

@@ -984,23 +984,47 @@ public final class Player {
             notifyCreativeSession(true);
             return;
         }
-        if (creativeSession) {
-            if (flying) {
-                setFlying(false);
-                Log.info("[玩家] 双击空格：飞行已关闭（仍在创造会话内）。");
-                return;
-            }
-            // 会话中且没在飞 → 退出。setCreativeMode(false) 会一并停飞，
-            // 避免留下"能力被拿走但状态还在"的半途态。
-            creativeSession = false;
-            setCreativeMode(false);
-            Log.info("[玩家] 双击空格：已退出创造会话，回到生存能力（飞行已停）。");
-            notifyCreativeSession(false);
-            return;
-        }
-        // ---- 创造存档：行为与本功能引入之前完全一致（只切飞行）----
+        // ---- 已在创造里（含会话与创造存档）→ 只切飞行 ----
+        //
+        // ★ 2026-10-09：这里原本是三态循环（进会话 → 停飞 → **退出创造**），
+        //   主理人实测后判定它不可预测，本轮改成**只切飞行**。
+        //   两个原因，都不是"手感"问题：
+        //
+        //   ① ★ 着地时飞行状态是**不可见**的。
+        //      实测：按 Ctrl 下降到地面后，状态仍是 flying=true（悬停），
+        //      而玩家站在地上走，感觉自己"在正常行走、飞行已关"。
+        //      于是同一个键在**他看来一样的两种状态下**做不同的事，
+        //      而他没有任何办法预判是哪一件。
+        //
+        //   ② ★ 那个中间态是**破坏性**的：从"创造但不飞"再双击一次会
+        //      **退出创造、带走全部能力**（实测确实如此）。
+        //      一个键在某种状态下静默移除你所有能力，比它不做任何事更糟。
+        //
+        //   ⇒ 双击空格现在只做一件事：切飞行（Minecraft 语义）。
+        //     退出创造会话改走 ESC 菜单里的"结束创造模式"，
+        //     因为那是玩家**预期找得到**的地方，且不会误触。
         setFlying(!flying);
         Log.info("[玩家] 双击空格：飞行已%s。", flying ? "开启" : "关闭");
+    }
+
+    /**
+     * 结束创造会话，回到生存能力（来自 ESC 菜单）。
+     *
+     * <p>★ 它**不**是双击空格的第四态。退出必须走一条**显式、可发现**的路径，
+     * 因为它拿走全部创造能力 —— 那类操作不该藏在一个"手感键"的第三次按下里。
+     *
+     * @return 是否真的结束了会话（本来就不在会话里时返回 false）
+     */
+    public boolean endCreativeSession() {
+        if (!creativeSession) {
+            return false;
+        }
+        creativeSession = false;
+        // setCreativeMode(false) 会一并停飞，避免留下"能力被拿走但状态还在"的半途态
+        setCreativeMode(false);
+        Log.info("[玩家] 已结束创造会话，回到生存能力（飞行已停）。");
+        notifyCreativeSession(false);
+        return true;
     }
 
     private void notifyCreativeSession(boolean active) {

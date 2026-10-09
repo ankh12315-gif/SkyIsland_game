@@ -1491,7 +1491,9 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         UiState initial = resolveInitialUiState();
         ui = new UiStateMachine(initial);
         mainMenuScreen = Menus.mainMenu(saveManager.worldExists());
-        pauseMenuScreen = Menus.pauseMenu();
+        // ★ 带 creativeSession 参数：创造会话中暂停菜单才会出现「结束创造模式」那一行。
+        //   构造期会话必然是 false（会话只能由双击空格开），所以启动时这里就是 false。
+        pauseMenuScreen = Menus.pauseMenu(player != null && player.isCreativeSession());
         settingsMenu = new SettingsMenuController(settings);
         Log.info("[界面] 菜单层已就绪：主菜单 %d 项 / 暂停 %d 项 / 设置 %d 项（键位 %d 个）",
                 mainMenuScreen.size(), pauseMenuScreen.size(),
@@ -2759,6 +2761,14 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
                     saveAndReturnToMainMenu();
                 } else if (Menus.ID_QUIT_GAME.equals(entryId)) {
                     ui.requestQuit();
+                } else if (Menus.ID_END_CREATIVE_SESSION.equals(entryId)) {
+                    // ★ 结束会话后**必须重建暂停菜单**，否则那一行会留在屏幕上，
+                    //   玩家第二次点它只会得到"本来就不在会话里"—— 一个点了没反应的菜单项。
+                    if (player.endCreativeSession()) {
+                        pauseMenuScreen = Menus.pauseMenu(false);
+                        ui.resume();
+                        showEvent(Localization.text(Localization.MSG_CREATIVE_SESSION_OFF), 4.0);
+                    }
                 } else {
                     Log.warn("[界面] 暂停菜单收到未知菜单项: %s", entryId);
                 }
@@ -3340,6 +3350,12 @@ public final class SkyIslandGame implements GameLoop.FrameCallbacks {
         // ★ 黄昏算夜晚：PRD §4.4 把"开始刷怪"记在黄昏，
         //   时刻条若在黄昏仍是白的，玩家会以为"还没开始"。
         hud.dayIsNight = dayPhase == DayPhase.DUSK || dayPhase == DayPhase.NIGHT;
+        // ★ 飞行 / 创造会话的常驻指示（2026-09-09）。必须与 onGround 无关：
+        //   站在地面时飞行照样可能是 true，而两者看起来一模一样，
+        //   于是玩家无法预判双击空格会发生什么（实测确认过这个困惑）。
+        hud.flying = player.isFlying();
+        hud.creativeSession = player.isCreativeSession();
+        hud.sneakKeyDisplay = settings.keyBindings().get(Action.CROUCH).display();
         hud.loadedChunks = world.loadedChunkCount();
         hud.meshCount = renderer.chunkRenderer().meshCount();
         hud.pendingMeshRebuilds = world.pendingMeshRebuilds();

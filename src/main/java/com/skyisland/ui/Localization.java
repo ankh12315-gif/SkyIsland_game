@@ -120,6 +120,13 @@ public final class Localization {
     // ---- 暂停菜单 ----
     public static final String MENU_PAUSE_RESUME = "menu.pause.resume";
     public static final String MENU_PAUSE_SAVE_EXIT = "menu.pause.save_exit";
+    /**
+     * 暂停菜单里的「结束创造模式」（仅创造会话中出现）。
+     *
+     * <p>★ 文案必须写明"盖的建筑仍留在世界里"：这是会话化之后唯一残留的代价，
+     * 而点这一下就是不可逆地放弃它 —— 不说的话等于隐瞒。
+     */
+    public static final String MENU_PAUSE_END_CREATIVE = "menu.pause.end_creative";
     public static final String MENU_PAUSE_TITLE = "menu.pause.title";
     public static final String MENU_PAUSE_SUBTITLE = "menu.pause.subtitle";
 
@@ -273,6 +280,8 @@ public final class Localization {
         // 暂停菜单
         TEXT.put(MENU_PAUSE_RESUME, "继续");
         TEXT.put(MENU_PAUSE_SAVE_EXIT, "保存并返回主菜单");
+        TEXT.put(MENU_PAUSE_END_CREATIVE,
+                "结束创造模式（盖的建筑仍留在世界里）");
         TEXT.put(MENU_PAUSE_TITLE, "已暂停");
         TEXT.put(MENU_PAUSE_SUBTITLE, "世界时间已冻结");
 

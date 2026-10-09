@@ -9,6 +9,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -53,6 +54,13 @@ class CreativeSessionTest {
         return new PlayerIntent(0f, 0f, pressed, 0, 0,
                 false, false, false, false, false, false,
                 false, false, false, 0, -1, false);
+    }
+
+    /** 同上但可带潜行（下降）位 —— 用于复现「按住 Ctrl 降到地面」。 */
+    private static PlayerIntent intent(boolean jump, boolean sneak) {
+        return new PlayerIntent(0f, 0f, jump, 0, 0,
+                false, false, false, false, false, false,
+                false, false, false, 0, -1, sneak);
     }
 
     /** 完成一次双击空格：按下 → 松开 → 再按下 → 松开。 */
@@ -132,24 +140,98 @@ class CreativeSessionTest {
     // ============================================================ ② 三态循环
 
     @Test
-    @DisplayName("三态循环：进会话+起飞 → 停飞 → 退出会话")
-    void theCycleIsEnterThenLandThenExit() {
+    @DisplayName("★ 双击空格**只**切飞行：永不退出创造会话")
+    void doubleTapOnlyTogglesFlightAndNeverExitsTheSession() {
         Player player = survivalPlayer();
         World world = TestWorlds.flatWorld();
 
         doubleTap(player, world);
         assertTrue(player.isFlying(), "第 1 次双击：进会话并起飞");
 
+        // 循环 8 次 —— 必须是纯粹的飞行开关，可以来回切
+        for (int i = 2; i <= 8; i++) {
+            final boolean wasFlying = player.isFlying();
+            doubleTap(player, world);
+            assertNotEquals(wasFlying, player.isFlying(),
+                    "第 " + i + " 次双击：飞行必须切换");
+            assertTrue(player.isCreativeSession(),
+                    "★ 第 " + i + " 次双击后仍必须在创造会话里 —— "
+                            + "原来的三态循环会在这里**退出创造**，"
+                            + "那是不可预测且不可逆的：一次手感键的连按"
+                            + "静默拿走了全部五项能力");
+            assertTrue(player.isCreativeMode(),
+                    "第 " + i + " 次双击后能力总开关必须仍开着");
+        }
+    }
+
+    @Test
+    @DisplayName("★ 主理人实测场景：按 Ctrl 降到地面后，双击只会切飞行，不会退出创造")
+    void landingThenDoubleTapDoesNotExitCreative() {
+        // 这条是**用户报上来的那条**，逐字复现它的操作序列。
+        // 起因：按 Ctrl 下降到地面后，flying 仍然是 true（悬停），
+        // 而玩家站在地上走，感觉自己"在正常行走、飞行已关" ——
+        // 于是同一个键在**他看来一样的两种状态下**做不同的事。
+        // 实测原三态循环的结果是：第 1 次停飞、第 2 次**退出创造**、
+        // 第 3 次才重新起飞。他要的"又是飞行模式"中间隔了一次能力全丢。
+        World world = TestWorlds.flatWorld();
+        Player player = new Player(0.5, TestWorlds.SURFACE_FEET_Y + 12, 0.5);
+        player.setCreativeMode(false);
+        player.setCreativeSessionAllowed(true);
+
+        // 先跳离地面，再双击进会话并起飞
+        for (int i = 0; i < 10; i++) {
+            player.step(world, intent(true, false), DT);
+        }
         doubleTap(player, world);
-        assertTrue(player.isCreativeSession(), "第 2 次双击：仍在会话内（要站着搭东西）");
-        assertFalse(player.isFlying(), "第 2 次双击：停飞");
+        assertTrue(player.isFlying(), "前置：应已进入创造会话并在飞行");
+
+        // 一直按下降键直到着地
+        int steps = 0;
+        while (!player.onGround() && steps < 900) {
+            player.step(world, intent(false, true), DT);
+            steps++;
+        }
+        assertTrue(steps < 900, "前置：应当能降到地面");
+        assertTrue(player.onGround(), "前置：已着地");
+
+        // ★ 关键事实：着地后 flying 仍然是 true。把它钉住 ——
+        //   若将来有人"顺手"在着地时清掉 flying，本用例后面的
+        //   "双击只会切飞行"仍然成立，但玩家看到的界面反馈会变；
+        //   而这条断言记录的是**当前真实行为**，不是期望。
+        assertTrue(player.isFlying(),
+                "★ 着地后飞行状态**仍然**是开着的（悬停在地面上方）—— "
+                        + "这正是玩家预判不了双击行为的原因："
+                        + "站着时它与「没在飞」看起来一模一样");
+
+        // 现在按用户描述双击：必须回到「又起飞」，而不是退出创造
+        doubleTap(player, world);
+        assertFalse(player.isFlying(), "第 1 次双击：停飞（他以为自己在走路，所以预期是起飞）");
 
         doubleTap(player, world);
-        assertFalse(player.isCreativeSession(), "★ 第 3 次双击必须退出会话 —— "
-                + "退出路径若不存在，玩家会被永久留在创造里，"
-                + "而那正是 §4.3 理由①描述的坏结果，只是不再有提示");
-        assertFalse(player.isCreativeMode(), "退出会话必须真的关掉能力总开关");
-        assertFalse(player.isFlying(), "退出后不得残留飞行状态（PRD §5.5）");
+        assertTrue(player.isFlying(),
+                "★ 第 2 次双击必须**又起飞** —— 这正是主理人要的「又是飞行模式」。"
+                        + "原三态循环在这一步会退出创造、带走全部能力");
+        assertTrue(player.isCreativeSession(),
+                "★ 全程不得退出创造会话：双击空格的语义是「飞行开关」，不是「退出创造」");
+        assertTrue(player.isCreativeMode(), "能力总开关必须仍开着");
+    }
+
+    @Test
+    @DisplayName("★ 结束会话只能走显式入口，且不可逆")
+    void endingTheSessionIsExplicitAndIdempotent() {
+        Player player = survivalPlayer();
+        World world = TestWorlds.flatWorld();
+        doubleTap(player, world);
+        assertTrue(player.isCreativeSession());
+
+        assertTrue(player.endCreativeSession(), "第一次结束必须成功");
+        assertFalse(player.isCreativeSession());
+        assertFalse(player.isCreativeMode());
+        assertFalse(player.isFlying(), "结束后不得残留飞行状态（PRD §5.5）");
+
+        assertFalse(player.endCreativeSession(),
+                "★ 已经不在会话里时再结束一次必须返回 false —— "
+                        + "一个总是返回 true 的接口会让人以为它还有效");
     }
 
     @Test
@@ -224,8 +306,12 @@ class CreativeSessionTest {
                         + "真因是我把「停飞也要回调」当成了需求 —— "
                         + "而它没有任何消费者，属于凭空要求的无用工作");
 
-        doubleTap(player, world);   // 退出会话
-        assertEquals(2, fired[0], "退出会话必须回调（面板要清掉，"
-                + "否则会出现「能力没了但创造标签还在」，点了格子什么都拿不到）");
+        // ★ 2026-10-09：双击空格不再有"第三态"，所以这里必须换成显式入口。
+        //   换掉之前，这个用例的第二次 doubleTap 恰好走了"退出会话"那条分支，
+        //   于是它**顺带**测到了退出回调 —— 那是巧合，不是设计。
+        player.endCreativeSession();
+        assertEquals(2, fired[0],
+                "★ 结束会话必须回调（面板要清掉），否则会出现"
+                        + "「能力没了但创造标签还在」，点了格子什么都拿不到");
     }
 }
